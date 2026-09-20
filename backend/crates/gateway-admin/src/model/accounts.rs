@@ -95,6 +95,7 @@ pub enum AccountGroupFilter {
 pub struct AccountRecord {
     pub enable_session_keepalive: bool,
     pub session_keepalive_models: Vec<String>,
+    pub session_keepalive_expected_length: Option<u32>,
     pub id: String,
     pub provider_kind: ProviderKind,
     pub groups: Vec<AccountGroupRef>,
@@ -233,6 +234,7 @@ pub struct AccountSummary {
 pub struct UpdateAccount {
     pub enable_session_keepalive: Option<bool>,
     pub session_keepalive_models: Option<Vec<String>>,
+    pub session_keepalive_expected_length: Option<Option<u32>>,
     pub account_id: String,
     /// 缺省保留备注；空字符串清空备注。
     pub notes: Option<String>,

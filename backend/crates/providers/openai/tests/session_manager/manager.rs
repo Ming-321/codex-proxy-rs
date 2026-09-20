@@ -930,7 +930,7 @@ async fn http_200_exact_length_and_prefix_are_required_without_consuming_body() 
         (200, state("header-only"), true),
         (201, state("created"), false),
         (200, "A".repeat(292), false),
-        (200, format!("gAAAAA{}", "A".repeat(306)), false),
+        (200, format!("gAAAAA{}", "A".repeat(800)), false),
     ] {
         let proxy = MockServer::start().await;
         let (store, _, manager) = fixture(Some(&proxy.uri())).await;

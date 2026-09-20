@@ -2531,6 +2531,7 @@ pub(super) fn account_record(kind: &str) -> AccountRecord {
     AccountRecord {
         enable_session_keepalive: false,
         session_keepalive_models: vec!["5.6 sol".into(), "6".into()],
+        session_keepalive_expected_length: None,
         notes: None,
         model_access: Default::default(),
         outbound_proxy: None,

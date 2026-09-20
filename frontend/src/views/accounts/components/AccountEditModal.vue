@@ -5,6 +5,7 @@ import type { AccountGroup, AccountModelAccess } from '@/api'
 
 import BaseButton from '@/components/base/BaseButton.vue'
 import BaseFormItem from '@/components/base/BaseForm/FormItem.vue'
+import BaseInput from '@/components/base/BaseInput.vue'
 import BaseModal from '@/components/base/BaseModal/index.vue'
 import BaseSwitch from '@/components/base/BaseSwitch.vue'
 import BaseTextarea from '@/components/base/BaseTextarea.vue'
@@ -33,6 +34,7 @@ const apiKey = defineModel<ApiKeyAccountForm>('apiKey', { required: true })
 const notes = defineModel<string>('notes', { required: true })
 const enabled = defineModel<boolean>('enabled', { required: true })
 const sessionKeepaliveModels = defineModel<string[]>('sessionKeepaliveModels', { required: true })
+const sessionKeepaliveExpectedLength = defineModel<string>('sessionKeepaliveExpectedLength', { required: true })
 const enableSessionKeepalive = defineModel<boolean>('enableSessionKeepalive', { required: true })
 const concurrencyLimit = defineModel<string>('concurrencyLimit', { required: true })
 const modelAccess = defineModel<AccountModelAccess | undefined>('modelAccess', { required: true })
@@ -104,6 +106,20 @@ const selectedGroupIds = defineModel<string[]>('selectedGroupIds', { required: t
       </div>
 
       <AccountSessionModelsField v-if="enableSessionKeepalive && account.provider === 'openai' && account.authenticationKind === 'oauth'" v-model="sessionKeepaliveModels" :account-id="account.id" :disabled="saving" />
+
+      <BaseFormItem
+        v-if="enableSessionKeepalive && account.provider === 'openai' && account.authenticationKind === 'oauth'"
+        label="期望 State 长度（字节）"
+      >
+        <BaseInput
+          v-model="sessionKeepaliveExpectedLength"
+          placeholder="留空自动匹配 (200-600)；或填 292 / 332 / 356"
+          :disabled="saving"
+        />
+        <template #help>
+          指定该账号期望的 State 原始字节长度（Pro 常用 292，Team 常用 332，Business 常用 356）。留空表示自动匹配合法区间。
+        </template>
+      </BaseFormItem>
 
       <BaseFormItem label="备注">
         <BaseTextarea

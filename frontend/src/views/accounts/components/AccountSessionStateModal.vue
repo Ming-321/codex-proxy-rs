@@ -54,6 +54,9 @@ const successCount = computed(() => models.value.filter(model => model.expireAt 
           </div>
         </dl>
       </div>
+      <p class="m-0 text-cp-sm text-cp-text-tertiary">
+        提示：点击「强制刷新」将立即重置重试计数并清除限流冷却，穿透缓存向 OpenAI 发起最新探测。
+      </p>
     </div>
     <template #footer>
       <BaseButton v-if="loading" variant="secondary" @click="emit('cancel')">
@@ -63,7 +66,7 @@ const successCount = computed(() => models.value.filter(model => model.expireAt 
         关闭
       </BaseButton>
       <BaseButton variant="primary" :loading="loading" :disabled="!account || !account.enabled || !account.enableSessionKeepalive" @click="account && emit('retry', account)">
-        {{ loading ? '刷新中' : '再次刷新' }}
+        {{ loading ? '刷新中' : '强制刷新' }}
       </BaseButton>
     </template>
   </BaseModal>

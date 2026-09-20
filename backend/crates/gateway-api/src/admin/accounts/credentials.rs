@@ -216,6 +216,8 @@ impl CompleteAccountAuthorizationRequest {
 pub struct UpdateAccountRequest {
     pub enable_session_keepalive: Option<bool>,
     pub session_keepalive_models: Option<Vec<String>>,
+    #[serde(default)]
+    pub session_keepalive_expected_length: Option<Option<u32>>,
     pub outbound_proxy_id: Option<String>,
     pub outbound_proxy_url: Option<super::wire::AccountProxyUpdate>,
     pub account_id: String,
@@ -244,9 +246,15 @@ impl UpdateAccountRequest {
             gateway_core::account::validate_session_keepalive_models(models)
                 .map_err(|_| WireValidationError::new("sessionKeepaliveModels"))?;
         }
+        if let Some(Some(len)) = self.session_keepalive_expected_length {
+            if !(100..=2000).contains(&len) {
+                return Err(WireValidationError::new("sessionKeepaliveExpectedLength"));
+            }
+        }
         Ok(UpdateAccount {
             enable_session_keepalive: self.enable_session_keepalive,
             session_keepalive_models: self.session_keepalive_models,
+            session_keepalive_expected_length: self.session_keepalive_expected_length,
             outbound_proxy: super::wire::proxy_selection(
                 self.outbound_proxy_id,
                 self.outbound_proxy_url,

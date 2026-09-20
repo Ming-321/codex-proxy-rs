@@ -23,6 +23,7 @@ export function useAccountEditor(options: {
   const schedulingEnabled = shallowRef(true)
   const enableSessionKeepalive = shallowRef(false)
   const sessionKeepaliveModels = ref<string[]>([])
+  const sessionKeepaliveExpectedLength = shallowRef('')
   const concurrencyLimit = shallowRef('')
   const weight = shallowRef('1')
   const modelAccess = ref<AccountModelAccess | undefined>()
@@ -73,6 +74,7 @@ export function useAccountEditor(options: {
     schedulingEnabled.value = account.enabled
     enableSessionKeepalive.value = account.enableSessionKeepalive
     sessionKeepaliveModels.value = [...(account.sessionKeepaliveModels ?? ['gpt-5.6-sol', 'gpt-6-astra'])]
+    sessionKeepaliveExpectedLength.value = account.sessionKeepaliveExpectedLength ? String(account.sessionKeepaliveExpectedLength) : ''
     concurrencyLimit.value = concurrencyLimitInput(account.concurrencyLimit)
     weight.value = String(account.weight)
     modelAccess.value = { ...account.modelAccess, models: [...account.modelAccess.models] }
@@ -126,6 +128,7 @@ export function useAccountEditor(options: {
         enabled: schedulingEnabled.value,
         enableSessionKeepalive: enableSessionKeepalive.value,
         sessionKeepaliveModels: editingAccount.value?.provider === 'openai' ? sessionKeepaliveModels.value : undefined,
+        sessionKeepaliveExpectedLength: editingAccount.value?.provider === 'openai' ? (sessionKeepaliveExpectedLength.value.trim() ? Number(sessionKeepaliveExpectedLength.value.trim()) : null) : undefined,
         concurrencyLimit: scheduling.values.concurrencyLimit,
         weight: scheduling.values.weight,
         modelAccess: modelAccess.value,
@@ -177,6 +180,7 @@ export function useAccountEditor(options: {
     schedulingEnabled,
     enableSessionKeepalive,
     sessionKeepaliveModels,
+    sessionKeepaliveExpectedLength,
     concurrencyLimit,
     weight,
     modelAccess,

@@ -37,7 +37,7 @@ use crate::{
 
 pub const SESSION_KEEPALIVE_MODELS: [&str; 2] = ["gpt-5.6-sol", "gpt-6-astra"];
 const TTL_SECONDS: i64 = 3600;
-const TURN_STATE_LENGTH: usize = 292;
+const MAX_REFRESH_ATTEMPTS: u32 = 100;
 const HEARTBEAT_TIMEOUT: Duration = Duration::from_secs(30);
 const REFRESH_BEFORE_SECONDS: i64 = 600;
 const WARMUP_INTERVAL_SECONDS: u64 = 6;
@@ -189,6 +189,10 @@ impl SessionManager {
             .lock()
             .await
             .retain(|model, _| account.session_keepalive_models().contains(model));
+        if repeat {
+            sessions.attempts.lock().await.clear();
+            sessions.retry_after.lock().await.clear();
+        }
         let client = self.client(&proxy).await?;
         let credential = self
             .repository
@@ -233,7 +237,7 @@ impl SessionManager {
                         biased;
                         () = cancelled.cancelled() => Err("账号配置已变化，已停止重写".to_owned()),
                         result = self.refresh_model_round(account, proxy, sessions, generation, model,
-                            client, authorization.expose_secret(), &credential.installation_id, &binding, policy.concurrency()) => result,
+                            client, authorization.expose_secret(), &credential.installation_id, &binding, policy.concurrency(), repeat) => result,
                     };
                     let item = match result {
                         Ok(None) => return None,
@@ -305,13 +309,14 @@ impl SessionManager {
         installation_id: &str,
         binding: &[u8; 32],
         configured_concurrency: u32,
+        force: bool,
     ) -> Result<Option<i64>, String> {
         self.validate_refresh_context(account, proxy, sessions, generation, model, binding)
             .await
             .map_err(str::to_owned)?;
         match self.load_ticket(account, model).await {
             Ok(Some(ticket))
-                if ticket.expires_at - Utc::now().timestamp() >= REFRESH_BEFORE_SECONDS =>
+                if !force && ticket.expires_at - Utc::now().timestamp() >= REFRESH_BEFORE_SECONDS =>
             {
                 return Ok(Some(ticket.expires_at));
             }
@@ -328,12 +333,13 @@ impl SessionManager {
             }
             _ => {}
         }
-        if sessions
-            .retry_after
-            .lock()
-            .await
-            .get(model)
-            .is_some_and(|deadline| *deadline > tokio::time::Instant::now())
+        if !force
+            && sessions
+                .retry_after
+                .lock()
+                .await
+                .get(model)
+                .is_some_and(|deadline| *deadline > tokio::time::Instant::now())
         {
             return Ok(None);
         }
@@ -343,6 +349,17 @@ impl SessionManager {
             *attempt = attempt.saturating_add(1);
             *attempt
         };
+        if attempt > MAX_REFRESH_ATTEMPTS {
+            sessions.attempts.lock().await.remove(model);
+            tracing::warn!(
+                account_id = account.id().as_str(),
+                model,
+                attempt,
+                max_attempts = MAX_REFRESH_ATTEMPTS,
+                "Session keepalive exceeded max attempts; pausing probes until next cycle"
+            );
+            return Err(format!("重试达上限 {} 次，暂停重写以避免空转", MAX_REFRESH_ATTEMPTS));
+        }
         let concurrency = if attempt <= 3 {
             1
         } else {
@@ -502,7 +519,7 @@ impl SessionManager {
         }
         // 先断言 Header 原始字节长度，不复制、不 trim、不等待响应正文。
         if let Some(state) = response.headers().get("x-codex-turn-state")
-            && state.as_bytes().len() != TURN_STATE_LENGTH
+            && !is_valid_state_length_for_account(account.session_keepalive_expected_length(), state.as_bytes().len())
         {
             log.record("invalid_state", json!({"status":status.as_u16(), "stateLength":state.as_bytes().len(), "elapsedMs":started.elapsed().as_millis()}));
             return Err(format!("上游 State 长度无效（重写 {probe_id}）"));
@@ -519,7 +536,7 @@ impl SessionManager {
             .headers()
             .get("x-codex-turn-state")
             .and_then(|value| value.to_str().ok())
-            .filter(|value| valid_state(value))
+            .filter(|value| valid_state_for_account(account.session_keepalive_expected_length(), value))
             .ok_or_else(|| format!("上游未返回有效 State（重写 {probe_id}）"))?
             .to_owned();
         drop(response);
@@ -622,7 +639,7 @@ impl SessionManager {
         if ticket.expires_at <= now {
             return Err("ticket_expired".to_owned());
         }
-        if ticket.expires_at > now + TTL_SECONDS || !valid_state(&ticket.value) {
+        if ticket.expires_at > now + TTL_SECONDS || !valid_state_for_account(account.session_keepalive_expected_length(), &ticket.value) {
             return Err("invalid_ticket".to_owned());
         }
         if ticket.credential_revision != account.revision().get() {
@@ -777,8 +794,17 @@ fn admin_error(kind: ProviderAdminErrorKind, message: &'static str) -> ProviderA
     ProviderAdminError::new(kind).with_public_message(message)
 }
 
-fn valid_state(state: &str) -> bool {
-    state.len() == TURN_STATE_LENGTH && state.is_ascii() && state.starts_with("gAAAAA")
+fn is_valid_state_length_for_account(expected: Option<u32>, len: usize) -> bool {
+    match expected {
+        Some(exp) if exp > 0 => len == exp as usize,
+        _ => (200..=600).contains(&len),
+    }
+}
+
+fn valid_state_for_account(expected: Option<u32>, state: &str) -> bool {
+    is_valid_state_length_for_account(expected, state.len())
+        && state.is_ascii()
+        && state.starts_with("gAAAAA")
 }
 
 fn managed(account: &ProviderAccount, model: &str) -> bool {

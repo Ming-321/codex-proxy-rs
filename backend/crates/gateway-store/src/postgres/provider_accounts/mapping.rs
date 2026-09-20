@@ -8,6 +8,7 @@ pub(crate) fn admin_account_record(
     Ok(AccountRecord {
         enable_session_keepalive: summary.enable_session_keepalive,
         session_keepalive_models: summary.session_keepalive_models,
+        session_keepalive_expected_length: summary.session_keepalive_expected_length,
         outbound_proxy: summary.outbound_proxy,
         id: summary.id,
         provider_kind: ProviderKind::new(summary.provider_kind).map_err(|_| {

@@ -122,6 +122,7 @@ pub(crate) fn parse_error_reason(value: Option<String>) -> StoreResult<Option<Ac
 pub struct ProviderAccountSummary {
     pub enable_session_keepalive: bool,
     pub session_keepalive_models: Vec<String>,
+    pub session_keepalive_expected_length: Option<u32>,
     pub request_location: Option<gateway_core::account::RequestLocation>,
     pub outbound_proxy: Option<gateway_core::account::OutboundProxy>,
     pub id: String,
@@ -324,6 +325,7 @@ impl fmt::Debug for RotateProviderAccount {
 pub struct BatchUpdateProviderAccountsAdmin {
     pub enable_session_keepalive: Option<bool>,
     pub session_keepalive_models: Option<Vec<String>>,
+    pub session_keepalive_expected_length: Option<Option<u32>>,
     pub outbound_proxy: Option<gateway_admin::model::proxies::AccountProxySelection>,
     pub account_ids: Vec<String>,
     pub notes: Option<String>,
@@ -395,7 +397,7 @@ impl ProviderAccountStateUpdate {
 
 pub(crate) const ACCOUNT_SELECT: &str = "select location_country, location_region, location_city, location_timezone, outbound_proxy_url, id, provider_kind, name, notes, email, upstream_user_id,
             upstream_account_id, plan_type, authentication_kind, provider_credentials_json, credential_revision,
-            has_refresh_token, access_token_expires_at, next_refresh_at, enabled, enable_session_keepalive, session_keepalive_models, concurrency_limit, weight, model_access_json, credential_state,
+            has_refresh_token, access_token_expires_at, next_refresh_at, enabled, enable_session_keepalive, session_keepalive_models, session_keepalive_expected_length, concurrency_limit, weight, model_access_json, credential_state,
             provider_quota_json, quota_access_state, quota_evidence, quota_access_observed_at, quota_reset_at,
             last_error_reason, last_error_message,
             credential_observed_at, quota_observed_at, created_at, updated_at
@@ -406,7 +408,7 @@ pub(crate) const ACCOUNT_SELECT: &str = "select location_country, location_regio
 
 pub(crate) const ACCOUNT_SELECT_BY_IDS: &str = "select location_country, location_region, location_city, location_timezone, outbound_proxy_url, id, provider_kind, name, notes, email, upstream_user_id,
             upstream_account_id, plan_type, authentication_kind, provider_credentials_json, credential_revision,
-            has_refresh_token, access_token_expires_at, next_refresh_at, enabled, enable_session_keepalive, session_keepalive_models, concurrency_limit, weight, model_access_json, credential_state,
+            has_refresh_token, access_token_expires_at, next_refresh_at, enabled, enable_session_keepalive, session_keepalive_models, session_keepalive_expected_length, concurrency_limit, weight, model_access_json, credential_state,
             provider_quota_json, quota_access_state, quota_evidence, quota_access_observed_at, quota_reset_at,
             last_error_reason, last_error_message,
             credential_observed_at, quota_observed_at, created_at, updated_at
@@ -418,7 +420,7 @@ pub(crate) const ACCOUNT_SELECT_BY_IDS: &str = "select location_country, locatio
 
 pub(crate) const REFRESH_CANDIDATES_SELECT: &str = "select location_country, location_region, location_city, location_timezone, outbound_proxy_url, id, provider_kind, name, notes, email, upstream_user_id,
             upstream_account_id, plan_type, authentication_kind, provider_credentials_json, credential_revision,
-            has_refresh_token, access_token_expires_at, next_refresh_at, enabled, enable_session_keepalive, session_keepalive_models, concurrency_limit, weight, model_access_json, credential_state,
+            has_refresh_token, access_token_expires_at, next_refresh_at, enabled, enable_session_keepalive, session_keepalive_models, session_keepalive_expected_length, concurrency_limit, weight, model_access_json, credential_state,
             provider_quota_json, quota_access_state, quota_evidence, quota_access_observed_at, quota_reset_at,
             last_error_reason, last_error_message,
             credential_observed_at, quota_observed_at, created_at, updated_at
@@ -494,6 +496,7 @@ pub(crate) fn core_account_from_summary(
     )
     .with_session_keepalive(summary.enable_session_keepalive)
     .with_session_keepalive_models(summary.session_keepalive_models)
+    .with_session_keepalive_expected_length(summary.session_keepalive_expected_length)
     .with_scheduling(summary.concurrency_limit, summary.weight)
     .with_model_access(summary.model_access)
     .with_outbound_proxy(summary.outbound_proxy)
@@ -558,6 +561,7 @@ pub(crate) fn account_summary_from_row(
     Ok(ProviderAccountSummary {
         enable_session_keepalive: get(&row, "enable_session_keepalive")?,
         session_keepalive_models: get(&row, "session_keepalive_models")?,
+        session_keepalive_expected_length: get::<Option<i32>>(&row, "session_keepalive_expected_length")?.and_then(|v| u32::try_from(v).ok()),
         request_location: super::super::proxies::location_from_row(&row)?,
         outbound_proxy: get::<Option<String>>(&row, "outbound_proxy_url")?
             .map(|url| {

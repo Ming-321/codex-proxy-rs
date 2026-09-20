@@ -268,6 +268,7 @@ pub struct AccountSummaryView {
 pub struct AccountView {
     pub enable_session_keepalive: bool,
     pub session_keepalive_models: Vec<String>,
+    pub session_keepalive_expected_length: Option<u32>,
     pub outbound_proxy_endpoint: Option<String>,
     pub id: String,
     pub name: String,

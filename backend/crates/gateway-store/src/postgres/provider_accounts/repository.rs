@@ -111,7 +111,7 @@ impl ProviderAccountRepository for PgProviderAccountRepository {
         let rows = sqlx::query(
             "select location_country, location_region, location_city, location_timezone, outbound_proxy_url, id, provider_kind, name, notes, email, upstream_user_id,
                     upstream_account_id, plan_type, authentication_kind, credential_revision, has_refresh_token,
-                    access_token_expires_at, next_refresh_at, enabled, enable_session_keepalive, session_keepalive_models, concurrency_limit, weight, model_access_json, credential_state,
+                    access_token_expires_at, next_refresh_at, enabled, enable_session_keepalive, session_keepalive_models, session_keepalive_expected_length, concurrency_limit, weight, model_access_json, credential_state,
                     credential_observed_at, quota_access_state, quota_evidence,
                     quota_access_observed_at, quota_reset_at,
                     quota_observed_at, last_error_reason, last_error_message, created_at, updated_at
@@ -576,6 +576,7 @@ impl ProviderAccountAdminRepository for PgProviderAccountRepository {
                     ids,
                     settings.enable_session_keepalive,
                     settings.session_keepalive_models.as_deref(),
+                    settings.session_keepalive_expected_length,
                 )
                 .await?;
                 update_provider_accounts_scheduling_in_transaction(
@@ -634,6 +635,7 @@ impl ProviderAccountAdminRepository for PgProviderAccountRepository {
                 &command.account_ids,
                 command.enable_session_keepalive,
                 command.session_keepalive_models.as_deref(),
+                command.session_keepalive_expected_length,
             )
             .await?;
             update_provider_accounts_scheduling_in_transaction(
@@ -1152,8 +1154,9 @@ async fn update_session_keepalive_in_transaction(
     account_ids: &[String],
     enabled: Option<bool>,
     models: Option<&[String]>,
+    expected_length: Option<Option<u32>>,
 ) -> StoreResult<()> {
-    if enabled.is_some() || models.is_some() {
+    if enabled.is_some() || models.is_some() || expected_length.is_some() {
         if let Some(models) = models {
             gateway_core::account::validate_session_keepalive_models(models).map_err(|_| {
                 StoreError::InvalidData {
@@ -1162,12 +1165,23 @@ async fn update_session_keepalive_in_transaction(
                 }
             })?;
         }
+        let (update_len, exp_len) = match expected_length {
+            Some(Some(len)) => (true, Some(len as i32)),
+            Some(None) => (true, None),
+            None => (false, None),
+        };
         sqlx::query(
-            "update provider_accounts set enable_session_keepalive = coalesce($2, enable_session_keepalive), session_keepalive_models = coalesce($3, session_keepalive_models) where id = any($1::text[])",
+            "update provider_accounts set
+                enable_session_keepalive = coalesce($2, enable_session_keepalive),
+                session_keepalive_models = coalesce($3, session_keepalive_models),
+                session_keepalive_expected_length = case when $4 then $5 else session_keepalive_expected_length end
+             where id = any($1::text[])",
         )
         .bind(account_ids)
         .bind(enabled)
         .bind(models)
+        .bind(update_len)
+        .bind(exp_len)
         .execute(&mut **transaction)
         .await
         .map_err(|_| postgres_unavailable("update session keepalive"))?;

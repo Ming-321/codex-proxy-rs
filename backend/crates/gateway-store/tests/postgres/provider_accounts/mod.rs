@@ -2454,6 +2454,7 @@ async fn provider_account_admin_mutations_are_scoped_audited_and_atomic() {
         .batch_update_provider_accounts_admin(BatchUpdateProviderAccountsAdmin {
             enable_session_keepalive: None,
             session_keepalive_models: None,
+            session_keepalive_expected_length: None,
             notes: None,
             model_access: Default::default(),
             outbound_proxy: None,

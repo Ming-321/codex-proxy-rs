@@ -725,6 +725,7 @@ const fn status_projection(status: AccountStatus) -> AccountStatusProjection {
 pub struct ProviderAccount {
     enable_session_keepalive: bool,
     session_keepalive_models: Vec<String>,
+    session_keepalive_expected_length: Option<u32>,
     id: ProviderAccountId,
     provider: ProviderKind,
     name: String,
@@ -758,6 +759,17 @@ impl ProviderAccount {
     #[must_use]
     pub fn with_session_keepalive_models(mut self, models: Vec<String>) -> Self {
         self.session_keepalive_models = models;
+        self
+    }
+
+    #[must_use]
+    pub const fn session_keepalive_expected_length(&self) -> Option<u32> {
+        self.session_keepalive_expected_length
+    }
+
+    #[must_use]
+    pub const fn with_session_keepalive_expected_length(mut self, length: Option<u32>) -> Self {
+        self.session_keepalive_expected_length = length;
         self
     }
 
@@ -796,6 +808,7 @@ impl ProviderAccount {
             enabled: true,
             enable_session_keepalive: false,
             session_keepalive_models: Vec::new(),
+            session_keepalive_expected_length: None,
             concurrency_limit: None,
             weight: AccountWeight::DEFAULT,
             model_access: super::AccountModelAccess::all(),
