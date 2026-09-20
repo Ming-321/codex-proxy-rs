@@ -10,7 +10,7 @@ Codex Proxy RS 是单进程、单副本运行的多 Provider AI 网关，同时�
 
 - 面向客户端的 OpenAI Responses、Images、standalone Search 和模型目录协议；
 - 面向管理员的 `/api/admin/*` 控制面和 Vue 管理端；
-- 面向 Key 持有者的 `/api/key-usage/*` 用量与客户端配置接口和独立 `/key-usage` 页面；
+- 面向 Key 持有者的 `/api/key-usage/*` 用量与客户端配置接口、独立 `/key-usage` 页面，以及 Bearer 鉴权的 `/v1/usage` 额度查询；
 - OpenAI 与 xAI 两个编译期 Provider；
 - PostgreSQL 持久化、Redis 协调状态以及 S3/R2 数据库备份。
 
@@ -337,8 +337,9 @@ AuthService 每次恢复 Key 会话时重新检查 Key 是否存在且启用；K
 管理员会话保存由已加盐密码哈希派生的指纹，每次恢复时与 PostgreSQL 当前密码核对；普通设置变更不影响该绑定。
 改密在 AuthService 验证当前密码和新密码策略，Store 以旧哈希条件更新密码并在同一 PostgreSQL 事务记录审计。
 事务提交后旧管理员会话的指纹失配，不依赖 Redis 批量删除完成撤销；原始密码及密码哈希不进入 Redis。
-KeyUsageService 从 AuthService 的服务端身份确定唯一查询范围，复用 ClientKeyStore 的额度账本投影和
-ObservabilityStore 的范围查询；API 只输出单页所需的字段白名单，不复用管理员的宽响应。
+KeyUsageService 从 AuthService 的服务端身份或 Core 的 ClientKeyVerifier 只读校验确定唯一查询范围，复用 ClientKeyStore 的额度账本投影和
+ObservabilityStore 的范围查询；Bearer 查询仅提供当前额度，不执行推理准入或开启窗口。
+API 只输出各入口所需的字段白名单，不复用管理员的宽响应。
 客户端配置通过 ClientKeyStore 显式读取当前会话绑定 Key 的明文，不进入用量响应。
 前端 `/key-usage` 独立于管理布局，不挂载管理员菜单或请求管理接口；配置弹窗和 Codex / CCSwitch
 配置生成逻辑与管理端共用，明文仅在打开弹窗时获取，关闭后清除，不持久化到浏览器。
