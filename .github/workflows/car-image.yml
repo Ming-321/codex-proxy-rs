@@ -1,0 +1,101 @@
+name: Car Image
+
+on:
+  push:
+    branches:
+      - car
+
+permissions:
+  contents: read
+
+concurrency:
+  group: car-image-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  quality:
+    if: github.repository == 'Ming-321/codex-proxy-rs'
+    uses: ./.github/workflows/_quality.yml
+    with:
+      ref: ${{ github.sha }}
+
+  image:
+    needs: quality
+    if: github.repository == 'Ming-321/codex-proxy-rs'
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    permissions:
+      contents: read
+      packages: write
+      security-events: write
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.sha }}
+
+      - name: Setup Docker Buildx
+        uses: docker/setup-buildx-action@37fe631027851001ddb9b187196cc803df7f5f0e # v4.3.0
+
+      - name: Define image identity
+        id: metadata
+        shell: bash
+        run: |
+          set -euo pipefail
+          version="$(ruby -ryaml -e 'print YAML.load_file("release/version.yaml").fetch("version")')"
+          short_sha="${GITHUB_SHA:0:12}"
+          {
+            echo "version=$version"
+            echo "build_time=$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+            echo "image=ghcr.io/ming-321/codex-proxy-rs-car:sha-${short_sha}-run-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Build original application
+        uses: docker/build-push-action@53b7df96c91f9c12dcc8a07bcb9ccacbed38856a # v7.3.0
+        with:
+          context: .
+          file: deploy/Dockerfile
+          target: runtime
+          platforms: linux/amd64
+          load: true
+          tags: ${{ steps.metadata.outputs.image }}
+          build-args: |
+            CPR_VERSION=${{ steps.metadata.outputs.version }}
+            CPR_GIT_SHA=${{ github.sha }}
+            CPR_BUILD_TIME=${{ steps.metadata.outputs.build_time }}
+            CPR_BUILD_TYPE=release
+          labels: |
+            org.opencontainers.image.source=https://github.com/Ming-321/codex-proxy-rs
+            org.opencontainers.image.revision=${{ github.sha }}
+          cache-from: type=gha,scope=car-image
+          cache-to: type=gha,mode=max,scope=car-image
+
+      - name: Verify image before publishing
+        uses: ./.github/actions/verify-container
+        with:
+          image: ${{ steps.metadata.outputs.image }}
+          platform: linux/amd64
+          artifact-name: car-container-${{ github.run_id }}-${{ github.run_attempt }}
+
+      - name: Log in to GHCR
+        uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4.6.0
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Publish verified image
+        shell: bash
+        env:
+          CAR_IMAGE: ${{ steps.metadata.outputs.image }}
+        run: |
+          set -euo pipefail
+          docker push "$CAR_IMAGE"
+          digest="$(docker buildx imagetools inspect "$CAR_IMAGE" --format "{{json .Manifest.Digest}}")"
+          digest="${digest#\"}"
+          digest="${digest%\"}"
+          test -n "$digest"
+          {
+            printf "Published image: \`%s\`\n\n" "$CAR_IMAGE"
+            printf "Immutable digest: \`%s\`\n" "$digest"
+          } >> "$GITHUB_STEP_SUMMARY"
