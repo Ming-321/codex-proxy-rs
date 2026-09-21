@@ -91,7 +91,7 @@ jobs:
         run: |
           set -euo pipefail
           docker push "$CAR_IMAGE"
-          digest="$(docker buildx imagetools inspect "$CAR_IMAGE" --format '{{json .Manifest.Digest}}')"
+          digest="$(docker buildx imagetools inspect "$CAR_IMAGE" --format "{{json .Manifest.Digest}}")"
           digest="${digest#\"}"
           digest="${digest%\"}"
           test -n "$digest"
