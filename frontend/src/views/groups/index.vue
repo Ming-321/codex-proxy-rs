@@ -114,15 +114,12 @@ const { allSelected, indeterminate, selectedRowKeys, toggleSelection, toggleAll 
                   <strong class="truncate text-cp text-cp-text">
                     {{ row.name }}
                   </strong>
-                  <button
+                  <span
                     v-if="row.isCar"
-                    type="button"
-                    class="text-cp-xs text-cp-link hover:underline"
-                    aria-label="管理 seat"
-                    @click.stop="manageSeats(row)"
+                    class="inline-flex h-6 shrink-0 items-center rounded-lg bg-cp-fill-tertiary px-2 text-cp-xs font-bold text-cp-text-secondary"
                   >
-                    car · seat 管理
-                  </button>
+                    拼车
+                  </span>
                   <span
                     v-if="row.disableFast"
                     class="inline-flex h-6 shrink-0 items-center rounded-lg bg-cp-fill-tertiary px-2 text-cp-xs font-bold text-cp-text-secondary"
