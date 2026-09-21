@@ -96,6 +96,6 @@ jobs:
           digest="${digest%\"}"
           test -n "$digest"
           {
-            printf 'Published image: `%s`\n\n' "$CAR_IMAGE"
-            printf 'Immutable digest: `%s`\n' "$digest"
+            printf "Published image: \`%s\`\n\n" "$CAR_IMAGE"
+            printf "Immutable digest: \`%s\`\n" "$digest"
           } >> "$GITHUB_STEP_SUMMARY"
