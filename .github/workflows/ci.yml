@@ -4,7 +4,6 @@ on:
   push:
     branches:
       - main
-      - car
     paths-ignore:
       - 'release/version.yaml'
       - 'release/notes.md'
