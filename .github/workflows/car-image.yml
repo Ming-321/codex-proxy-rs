@@ -44,6 +44,8 @@ jobs:
           set -euo pipefail
           base_version="$(ruby -ryaml -e 'print YAML.load_file("release/version.yaml").fetch("version").delete_prefix("v")')"
           short_sha="${GITHUB_SHA:0:12}"
+          # Build metadata identifies the fork without changing SemVer precedence
+          # or turning a stable upstream version into an unknown prerelease channel.
           if [[ "$base_version" == *+* ]]; then
             version="${base_version}.car.${short_sha}"
           else
