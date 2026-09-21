@@ -3,6 +3,9 @@
 //! Client API Key 冻结账号分组权限；模型名称不参与权限判断。
 
 mod client_version;
+mod seat;
+
+pub use seat::{ClientConcurrencyId, SeatId};
 
 pub use client_version::{
     ClientVersionRejection, CodexClientKind, CodexClientMinVersions, CodexClientVersion,
@@ -108,6 +111,7 @@ impl RateLimits {
 /// 从 `client_api_keys` 冻结的公开准入事实。
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ClientPolicy {
+    seat_id: Option<SeatId>,
     key_id: ClientApiKeyId,
     plaintext_key: PlaintextClientApiKey,
     account_scope: Arc<FrozenAccountScope>,
@@ -125,6 +129,7 @@ impl ClientPolicy {
         limits: RateLimits,
     ) -> Self {
         Self {
+            seat_id: None,
             key_id,
             plaintext_key,
             account_scope,
@@ -136,6 +141,25 @@ impl ClientPolicy {
     #[must_use]
     pub const fn key_id(&self) -> &ClientApiKeyId {
         &self.key_id
+    }
+
+    #[must_use]
+    pub fn with_seat(mut self, seat_id: Option<SeatId>) -> Self {
+        self.seat_id = seat_id;
+        self
+    }
+
+    #[must_use]
+    pub const fn seat_id(&self) -> Option<&SeatId> {
+        self.seat_id.as_ref()
+    }
+
+    #[must_use]
+    pub fn concurrency_id(&self) -> ClientConcurrencyId {
+        self.seat_id.clone().map_or_else(
+            || ClientConcurrencyId::Key(self.key_id.clone()),
+            ClientConcurrencyId::Seat,
+        )
     }
 
     #[must_use]

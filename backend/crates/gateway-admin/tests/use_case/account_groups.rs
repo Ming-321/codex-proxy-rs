@@ -94,6 +94,37 @@ struct FakeGroupStore {
 
 #[async_trait]
 impl AccountGroupStore for FakeGroupStore {
+    async fn convert_to_car(
+        &self,
+        _: gateway_core::routing::AccountGroupId,
+        _: &MutationContext,
+    ) -> AdminStoreResult<Revision> {
+        Err(unused())
+    }
+
+    async fn list_seats(
+        &self,
+        _: gateway_core::routing::AccountGroupId,
+    ) -> AdminStoreResult<Vec<gateway_admin::model::account_groups::SeatRecord>> {
+        Err(unused())
+    }
+
+    async fn save_seat(
+        &self,
+        _: gateway_admin::model::account_groups::SaveSeat,
+        _: &MutationContext,
+    ) -> AdminStoreResult<Revision> {
+        Err(unused())
+    }
+
+    async fn join_seat(
+        &self,
+        _: gateway_admin::model::account_groups::JoinSeat,
+        _: &MutationContext,
+    ) -> AdminStoreResult<Revision> {
+        Err(unused())
+    }
+
     async fn list_account_groups(
         &self,
         query: AccountGroupListQuery,
@@ -202,6 +233,7 @@ impl AccountRuntimeStore for FakeRuntimeStore {
 fn group_record() -> AccountGroupRecord {
     let now = Utc::now();
     AccountGroupRecord {
+        is_car: false,
         disable_fast: false,
         id: group_id(),
         name: "Primary".to_owned(),

@@ -28,6 +28,7 @@ pub(super) async fn fixture() -> AdminTestFixture {
         enabled: true,
         limits: RateLimits::unlimited(),
         budget: ClientBudgetStatus {
+            seat: None,
             limits: ClientBudgetLimits {
                 daily_usd: "1".parse().unwrap(),
                 weekly_usd: "5".parse().unwrap(),

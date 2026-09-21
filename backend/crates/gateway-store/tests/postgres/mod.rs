@@ -28,6 +28,7 @@ mod query_budget;
 mod retention;
 mod runtime_settings;
 mod schema_integrity;
+mod seats;
 mod snapshot;
 mod snapshots;
 
@@ -233,13 +234,17 @@ async fn connect_and_migrate_should_apply_all_migrations_once_and_reopen_cleanly
             "backup_settings",
             "client_api_key_groups",
             "client_api_keys",
+            "client_budget_admissions",
             "client_key_budget_windows",
             "client_key_charge_events",
+            "client_key_effective_groups",
             "model_requests",
             "ops_events",
             "outbound_proxies",
             "provider_accounts",
             "runtime_settings",
+            "seat_budget_windows",
+            "seats",
         ]
     );
     assert_eq!(session_settings, ("codex-proxy-rs".to_owned(), 30, 5, 30));

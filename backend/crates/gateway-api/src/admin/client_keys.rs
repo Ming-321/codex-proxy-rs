@@ -147,6 +147,7 @@ impl ClientKeySort {
 #[derive(Clone, PartialEq, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct CreateClientKeyRequest {
+    seat_id: Option<String>,
     openai_client_profile_override: Option<serde_json::Map<String, serde_json::Value>>,
     xai_client_profile_override: Option<serde_json::Map<String, serde_json::Value>>,
     custom_key: Option<String>,
@@ -178,6 +179,11 @@ impl CreateClientKeyRequest {
         validate_limit(self.max_concurrency, "maxConcurrency")?;
         validate_limit(self.requests_per_minute, "requestsPerMinute")?;
         Ok(CreateClientKey {
+            seat_id: self
+                .seat_id
+                .map(gateway_core::policy::SeatId::new)
+                .transpose()
+                .map_err(|_| WireValidationError::new("seatId"))?,
             openai_client_profile_override: self
                 .openai_client_profile_override
                 .map(gateway_core::account::OpaqueProviderData::new),
@@ -325,6 +331,8 @@ impl ClientKeyMutationRequest {
 #[derive(Debug, Clone, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ClientKeyView {
+    seat_id: Option<String>,
+    seat_name: Option<String>,
     openai_client_profile_override: Option<serde_json::Map<String, serde_json::Value>>,
     xai_client_profile_override: Option<serde_json::Map<String, serde_json::Value>>,
     id: String,
@@ -392,7 +400,17 @@ impl From<ClientKeyRecord> for ClientKeyView {
                 .collect(),
             prefix: record.prefix,
             enabled: record.enabled,
-            max_concurrency: record.limits.max_concurrency,
+            max_concurrency: record
+                .budget
+                .seat
+                .as_ref()
+                .map_or(record.limits.max_concurrency, |s| s.max_concurrency),
+            seat_id: record
+                .budget
+                .seat
+                .as_ref()
+                .map(|s| s.id.as_str().to_owned()),
+            seat_name: record.budget.seat.as_ref().map(|s| s.name.clone()),
             requests_per_minute: record.limits.requests_per_minute,
             daily_limit_usd: record.budget.limits.daily_usd.canonical(),
             weekly_limit_usd: record.budget.limits.weekly_usd.canonical(),

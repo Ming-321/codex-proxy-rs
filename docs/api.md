@@ -25,6 +25,10 @@ Client Key 通过账号分组限定路由范围：未绑定分组时可使用全
 已启用分组成员的并集。分组可以混合 `openai` 与 `xai` 账号；同一请求只会在模型能力明确匹配且满足
 重放安全边界时跨 Provider fallback。
 
+`car` 是恰好独占一个账号的特殊分组。`seat` 属于一个 car，加入 seat 的多个 Client Key 继承该 car
+的账号范围，并共享 seat 的日／周 USD 限额与并发上限；各 Key 的 RPM 和客户端身份覆盖仍独立保存。
+car 账号不进入普通 Key 的“全部账号”范围。
+
 运行设置可以分别配置 `minCodexDesktopVersion` 与 `minCodexCliVersion`。两者只接受 SemVer，`null`
 表示不限制。API 在 Client Key 鉴权成功后识别官方 Desktop/CLI 请求头；适用门禁的客户端没有合法版本，或版本
 低于对应门槛时，除只读 `/v1/usage` 外的 `/v1/*` HTTP 请求和新 WebSocket 握手在访问上游前返回 `426 Upgrade Required`。
@@ -926,6 +930,10 @@ HTTP 请求头及新建 WS 的握手提示按当时的最终出站档位构造�
 | `POST` | `/api/admin/account-groups/enable` | `{ id }` | 启用 |
 | `POST` | `/api/admin/account-groups/disable` | `{ id }` | 禁用；已绑定 Key 保持受限，不回退到全部账号 |
 | `POST` | `/api/admin/account-groups/delete` | `{ id }` | 删除未被 Client Key 引用的组 |
+| `POST` | `/api/admin/account-groups/convert-car` | `{ id }` | 将恰好包含一个独占账号的普通分组转为 car |
+| `GET` | `/api/admin/seats` | `groupId` | 查询 car 下的 seat、共享额度窗口和 Key 数量 |
+| `POST` | `/api/admin/seats/save` | seat 字段 | 创建或更新 seat；并发不能超过 car 账号容量，seat 数量也不能超过容量 |
+| `POST` | `/api/admin/seats/join` | `{ seatId, keyIds }` | 将独立 Key 永久加入 seat，并原子承接同窗口的已用费用 |
 
 列表数据为 `{ items, page, configRevision }`，其中 item 返回 `memberCount`、按 Provider 聚合的
 `providerCounts` 和 `clientKeyCount`。查询分组成员使用账号列表的 `groupId` 筛选，
@@ -942,10 +950,11 @@ HTTP 请求头及新建 WS 的握手提示按当时的最终出站档位构造�
 | `POST` | `/api/admin/client-keys/reset-budget` | `{ id, period }` | 管理员清零日／周已用金额；`period` 为 `daily`、`weekly` 或 `all` |
 | `POST` | `/api/admin/client-keys/enable` | `{ id }` | 启用 |
 | `POST` | `/api/admin/client-keys/disable` | `{ id }` | 禁用 |
-| `POST` | `/api/admin/client-keys/delete` | `{ id }` | 删除 |
+| `POST` | `/api/admin/client-keys/delete` | `{ id }` | 删除独立 Key；seat Key 撤销凭据并保留费用历史 |
 
-创建字段为 `name`、可选 `label`、`groupIds`、`maxConcurrency`、`requestsPerMinute`、可选
+创建字段为 `name`、可选 `label`、`groupIds`、可选 `seatId`、`maxConcurrency`、`requestsPerMinute`、可选
 `dailyLimitUsd`、`weeklyLimitUsd`、`customKey`、`openaiClientProfileOverride` 和 `xaiClientProfileOverride`。更新请求携带 `id`，不接受 `customKey`。
+创建 seat Key 时 `groupIds` 必须为空；共享限额与并发取自 seat，因此 Key 自身对应字段不生效。
 `groupIds` 必须显式提交：空数组派生 `routingScope: "all"`，非空数组派生
 `routingScope: "groups"`。响应同时返回分组引用 `groups`，以及从当前有效账号池派生、仅供展示的
 `providerKinds`。创建和 reveal 响应会返回完整明文 Key，调用方

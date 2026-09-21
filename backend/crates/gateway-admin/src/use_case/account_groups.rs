@@ -32,6 +32,25 @@ use super::{map_store_error, publish_committed};
 /// API-facing account group management service.
 #[async_trait]
 pub trait AccountGroupService: Send + Sync {
+    async fn convert_to_car(
+        &self,
+        context: &MutationContext,
+        id: AccountGroupId,
+    ) -> Result<crate::model::Revision, AdminError>;
+    async fn seats(
+        &self,
+        group_id: AccountGroupId,
+    ) -> Result<Vec<crate::model::account_groups::SeatRecord>, AdminError>;
+    async fn save_seat(
+        &self,
+        context: &MutationContext,
+        command: crate::model::account_groups::SaveSeat,
+    ) -> Result<crate::model::Revision, AdminError>;
+    async fn join_seat(
+        &self,
+        context: &MutationContext,
+        command: crate::model::account_groups::JoinSeat,
+    ) -> Result<crate::model::Revision, AdminError>;
     async fn list(&self, query: AccountGroupListQuery) -> Result<AccountGroupPage, AdminError>;
     async fn create(
         &self,
@@ -120,6 +139,75 @@ impl DefaultAccountGroupService {
 
 #[async_trait]
 impl AccountGroupService for DefaultAccountGroupService {
+    async fn convert_to_car(
+        &self,
+        context: &MutationContext,
+        id: AccountGroupId,
+    ) -> Result<crate::model::Revision, AdminError> {
+        let revision = self
+            .store
+            .convert_to_car(id, context)
+            .await
+            .map_err(|e| map_store_error(e, "car"))?;
+        publish_committed(self.snapshot.as_ref(), revision).await?;
+        Ok(revision)
+    }
+
+    async fn seats(
+        &self,
+        group_id: AccountGroupId,
+    ) -> Result<Vec<crate::model::account_groups::SeatRecord>, AdminError> {
+        self.store
+            .list_seats(group_id)
+            .await
+            .map_err(|e| map_store_error(e, "seat"))
+    }
+
+    async fn save_seat(
+        &self,
+        context: &MutationContext,
+        mut command: crate::model::account_groups::SaveSeat,
+    ) -> Result<crate::model::Revision, AdminError> {
+        if command.name.trim() != command.name
+            || command.name.is_empty()
+            || command.name.chars().count() > 100
+            || command.name.chars().any(char::is_control)
+            || command.max_concurrency == 0
+            || command.max_concurrency > u64::from(u32::MAX)
+        {
+            return Err(AdminError::invalid("seat 名称或并发上限无效"));
+        }
+        if command.id.is_none() {
+            command.id = Some(
+                gateway_core::policy::SeatId::new(format!("seat_{}", Uuid::now_v7().simple()))
+                    .map_err(|_| AdminError::internal("创建 seat ID 失败"))?,
+            );
+        }
+        let revision = self
+            .store
+            .save_seat(command, context)
+            .await
+            .map_err(|e| map_store_error(e, "seat"))?;
+        publish_committed(self.snapshot.as_ref(), revision).await?;
+        Ok(revision)
+    }
+
+    async fn join_seat(
+        &self,
+        context: &MutationContext,
+        command: crate::model::account_groups::JoinSeat,
+    ) -> Result<crate::model::Revision, AdminError> {
+        if command.key_ids.is_empty() || command.key_ids.len() > 100 {
+            return Err(AdminError::invalid("每次迁入 1 至 100 个 Key"));
+        }
+        let revision = self
+            .store
+            .join_seat(command, context)
+            .await
+            .map_err(|e| map_store_error(e, "seat"))?;
+        publish_committed(self.snapshot.as_ref(), revision).await?;
+        Ok(revision)
+    }
     async fn list(&self, query: AccountGroupListQuery) -> Result<AccountGroupPage, AdminError> {
         let mut page = self
             .store

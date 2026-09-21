@@ -281,6 +281,7 @@ async fn duplicate_names_report_the_same_actionable_conflict_on_create_and_updat
 
 fn create_command(key: Option<&str>) -> CreateClientKey {
     CreateClientKey {
+        seat_id: None,
         openai_client_profile_override: None,
         xai_client_profile_override: None,
         custom_key: key.map(|value| PlaintextClientApiKey::new(value).unwrap()),

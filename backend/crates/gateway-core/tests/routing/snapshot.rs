@@ -574,6 +574,74 @@ fn disable_fast_uses_only_bound_groups_without_changing_account_scope() {
 }
 
 #[test]
+fn car_accounts_are_exclusive_to_seat_keys_but_remain_available_to_admin_diagnostics() {
+    use gateway_core::{account::ProviderAccountId, policy::SeatId, routing::AccountGroupId};
+    let car_group = AccountGroupId::new("grp_00000000000000000000000000000001").unwrap();
+    let ordinary_group = AccountGroupId::new("grp_00000000000000000000000000000002").unwrap();
+    let car_account = ProviderAccountId::new("acct_car_policy").unwrap();
+    let ordinary_account = ProviderAccountId::new("acct_ordinary_policy").unwrap();
+    let make_policy = |name: &str, groups, seat_id| {
+        SnapshotClientPolicyFacts::new(
+            ClientApiKeyId::new(name).unwrap(),
+            PlaintextClientApiKey::new(format!("sk_{name}")).unwrap(),
+            groups,
+            RateLimits::unlimited(),
+        )
+        .with_seat(seat_id)
+    };
+    let policies = vec![
+        make_policy("key_ordinary_all", vec![], None),
+        make_policy("key_ordinary_car", vec![car_group.clone()], None),
+        make_policy(
+            "key_seat_car",
+            vec![car_group.clone()],
+            Some(SeatId::new("seat_00000000000000000000000000000001").unwrap()),
+        ),
+        make_policy("key_ordinary_bound", vec![ordinary_group.clone()], None),
+    ];
+    let facts = SnapshotFacts::new(
+        revision(1),
+        revision(1),
+        SnapshotSettingsFacts::new(3, 0, "smart", BTreeMap::new(), None, None),
+        policies,
+        vec![
+            SnapshotAccountGroupFacts::new(car_group.clone(), "car".to_owned(), true)
+                .with_car(true),
+            SnapshotAccountGroupFacts::new(ordinary_group.clone(), "ordinary".to_owned(), true),
+        ],
+        vec![
+            SnapshotProviderAccountFacts::new(car_account.clone(), "alpha"),
+            SnapshotProviderAccountFacts::new(ordinary_account.clone(), "alpha"),
+        ],
+        vec![
+            SnapshotAccountGroupMemberFacts::new(car_group, car_account.clone()),
+            SnapshotAccountGroupMemberFacts::new(ordinary_group, ordinary_account.clone()),
+        ],
+    );
+    let snapshot = block_on(
+        RuntimeSnapshotCompiler::new(
+            Arc::new(TestSnapshotStore::new(Ok(facts))),
+            Arc::new(TestCatalog::Unavailable),
+        )
+        .compile(),
+    )
+    .unwrap();
+    for policy in snapshot.client_policies() {
+        let seat_key = policy.key_id().as_str() == "key_seat_car";
+        assert_eq!(policy.account_scope().allows(&car_account), seat_key);
+        assert_eq!(
+            policy.account_scope().allows(&ordinary_account),
+            matches!(
+                policy.key_id().as_str(),
+                "key_ordinary_all" | "key_ordinary_bound"
+            )
+        );
+    }
+    assert!(snapshot.all_account_scope().allows(&car_account));
+    assert!(snapshot.all_account_scope().allows(&ordinary_account));
+}
+
+#[test]
 fn key_profiles_replace_whole_global_choice_and_previous_snapshot_stays_frozen() {
     use gateway_core::account::OpaqueProviderData;
     let provider = ProviderKind::new("alpha").unwrap();

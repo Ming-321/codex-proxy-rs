@@ -52,6 +52,7 @@ pub struct RuntimeSnapshotData {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SnapshotAccountGroupData {
+    pub is_car: bool,
     pub disable_fast: bool,
     pub id: AccountGroupId,
     pub name: String,
@@ -184,6 +185,7 @@ impl SnapshotStorePort for PgRuntimeSnapshotRepository {
                         key.limits,
                     )
                     .with_request_profiles(key.request_profiles)
+                    .with_seat(key.seat_id)
                 })
                 .collect();
             let account_groups = data
@@ -191,6 +193,7 @@ impl SnapshotStorePort for PgRuntimeSnapshotRepository {
                 .into_iter()
                 .map(|group| {
                     SnapshotAccountGroupFacts::new(group.id, group.name, group.enabled)
+                        .with_car(group.is_car)
                         .with_disable_fast(group.disable_fast)
                 })
                 .collect();
@@ -325,16 +328,19 @@ async fn load_client_keys(
             i64,
             i64,
             sqlx::types::Json<BTreeMap<String, serde_json::Map<String, serde_json::Value>>>,
+            Option<String>,
         ),
     >(
         "select k.id, k.key,
-                coalesce(array_agg(kg.account_group_id order by kg.account_group_id)
-                  filter (where kg.account_group_id is not null), '{}') as group_ids,
-                k.max_concurrency, k.requests_per_minute, k.provider_request_profiles_json
+                case when k.seat_id is not null then array[s.account_group_id] else
+                  coalesce(array_agg(kg.account_group_id order by kg.account_group_id)
+                  filter (where kg.account_group_id is not null), '{}') end as group_ids,
+                coalesce(s.max_concurrency, k.max_concurrency), k.requests_per_minute, k.provider_request_profiles_json, k.seat_id
          from client_api_keys k
+         left join seats s on s.id = k.seat_id
          left join client_api_key_groups kg on kg.client_api_key_id = k.id
-         where k.enabled
-         group by k.id
+         where k.enabled and (s.id is null or s.enabled)
+         group by k.id, s.id
          order by k.id",
     )
     .fetch_all(&mut **transaction)
@@ -344,6 +350,11 @@ async fn load_client_keys(
         .map(|row| {
             let mut key = ClientApiKeySnapshot::from_persisted(row.0, row.1, row.2, row.3, row.4)?;
             key.request_profiles = decode_request_profiles(row.5.0)?;
+            key.seat_id = row
+                .6
+                .map(gateway_core::policy::SeatId::new)
+                .transpose()
+                .map_err(|_| invalid("invalid seat ID"))?;
             Ok(key)
         })
         .collect()
@@ -352,15 +363,16 @@ async fn load_client_keys(
 async fn load_account_groups(
     transaction: &mut Transaction<'_, Postgres>,
 ) -> StoreResult<Vec<SnapshotAccountGroupData>> {
-    let rows = sqlx::query_as::<_, (String, String, bool, bool)>(
-        "select id, name, enabled, disable_fast from account_groups order by id",
+    let rows = sqlx::query_as::<_, (String, String, bool, bool, bool)>(
+        "select id, name, enabled, disable_fast, is_car from account_groups order by id",
     )
     .fetch_all(&mut **transaction)
     .await
     .map_err(|_| postgres_unavailable("load snapshot account groups"))?;
     rows.into_iter()
-        .map(|(id, name, enabled, disable_fast)| {
+        .map(|(id, name, enabled, disable_fast, is_car)| {
             Ok(SnapshotAccountGroupData {
+                is_car,
                 disable_fast,
                 id: AccountGroupId::new(id).map_err(|_| invalid("invalid account group id"))?,
                 name,

@@ -25,6 +25,7 @@ function amount(value: string) {
         :aria-expanded="open"
         aria-haspopup="dialog"
       >
+        <span v-if="apiKey.seatName" class="text-cp-xs text-cp-link">{{ apiKey.seatName }} · 共享</span>
         <span v-for="window in windows" :key="window.label" class="flex min-w-0 items-center gap-1.5">
           <span class="shrink-0 text-cp-text-tertiary">{{ window.label }}</span>
           <span class="truncate" :class="Number(window.limit) > 0 && Number(window.used) >= Number(window.limit) ? 'text-cp-error' : 'text-cp-text'">

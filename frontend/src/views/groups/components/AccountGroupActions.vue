@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import type { AccountGroup } from '@/api'
-import { Pencil, Power, Trash2 } from '@lucide/vue'
+import { Pencil, Power, Trash2, Users } from '@lucide/vue'
 
 import BaseIconButton from '@/components/base/BaseIconButton.vue'
 
@@ -10,6 +10,7 @@ defineProps<{
   deleting: boolean
 }>()
 const emit = defineEmits<{
+  seats: [group: AccountGroup]
   edit: [group: AccountGroup]
   toggle: [group: AccountGroup]
   delete: [group: AccountGroup]
@@ -18,6 +19,9 @@ const emit = defineEmits<{
 
 <template>
   <div class="flex items-center gap-1">
+    <BaseIconButton variant="ghost" size="sm" :label="group.isCar ? '管理 seat' : '转为 car'" @click.stop="emit('seats', group)">
+      <Users class="size-3.5 text-cp-link" />
+    </BaseIconButton>
     <BaseIconButton
       variant="ghost"
       size="sm"

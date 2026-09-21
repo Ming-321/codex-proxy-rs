@@ -164,6 +164,7 @@ where
         );
         let image_generation_requested = operation.image_generation_requested();
         let mut session = ResponseExecutionSession {
+            seat_id: request.seat_id.clone(),
             engine: Arc::clone(&self.engine),
             request_id,
             client_api_key_ref,
@@ -270,6 +271,7 @@ struct PendingAttemptRetry {
 /// API 只能提交下游 delivery 边界；账号重试、断流终结与
 /// `model_requests` 写回均留在本类型内。
 pub struct ResponseExecutionSession<S: ?Sized> {
+    seat_id: Option<crate::policy::SeatId>,
     engine: Arc<GatewayEngine<S>>,
     request_id: ModelRequestId,
     client_api_key_ref: crate::policy::ClientApiKeyId,
@@ -524,6 +526,7 @@ where
             .checked_add(self.budget_attempt_usd())
             .unwrap_or(Decimal::MAX);
         super::budget::ClientBudgetCharge {
+            seat_id: self.seat_id.clone(),
             key_id: self.client_api_key_ref.clone(),
             request_id: self.request_id.clone(),
             amount_usd,

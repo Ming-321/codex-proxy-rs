@@ -25,6 +25,7 @@ export interface AccountGroupUsage {
 }
 
 export interface AccountGroup extends AccountGroupRef {
+  isCar: boolean
   disableFast: boolean
   description: string | null
   memberCount: number
@@ -35,6 +36,37 @@ export interface AccountGroup extends AccountGroupRef {
   usage: AccountGroupUsage
   createdAt: string
   updatedAt: string
+}
+
+export interface Seat {
+  id: string
+  groupId: string
+  name: string
+  enabled: boolean
+  maxConcurrency: number
+  keyCount: number
+  dailyLimitUsd: string
+  weeklyLimitUsd: string
+  dailyUsedUsd: string
+  weeklyUsedUsd: string
+  dailyResetsAt: string | null
+  weeklyResetsAt: string | null
+}
+
+export function getSeats(groupId: string) {
+  return request<Seat[]>({ url: '/api/admin/seats', method: 'GET', params: { groupId } })
+}
+
+export function convertToCar(id: string) {
+  return request({ url: '/api/admin/account-groups/convert-car', method: 'POST', data: { id } })
+}
+
+export function saveSeat(data: Pick<Seat, 'groupId' | 'name' | 'enabled' | 'maxConcurrency' | 'dailyLimitUsd' | 'weeklyLimitUsd'> & { id?: string }) {
+  return request({ url: '/api/admin/seats/save', method: 'POST', data })
+}
+
+export function joinSeat(seatId: string, keyIds: string[]) {
+  return request({ url: '/api/admin/seats/join', method: 'POST', data: { seatId, keyIds } })
 }
 
 export interface AccountGroupPageMeta {

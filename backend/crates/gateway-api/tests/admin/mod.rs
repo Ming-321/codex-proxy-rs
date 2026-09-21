@@ -612,6 +612,7 @@ impl MemoryAccountGroupStore {
             (
                 primary_id.clone(),
                 AccountGroupRecord {
+                    is_car: false,
                     disable_fast: false,
                     id: primary_id,
                     name: "Alpha routing".to_owned(),
@@ -634,6 +635,7 @@ impl MemoryAccountGroupStore {
             (
                 secondary_id.clone(),
                 AccountGroupRecord {
+                    is_car: false,
                     disable_fast: false,
                     id: secondary_id,
                     name: "Beta routing".to_owned(),
@@ -662,6 +664,37 @@ impl MemoryAccountGroupStore {
 
 #[async_trait]
 impl AccountGroupStore for MemoryAccountGroupStore {
+    async fn convert_to_car(
+        &self,
+        _: gateway_core::routing::AccountGroupId,
+        _: &MutationContext,
+    ) -> AdminStoreResult<Revision> {
+        unreachable!("seat endpoint has separate store tests")
+    }
+
+    async fn list_seats(
+        &self,
+        _: gateway_core::routing::AccountGroupId,
+    ) -> AdminStoreResult<Vec<gateway_admin::model::account_groups::SeatRecord>> {
+        unreachable!("seat endpoint has separate store tests")
+    }
+
+    async fn save_seat(
+        &self,
+        _: gateway_admin::model::account_groups::SaveSeat,
+        _: &MutationContext,
+    ) -> AdminStoreResult<Revision> {
+        unreachable!("seat endpoint has separate store tests")
+    }
+
+    async fn join_seat(
+        &self,
+        _: gateway_admin::model::account_groups::JoinSeat,
+        _: &MutationContext,
+    ) -> AdminStoreResult<Revision> {
+        unreachable!("seat endpoint has separate store tests")
+    }
+
     async fn list_account_groups(
         &self,
         query: AccountGroupListQuery,
@@ -750,6 +783,7 @@ impl AccountGroupStore for MemoryAccountGroupStore {
         let mut state = self.state.lock().expect("account groups");
         let now = Utc::now();
         let record = AccountGroupRecord {
+            is_car: false,
             disable_fast: command.disable_fast,
             id: command.id.clone(),
             name: command.name,

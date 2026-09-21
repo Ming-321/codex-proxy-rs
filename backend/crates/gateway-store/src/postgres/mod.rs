@@ -26,6 +26,7 @@ mod provider_accounts;
 mod proxies;
 mod retention;
 mod runtime_settings;
+mod seats;
 mod snapshot;
 mod usage_facts;
 

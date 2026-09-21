@@ -40,7 +40,7 @@ impl RecordingCoordination {
 impl ClientAdmissionPort for RecordingCoordination {
     fn abandon(
         &self,
-        key: &gateway_core::policy::ClientApiKeyId,
+        key: &gateway_core::policy::ClientConcurrencyId,
         request: &gateway_core::engine::ModelRequestId,
     ) {
         let _ = futures::FutureExt::now_or_never(self.release(key, request));
@@ -55,7 +55,7 @@ impl ClientAdmissionPort for RecordingCoordination {
 
     fn release<'a>(
         &'a self,
-        _: &'a ClientApiKeyId,
+        _: &'a gateway_core::policy::ClientConcurrencyId,
         _: &'a ModelRequestId,
     ) -> BoxFuture<'a, Result<bool, ClientAdmissionError>> {
         Box::pin(async move {
@@ -118,11 +118,17 @@ async fn full_recoverable_coordination_queues_should_drop_writes_without_waiting
 
     tokio::time::timeout(Duration::from_millis(50), async {
         admissions
-            .release(&client, &request)
+            .release(
+                &gateway_core::policy::ClientConcurrencyId::Key(client.clone()),
+                &request,
+            )
             .await
             .expect("first admission enqueue");
         admissions
-            .release(&client, &request)
+            .release(
+                &gateway_core::policy::ClientConcurrencyId::Key(client.clone()),
+                &request,
+            )
             .await
             .expect("full admission queue remains fail-open");
         circuits
@@ -155,7 +161,10 @@ async fn redis_coordination_writers_should_flush_each_side_effect() {
     let request = ModelRequestId::new("req_writer_test").expect("request ID");
     let provider = ProviderKind::new("openai").expect("provider");
     admissions
-        .release(&client, &request)
+        .release(
+            &gateway_core::policy::ClientConcurrencyId::Key(client.clone()),
+            &request,
+        )
         .await
         .expect("enqueue admission release");
     circuits

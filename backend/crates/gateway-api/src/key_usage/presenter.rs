@@ -61,6 +61,7 @@ pub(super) struct OverviewView {
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
 struct KeyView {
+    seat_name: Option<String>,
     name: String,
     prefix: String,
     max_concurrency: u64,
@@ -121,9 +122,14 @@ pub(super) fn overview(value: KeyUsageOverview) -> OverviewView {
         start_time: value.overview.range.start,
         end_time: value.overview.range.end,
         key: KeyView {
+            seat_name: key.budget.seat.as_ref().map(|s| s.name.clone()),
             name: key.name,
             prefix: key.prefix,
-            max_concurrency: key.limits.max_concurrency,
+            max_concurrency: key
+                .budget
+                .seat
+                .as_ref()
+                .map_or(key.limits.max_concurrency, |s| s.max_concurrency),
             requests_per_minute: key.limits.requests_per_minute,
             daily_limit_usd: key.budget.limits.daily_usd.canonical(),
             daily_used_usd: key.budget.daily_used_usd.canonical(),

@@ -26,6 +26,7 @@ export interface KeyUsageMetrics {
 }
 
 export interface KeyUsageBudget {
+  seatName: string | null
   name: string
   prefix: string
   maxConcurrency: number
