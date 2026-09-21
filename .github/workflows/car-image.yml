@@ -42,8 +42,15 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          version="$(ruby -ryaml -e 'print YAML.load_file("release/version.yaml").fetch("version")')"
+          base_version="$(ruby -ryaml -e 'print YAML.load_file("release/version.yaml").fetch("version").delete_prefix("v")')"
           short_sha="${GITHUB_SHA:0:12}"
+          # Build metadata identifies the fork without changing SemVer precedence
+          # or turning a stable upstream version into an unknown prerelease channel.
+          if [[ "$base_version" == *+* ]]; then
+            version="${base_version}.car.${short_sha}"
+          else
+            version="${base_version}+car.${short_sha}"
+          fi
           {
             echo "version=$version"
             echo "build_time=$(date -u +%Y-%m-%dT%H:%M:%SZ)"
@@ -67,6 +74,7 @@ jobs:
           labels: |
             org.opencontainers.image.source=https://github.com/Ming-321/codex-proxy-rs
             org.opencontainers.image.revision=${{ github.sha }}
+            org.opencontainers.image.version=${{ steps.metadata.outputs.version }}
           cache-from: type=gha,scope=car-image
           cache-to: type=gha,mode=max,scope=car-image
 
