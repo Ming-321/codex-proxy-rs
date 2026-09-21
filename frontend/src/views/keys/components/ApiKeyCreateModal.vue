@@ -59,7 +59,7 @@ const profileProviderOptions = [
   <BaseModal
     v-model="open"
     :title="title"
-    description="配置密钥信息、分组与使用限制"
+    description="配置密钥信息、归属与使用限制"
     tone="info"
     size="lg"
     :dismissible="!saving"

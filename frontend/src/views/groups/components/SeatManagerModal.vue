@@ -128,9 +128,14 @@ function remaining(used: string, limit: string) {
       </BaseButton>
     </div>
     <div v-else class="grid gap-5">
-      <p class="text-cp-sm text-cp-text-secondary">
-        同一 seat 下的 Key 共用一份预算与并发上限，客户端身份和 RPM 各自保留
-      </p>
+      <div class="flex flex-wrap items-center justify-between gap-3">
+        <p class="text-cp-sm text-cp-text-secondary">
+          同一 seat 下的 Key 共用一份预算与并发上限，客户端身份和 RPM 各自保留
+        </p>
+        <BaseButton v-if="!editing && !joining" variant="primary" size="sm" :disabled="busy" @click="edit()">
+          创建 seat
+        </BaseButton>
+      </div>
       <div v-for="seat in seats" :key="seat.id" class="grid gap-3 rounded-xl border border-cp-border p-4">
         <div class="flex flex-wrap items-center justify-between gap-2">
           <strong class="text-cp-text">{{ seat.name }} <span class="text-cp-xs font-normal text-cp-text-secondary">{{ seat.enabled ? '已启用' : '已禁用' }} · 并发 {{ seat.maxConcurrency }} · {{ seat.keyCount }} 个 Key</span></strong>
@@ -165,9 +170,6 @@ function remaining(used: string, limit: string) {
       <p v-if="!seats.length && !busy" class="text-cp-sm text-cp-text-secondary">
         尚无 seat，请先创建
       </p>
-      <BaseButton v-if="!editing && !joining" variant="secondary" :disabled="busy" @click="edit()">
-        创建 seat
-      </BaseButton>
       <div v-if="editing" class="grid gap-4 rounded-xl bg-cp-fill-tertiary p-4">
         <strong>{{ form.id ? '编辑 seat' : '创建 seat' }}</strong>
         <BaseFormItem label="seat 名称">

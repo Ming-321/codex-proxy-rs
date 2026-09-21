@@ -66,7 +66,7 @@ const { allSelected, indeterminate, selectedRowKeys, toggleSelection, toggleAll 
     <BasePageHeader
       class="h-17"
       title="分组管理"
-      description="将账号归类管理，并为每个 API 密钥指定可使用的账号"
+      description="将账号归类管理；car 可在这里创建和管理 seat"
     />
 
     <BaseCard
@@ -114,7 +114,15 @@ const { allSelected, indeterminate, selectedRowKeys, toggleSelection, toggleAll 
                   <strong class="truncate text-cp text-cp-text">
                     {{ row.name }}
                   </strong>
-                  <span v-if="row.isCar" class="text-cp-xs text-cp-link">car</span>
+                  <button
+                    v-if="row.isCar"
+                    type="button"
+                    class="text-cp-xs text-cp-link hover:underline"
+                    aria-label="管理 seat"
+                    @click.stop="manageSeats(row)"
+                  >
+                    car · seat 管理
+                  </button>
                   <span
                     v-if="row.disableFast"
                     class="inline-flex h-6 shrink-0 items-center rounded-lg bg-cp-fill-tertiary px-2 text-cp-xs font-bold text-cp-text-secondary"
