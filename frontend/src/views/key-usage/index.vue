@@ -65,7 +65,7 @@ async function openAbout() {
           <KeyUsageSummary :summary="overview.summary" />
           <div class="grid min-w-0 gap-5 xl:grid-cols-[minmax(0,1.4fr)_minmax(400px,1fr)]">
             <KeyUsageTrend class="min-w-0" :points="overview.trend" />
-            <KeyUsageBudget :budget="overview.key" />
+            <KeyUsageBudget :budget="overview.key" :seat-keys="overview.seatKeys" />
           </div>
           <RequestHealthTimelineCard :timeline="overview.healthTimeline" />
         </template>

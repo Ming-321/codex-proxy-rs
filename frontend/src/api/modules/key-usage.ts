@@ -39,6 +39,14 @@ export interface KeyUsageBudget {
   weeklyResetsAt: string | null
 }
 
+export interface SeatKeyUsage {
+  name: string
+  prefix: string
+  current: boolean
+  dailyUsedUsd: string
+  cycleUsedUsd: string
+}
+
 export interface KeyUsageTrendPoint extends KeyUsageMetrics {
   time: string
   bucketSeconds: number
@@ -49,6 +57,7 @@ export interface KeyUsageOverview {
   startTime: string
   endTime: string
   key: KeyUsageBudget
+  seatKeys: SeatKeyUsage[]
   summary: KeyUsageMetrics
   trend: KeyUsageTrendPoint[]
   healthTimeline: DashboardHealthTimeline

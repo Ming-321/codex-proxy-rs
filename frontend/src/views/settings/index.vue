@@ -11,6 +11,7 @@ import BaseSelect from '@/components/base/BaseSelect.vue'
 
 import AccountAutoFreezeCard from './components/AccountAutoFreezeCard.vue'
 import SettingsBackupSection from './components/backup/SettingsBackupSection.vue'
+import CarQuotaSettingsCard from './components/CarQuotaSettingsCard.vue'
 import ClientProfileCard from './components/ClientProfileCard.vue'
 import ModelAliasesCard from './components/ModelAliasesCard.vue'
 import RequestLocationCard from './components/RequestLocationCard.vue'
@@ -165,6 +166,7 @@ watch(section, (value) => {
             v-model:probe-model="form.accountAutoFreezeProbeModel"
             v-model:adaptive-concurrency="form.accountAutoFreezeAdaptiveConcurrency"
           />
+          <CarQuotaSettingsCard />
         </template>
 
         <div v-if="visited.has('upstream')" v-show="section === 'upstream'" class="grid min-w-0 gap-5">

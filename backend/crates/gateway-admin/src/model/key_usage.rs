@@ -7,6 +7,7 @@ use super::{
         HealthTimeline, OpsErrorPage, RequestMetricPoint, TimeRange, UsageOverview, UsagePage,
     },
 };
+use gateway_core::{metering::Decimal, policy::ClientApiKeyId};
 
 #[derive(Debug, Clone)]
 pub struct KeyUsageQuery {
@@ -30,9 +31,19 @@ pub struct KeyUsageRecordsQuery {
 
 pub struct KeyUsageOverview {
     pub key: ClientKeyRecord,
+    pub seat_keys: Vec<SeatKeyUsage>,
     pub overview: UsageOverview,
     pub trend: Vec<RequestMetricPoint>,
     pub health_timeline: HealthTimeline,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SeatKeyUsage {
+    pub id: ClientApiKeyId,
+    pub name: String,
+    pub prefix: String,
+    pub daily_used_usd: Decimal,
+    pub cycle_used_usd: Decimal,
 }
 
 pub enum KeyUsageRecords {
