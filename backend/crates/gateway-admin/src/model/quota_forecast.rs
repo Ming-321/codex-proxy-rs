@@ -26,6 +26,10 @@ pub struct AccountQuotaForecast {
     pub low_sample: bool,
     pub incomplete_cost: bool,
     pub incomplete_tokens: bool,
+    pub sample_start_at: Option<DateTime<Utc>>,
+    pub sample_end_at: Option<DateTime<Utc>>,
+    pub sampled_percent: Option<f64>,
+    pub pending_request_count: u64,
     pub estimated_tokens: Option<u64>,
     pub estimated_usd: Option<f64>,
     /// 剩余估算始终属于源窗口，不随目标周期折算。
@@ -69,6 +73,10 @@ pub fn account_quota_forecasts(
             low_sample: false,
             incomplete_cost: false,
             incomplete_tokens: false,
+            sample_start_at: None,
+            sample_end_at: None,
+            sampled_percent: None,
+            pending_request_count: 0,
             estimated_tokens: None,
             estimated_usd: None,
             remaining_tokens: None,
@@ -132,6 +140,12 @@ impl AccountQuotaForecast {
         });
         self.incomplete_tokens = usage.is_some_and(|usage| usage.missing_token_count > 0);
         let method = sample.map_or(QuotaForecastMethod::Cumulative, |sample| sample.method);
+        if let Some(sample) = sample {
+            self.sample_start_at = Some(sample.start_at);
+            self.sample_end_at = Some(sample.end_at);
+            self.sampled_percent = Some(sample.sampled_percent);
+            self.pending_request_count = sample.pending_request_count;
+        }
         let Some(start) = start.filter(|start| *start <= now && now < reset_at) else {
             self.unavailable_reason = Some("额度窗口已过期或边界无效，请刷新账号额度后重试。");
             return;

@@ -3,7 +3,7 @@ use std::time::{Duration, SystemTime};
 use gateway_admin::{
     model::{
         MutationActor, MutationContext,
-        account_groups::{JoinSeat, SaveSeat},
+        account_groups::{CarQuotaMode, CarQuotaObservation, JoinSeat, SaveCarWeights, SaveSeat},
         client_keys::DeleteClientKey,
     },
     ports::store::{AccountGroupStore, ClientKeyStore},
@@ -32,6 +32,29 @@ fn context() -> MutationContext {
         request_id: "seat-test".to_owned(),
     }
 }
+
+fn observation(
+    cycle_start: chrono::DateTime<chrono::Utc>,
+    cycle_end: chrono::DateTime<chrono::Utc>,
+    observed_at: chrono::DateTime<chrono::Utc>,
+    used_percent_millis: u32,
+) -> CarQuotaObservation {
+    CarQuotaObservation {
+        group_id: group(),
+        window_key: "primary".to_owned(),
+        cycle_start,
+        cycle_end,
+        observed_at,
+        used_percent_millis,
+        predicted_capacity_usd: None,
+        prediction_reason: None,
+        sample_start: None,
+        sample_end: None,
+        sample_percent_millis: None,
+        cost_complete: true,
+        pending_request_count: 0,
+    }
+}
 fn key(value: &str) -> ClientApiKeyId {
     ClientApiKeyId::new(value).unwrap()
 }
@@ -48,6 +71,7 @@ fn command(id: &str, capacity: u64) -> SaveSeat {
         name: id.to_owned(),
         enabled: true,
         max_concurrency: capacity,
+        weight: "1".parse().unwrap(),
         limits: ClientBudgetLimits {
             daily_usd: "130".parse().unwrap(),
             weekly_usd: "260".parse().unwrap(),
@@ -136,7 +160,14 @@ async fn shared_budget_carries_usage_once_and_preserves_client_settings_and_revo
     for id in ["key_a", "key_b"] {
         assert!(budgets.admit(key(id), Some(seat())).await.is_err());
     }
-    PgAdminClientKeyStore::new(db.pool.clone())
+    let admin_keys = PgAdminClientKeyStore::new(db.pool.clone());
+    let usage = admin_keys.seat_key_usage(&key("key_a")).await.unwrap();
+    assert_eq!(usage.len(), 2);
+    assert_eq!(usage[0].id.as_str(), "key_a");
+    assert_eq!(usage[0].daily_used_usd.canonical(), "96.3");
+    assert_eq!(usage[1].id.as_str(), "key_b");
+    assert_eq!(usage[1].cycle_used_usd.canonical(), "41.2");
+    admin_keys
         .delete_client_key(DeleteClientKey { id: key("key_a") }, &context())
         .await
         .unwrap();
@@ -220,6 +251,16 @@ async fn car_integrity_rejects_excess_capacity_and_account_reassignment() {
         return;
     };
     let groups = PgAccountGroupRepository::new(db.pool.clone());
+    groups
+        .save_car_weights(
+            SaveCarWeights {
+                group_id: group(),
+                total_weight: "3".parse().unwrap(),
+            },
+            &context(),
+        )
+        .await
+        .unwrap();
     assert!(
         groups
             .save_seat(command(SEAT, 4), &context())
@@ -255,5 +296,158 @@ async fn car_integrity_rejects_excess_capacity_and_account_reassignment() {
     );
     sqlx::query("insert into account_groups (id, name, color, created_at, updated_at) values ('grp_00000000000000000000000000000002', 'ordinary', '#2563EBFF', now(), now())").execute(&db.pool).await.unwrap();
     assert!(sqlx::query("insert into account_group_accounts (account_group_id, provider_account_id, created_at) values ('grp_00000000000000000000000000000002', 'acct_car', now())").execute(&db.pool).await.is_err());
+    db.close().await;
+}
+
+#[tokio::test]
+async fn account_cycle_activates_weighted_limits_and_requires_two_early_reset_observations() {
+    let Some(db) = setup("car_account_cycle").await else {
+        return;
+    };
+    let groups = PgAccountGroupRepository::new(db.pool.clone());
+    let budgets = PgClientBudgetStore::new(db.pool.clone());
+    budgets.admit(key("key_a"), None).await.unwrap();
+    budgets
+        .settle(charge("key_a", "req_cycle_history", "7", false))
+        .await
+        .unwrap();
+    groups
+        .save_car_weights(
+            SaveCarWeights {
+                group_id: group(),
+                total_weight: "5".parse().unwrap(),
+            },
+            &context(),
+        )
+        .await
+        .unwrap();
+    let mut zym = command(SEAT, 2);
+    zym.weight = "2".parse().unwrap();
+    groups.save_seat(zym, &context()).await.unwrap();
+    let mut wrh = command("seat_00000000000000000000000000000002", 1);
+    wrh.weight = "3".parse().unwrap();
+    wrh.limits.daily_usd = "200".parse().unwrap();
+    groups.save_seat(wrh, &context()).await.unwrap();
+
+    let observed = chrono::DateTime::from_timestamp_micros(chrono::Utc::now().timestamp_micros())
+        .expect("current time is representable");
+    let start = observed - chrono::Duration::days(1);
+    let end = observed + chrono::Duration::days(6);
+    let first = observation(start, end, observed, 60_000);
+    let state = groups.reconcile_car_quota(first.clone()).await.unwrap();
+    assert_eq!(state.mode, CarQuotaMode::Active);
+    assert_eq!(state.published_capacity_usd.canonical(), "650");
+    assert_eq!(state.account_used_percent_millis, Some(60_000));
+    let seats = groups.list_seats(group()).await.unwrap();
+    assert_eq!(seats[0].budget.limits.weekly_usd.canonical(), "260");
+    assert_eq!(seats[1].budget.limits.weekly_usd.canonical(), "390");
+    groups
+        .join_seat(join(&["key_a"]), &context())
+        .await
+        .unwrap();
+    let migrated = groups.list_seats(group()).await.unwrap().remove(0);
+    assert_eq!(migrated.budget.weekly_used_usd.canonical(), "7");
+    assert_eq!(
+        migrated
+            .budget
+            .weekly_resets_at
+            .map(chrono::DateTime::<chrono::Utc>::from)
+            .map(|value| value.timestamp_micros()),
+        Some(end.timestamp_micros())
+    );
+
+    let stale = groups.reconcile_car_quota(first).await.unwrap();
+    assert_eq!(stale.cycle_end, Some(end));
+
+    let next_start = observed + chrono::Duration::hours(1);
+    let next_end = next_start + chrono::Duration::days(7);
+    let candidate = observation(
+        next_start,
+        next_end,
+        next_start + chrono::Duration::hours(1),
+        5_000,
+    );
+    let waiting = groups.reconcile_car_quota(candidate).await.unwrap();
+    assert_eq!(waiting.cycle_end, Some(end));
+    assert_eq!(
+        waiting.prediction_reason.as_deref(),
+        Some("提前重置等待再次确认")
+    );
+
+    let confirmed = groups
+        .reconcile_car_quota(observation(
+            next_start,
+            next_end,
+            next_start + chrono::Duration::hours(2),
+            2_000,
+        ))
+        .await
+        .unwrap();
+    assert_eq!(confirmed.cycle_start, Some(next_start));
+    assert_eq!(confirmed.cycle_end, Some(next_end));
+    db.close().await;
+}
+
+#[tokio::test]
+async fn capacity_publication_blends_clamps_and_confirms_abnormal_samples() {
+    let Some(db) = setup("car_capacity_publication").await else {
+        return;
+    };
+    let groups = PgAccountGroupRepository::new(db.pool.clone());
+    groups
+        .save_car_weights(
+            SaveCarWeights {
+                group_id: group(),
+                total_weight: "5".parse().unwrap(),
+            },
+            &context(),
+        )
+        .await
+        .unwrap();
+    let start = "2026-09-01T00:00:00Z".parse().unwrap();
+    let end = "2026-09-08T00:00:00Z".parse().unwrap();
+    let mut insufficient = observation(start, end, "2026-09-02T00:00:00Z".parse().unwrap(), 10_000);
+    insufficient.predicted_capacity_usd = Some("700".parse().unwrap());
+    insufficient.sample_start = Some(start);
+    insufficient.sample_end = Some("2026-09-02T00:00:00Z".parse().unwrap());
+    insufficient.sample_percent_millis = Some(5_000);
+    let held = groups.reconcile_car_quota(insufficient).await.unwrap();
+    assert_eq!(held.published_capacity_usd.canonical(), "650");
+
+    let mut ordinary = observation(start, end, "2026-09-03T00:00:00Z".parse().unwrap(), 20_000);
+    ordinary.predicted_capacity_usd = Some("700".parse().unwrap());
+    ordinary.sample_start = Some("2026-09-02T00:00:00Z".parse().unwrap());
+    ordinary.sample_end = Some("2026-09-03T00:00:00Z".parse().unwrap());
+    ordinary.sample_percent_millis = Some(20_000);
+    let published = groups.reconcile_car_quota(ordinary).await.unwrap();
+    assert_eq!(published.published_capacity_usd.canonical(), "665");
+
+    let mut too_soon = observation(start, end, "2026-09-03T01:00:00Z".parse().unwrap(), 22_000);
+    too_soon.predicted_capacity_usd = Some("720".parse().unwrap());
+    too_soon.sample_start = Some("2026-09-03T00:00:00Z".parse().unwrap());
+    too_soon.sample_end = Some("2026-09-03T01:00:00Z".parse().unwrap());
+    too_soon.sample_percent_millis = Some(12_000);
+    let held = groups.reconcile_car_quota(too_soon).await.unwrap();
+    assert_eq!(held.published_capacity_usd.canonical(), "665");
+
+    let mut abnormal = observation(start, end, "2026-09-04T00:00:00Z".parse().unwrap(), 35_000);
+    abnormal.predicted_capacity_usd = Some("1000".parse().unwrap());
+    abnormal.sample_start = Some("2026-09-03T00:00:00Z".parse().unwrap());
+    abnormal.sample_end = Some("2026-09-04T00:00:00Z".parse().unwrap());
+    abnormal.sample_percent_millis = Some(15_000);
+    let held = groups.reconcile_car_quota(abnormal).await.unwrap();
+    assert_eq!(held.published_capacity_usd.canonical(), "665");
+    assert_eq!(
+        held.prediction_reason.as_deref(),
+        Some("异常变化等待独立样本确认")
+    );
+
+    let mut confirmed = observation(start, end, "2026-09-05T00:00:00Z".parse().unwrap(), 50_000);
+    confirmed.predicted_capacity_usd = Some("950".parse().unwrap());
+    confirmed.sample_start = Some("2026-09-04T00:00:00Z".parse().unwrap());
+    confirmed.sample_end = Some("2026-09-05T00:00:00Z".parse().unwrap());
+    confirmed.sample_percent_millis = Some(15_000);
+    let published = groups.reconcile_car_quota(confirmed).await.unwrap();
+    assert_eq!(published.published_capacity_usd.canonical(), "731.5");
     db.close().await;
 }

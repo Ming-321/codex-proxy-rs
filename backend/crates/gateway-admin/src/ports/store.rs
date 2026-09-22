@@ -270,6 +270,13 @@ pub trait AuthStore: Send + Sync {
 /// Client API Key 资料读取与管理写入。
 #[async_trait]
 pub trait ClientKeyStore: Send + Sync {
+    async fn seat_key_usage(
+        &self,
+        id: &gateway_core::policy::ClientApiKeyId,
+    ) -> AdminStoreResult<Vec<crate::model::key_usage::SeatKeyUsage>> {
+        let _ = id;
+        Ok(Vec::new())
+    }
     /// 按已验证的 ID 读取资料，不读取完整明文 Key。
     async fn get_client_key(
         &self,
@@ -318,6 +325,66 @@ pub trait ClientKeyStore: Send + Sync {
 /// Provider-neutral account group management transactions.
 #[async_trait]
 pub trait AccountGroupStore: Send + Sync {
+    async fn load_car_quota_settings(
+        &self,
+    ) -> AdminStoreResult<crate::model::account_groups::CarQuotaSettings> {
+        Err(AdminStoreError::new(
+            AdminStoreErrorKind::Invalid,
+            "car",
+            "car 额度设置不可用",
+        ))
+    }
+    async fn replace_car_quota_settings(
+        &self,
+        command: crate::model::account_groups::ReplaceCarQuotaSettings,
+        context: &MutationContext,
+    ) -> AdminStoreResult<crate::model::account_groups::CarQuotaSettings> {
+        let _ = (command, context);
+        Err(AdminStoreError::new(
+            AdminStoreErrorKind::Invalid,
+            "car",
+            "car 额度设置不可用",
+        ))
+    }
+    async fn list_car_accounts(
+        &self,
+    ) -> AdminStoreResult<Vec<crate::model::account_groups::CarAccount>> {
+        Ok(Vec::new())
+    }
+    async fn load_car_quota_state(
+        &self,
+        group_id: gateway_core::routing::AccountGroupId,
+    ) -> AdminStoreResult<crate::model::account_groups::CarQuotaState> {
+        let _ = group_id;
+        Err(AdminStoreError::new(
+            AdminStoreErrorKind::Invalid,
+            "car",
+            "car 周期状态不可用",
+        ))
+    }
+    async fn reconcile_car_quota(
+        &self,
+        observation: crate::model::account_groups::CarQuotaObservation,
+    ) -> AdminStoreResult<crate::model::account_groups::CarQuotaState> {
+        let _ = observation;
+        Err(AdminStoreError::new(
+            AdminStoreErrorKind::Invalid,
+            "car",
+            "car 周期状态不可用",
+        ))
+    }
+    async fn save_car_weights(
+        &self,
+        command: crate::model::account_groups::SaveCarWeights,
+        context: &MutationContext,
+    ) -> AdminStoreResult<crate::model::Revision> {
+        let _ = (command, context);
+        Err(AdminStoreError::new(
+            AdminStoreErrorKind::Invalid,
+            "car",
+            "car 权重不可用",
+        ))
+    }
     async fn convert_to_car(
         &self,
         id: gateway_core::routing::AccountGroupId,

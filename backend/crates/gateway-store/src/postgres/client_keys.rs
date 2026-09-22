@@ -23,6 +23,7 @@ use gateway_admin::{
             DeleteClientKey, NewClientKey, ResetClientKeyBudget, SetClientKeyEnabled,
             SortDirection as AdminSortDirection, UpdateClientKey as AdminUpdateClientKey,
         },
+        key_usage::SeatKeyUsage,
     },
     ports::store::{AdminStoreResult, ClientKeyStore},
 };
@@ -36,7 +37,7 @@ use gateway_core::{
     task::{DaemonTask, WorkerTaskError},
 };
 use serde::Deserialize;
-use sqlx::{PgPool, Postgres, QueryBuilder, Transaction};
+use sqlx::{PgPool, Postgres, QueryBuilder, Row as _, Transaction};
 use tokio::sync::Notify;
 
 use crate::{
@@ -706,6 +707,59 @@ impl PgAdminClientKeyStore {
 
 #[async_trait]
 impl ClientKeyStore for PgAdminClientKeyStore {
+    async fn seat_key_usage(&self, id: &ClientApiKeyId) -> AdminStoreResult<Vec<SeatKeyUsage>> {
+        let rows = sqlx::query("select member.id, member.name,
+            left(member.key, least(10, length(member.key) / 2)) as key_prefix,
+            coalesce(sum(e.amount_usd) filter (where e.completed_at >= w.daily_start and e.completed_at < w.daily_end), 0)::text as daily_used,
+            coalesce(sum(e.amount_usd) filter (where e.completed_at >= w.weekly_start and e.completed_at < w.weekly_end), 0)::text as cycle_used
+            from client_api_keys current_key
+            join seat_budget_windows w on w.seat_id = current_key.seat_id
+            join client_api_keys member on member.seat_id = current_key.seat_id and member.revoked_at is null
+            left join client_key_charge_events e on e.client_api_key_id = member.id
+            where current_key.id = $1 and current_key.revoked_at is null
+            group by member.id, member.name, member.key, member.created_at
+            order by member.created_at, member.id")
+            .bind(id.as_str()).fetch_all(&self.keys.pool).await
+            .map_err(|error| admin_store_error(ENTITY, StoreError::Unavailable {
+                backend: crate::StoreBackend::PostgreSql,
+                message: format!("load seat key usage: {error}"),
+            }))?;
+        rows.into_iter()
+            .map(|row| {
+                Ok(SeatKeyUsage {
+                    id: ClientApiKeyId::new(row.get::<String, _>("id")).map_err(|_| {
+                        admin_store_error(
+                            ENTITY,
+                            StoreError::InvalidData {
+                                entity: ENTITY,
+                                message: "invalid client key id".to_owned(),
+                            },
+                        )
+                    })?,
+                    name: row.get("name"),
+                    prefix: row.get("key_prefix"),
+                    daily_used_usd: row.get::<String, _>("daily_used").parse().map_err(|_| {
+                        admin_store_error(
+                            ENTITY,
+                            StoreError::InvalidData {
+                                entity: ENTITY,
+                                message: "invalid daily usage".to_owned(),
+                            },
+                        )
+                    })?,
+                    cycle_used_usd: row.get::<String, _>("cycle_used").parse().map_err(|_| {
+                        admin_store_error(
+                            ENTITY,
+                            StoreError::InvalidData {
+                                entity: ENTITY,
+                                message: "invalid cycle usage".to_owned(),
+                            },
+                        )
+                    })?,
+                })
+            })
+            .collect()
+    }
     async fn reset_client_key_budget(
         &self,
         command: ResetClientKeyBudget,

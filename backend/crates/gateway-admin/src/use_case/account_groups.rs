@@ -32,6 +32,46 @@ use super::{map_store_error, publish_committed};
 /// API-facing account group management service.
 #[async_trait]
 pub trait AccountGroupService: Send + Sync {
+    async fn car_quota_settings(
+        &self,
+    ) -> Result<crate::model::account_groups::CarQuotaSettings, AdminError> {
+        Err(AdminError::invalid("car 额度设置不可用"))
+    }
+    async fn replace_car_quota_settings(
+        &self,
+        context: &MutationContext,
+        command: crate::model::account_groups::ReplaceCarQuotaSettings,
+    ) -> Result<crate::model::account_groups::CarQuotaSettings, AdminError> {
+        let _ = (context, command);
+        Err(AdminError::invalid("car 额度设置不可用"))
+    }
+    async fn car_accounts(
+        &self,
+    ) -> Result<Vec<crate::model::account_groups::CarAccount>, AdminError> {
+        Ok(Vec::new())
+    }
+    async fn car_quota_state(
+        &self,
+        group_id: AccountGroupId,
+    ) -> Result<crate::model::account_groups::CarQuotaState, AdminError> {
+        let _ = group_id;
+        Err(AdminError::invalid("car 周期状态不可用"))
+    }
+    async fn reconcile_car_quota(
+        &self,
+        observation: crate::model::account_groups::CarQuotaObservation,
+    ) -> Result<crate::model::account_groups::CarQuotaState, AdminError> {
+        let _ = observation;
+        Err(AdminError::invalid("car 周期状态不可用"))
+    }
+    async fn save_car_weights(
+        &self,
+        context: &MutationContext,
+        command: crate::model::account_groups::SaveCarWeights,
+    ) -> Result<crate::model::Revision, AdminError> {
+        let _ = (context, command);
+        Err(AdminError::invalid("car 权重不可用"))
+    }
     async fn convert_to_car(
         &self,
         context: &MutationContext,
@@ -137,8 +177,86 @@ impl DefaultAccountGroupService {
     }
 }
 
+fn valid_weight(value: gateway_core::metering::Decimal) -> bool {
+    let canonical = value.canonical();
+    value != gateway_core::metering::Decimal::ZERO
+        && !canonical.starts_with('-')
+        && canonical
+            .split('.')
+            .next()
+            .is_some_and(|integer| integer.len() <= 10)
+        && canonical
+            .split_once('.')
+            .is_none_or(|(_, fraction)| fraction.len() <= 2)
+}
+
 #[async_trait]
 impl AccountGroupService for DefaultAccountGroupService {
+    async fn car_quota_settings(
+        &self,
+    ) -> Result<crate::model::account_groups::CarQuotaSettings, AdminError> {
+        self.store
+            .load_car_quota_settings()
+            .await
+            .map_err(|e| map_store_error(e, "car quota settings"))
+    }
+
+    async fn replace_car_quota_settings(
+        &self,
+        context: &MutationContext,
+        command: crate::model::account_groups::ReplaceCarQuotaSettings,
+    ) -> Result<crate::model::account_groups::CarQuotaSettings, AdminError> {
+        self.store
+            .replace_car_quota_settings(command, context)
+            .await
+            .map_err(|e| map_store_error(e, "car quota settings"))
+    }
+
+    async fn car_accounts(
+        &self,
+    ) -> Result<Vec<crate::model::account_groups::CarAccount>, AdminError> {
+        self.store
+            .list_car_accounts()
+            .await
+            .map_err(|e| map_store_error(e, "car accounts"))
+    }
+
+    async fn car_quota_state(
+        &self,
+        group_id: AccountGroupId,
+    ) -> Result<crate::model::account_groups::CarQuotaState, AdminError> {
+        self.store
+            .load_car_quota_state(group_id)
+            .await
+            .map_err(|e| map_store_error(e, "car quota state"))
+    }
+
+    async fn reconcile_car_quota(
+        &self,
+        observation: crate::model::account_groups::CarQuotaObservation,
+    ) -> Result<crate::model::account_groups::CarQuotaState, AdminError> {
+        self.store
+            .reconcile_car_quota(observation)
+            .await
+            .map_err(|e| map_store_error(e, "car quota reconcile"))
+    }
+
+    async fn save_car_weights(
+        &self,
+        context: &MutationContext,
+        command: crate::model::account_groups::SaveCarWeights,
+    ) -> Result<crate::model::Revision, AdminError> {
+        if !valid_weight(command.total_weight) {
+            return Err(AdminError::invalid("car 总权重应为最多两位小数的正数"));
+        }
+        let revision = self
+            .store
+            .save_car_weights(command, context)
+            .await
+            .map_err(|e| map_store_error(e, "car weights"))?;
+        publish_committed(self.snapshot.as_ref(), revision).await?;
+        Ok(revision)
+    }
     async fn convert_to_car(
         &self,
         context: &MutationContext,
@@ -174,8 +292,9 @@ impl AccountGroupService for DefaultAccountGroupService {
             || command.name.chars().any(char::is_control)
             || command.max_concurrency == 0
             || command.max_concurrency > u64::from(u32::MAX)
+            || !valid_weight(command.weight)
         {
-            return Err(AdminError::invalid("seat 名称或并发上限无效"));
+            return Err(AdminError::invalid("seat 名称、并发上限或权重无效"));
         }
         if command.id.is_none() {
             command.id = Some(

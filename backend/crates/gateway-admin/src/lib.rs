@@ -18,6 +18,7 @@ use secrecy::{ExposeSecret as _, SecretString};
 use serde::Deserialize;
 
 pub mod backup;
+pub mod car_quota;
 pub mod freeze_recovery;
 pub mod model;
 pub mod ports;
@@ -393,6 +394,11 @@ pub async fn initialize(
     let import_tasks =
         use_case::import_tasks::DefaultImportTasksService::new(openai.clone(), xai.clone());
     let import_task = use_case::import_tasks::ImportTaskWorker(import_tasks.clone());
+    let account_groups = Arc::new(DefaultAccountGroupService::new(
+        store.account_groups(),
+        store.account_runtime(),
+        snapshot.clone(),
+    ));
     let services = AdminServices {
         key_usage,
         proxies: Arc::new(use_case::proxies::DefaultProxiesService::new(
@@ -403,11 +409,7 @@ pub async fn initialize(
         )),
         auth,
         accounts: accounts.clone(),
-        account_groups: Arc::new(DefaultAccountGroupService::new(
-            store.account_groups(),
-            store.account_runtime(),
-            snapshot.clone(),
-        )),
+        account_groups: account_groups.clone(),
         client_keys: Arc::new(DefaultClientKeyService::new(
             store.client_keys(),
             snapshot.clone(),
@@ -439,6 +441,10 @@ pub async fn initialize(
             runtime: store.account_runtime(),
             settings: store.settings(),
         });
+    let car_quota = car_quota::CarQuotaTask::new(
+        Arc::clone(&accounts) as Arc<dyn AccountsService>,
+        account_groups as Arc<dyn AccountGroupService>,
+    );
     let mut worker_contributions = backup_worker_contribution(backup_task)?;
     let id = WorkerId::try_new(WorkerKind::AccountImport, "admin")
         .map_err(|_| AdminError::internal("导入 Worker ID 不合法"))?;
@@ -454,10 +460,41 @@ pub async fn initialize(
     .map_err(|_| AdminError::internal("导入 Worker 注册信息不合法"))?;
     worker_contributions.push(WorkerContribution::Registration(registration));
     worker_contributions.extend(freeze_recovery_worker_contribution(freeze_recovery)?);
+    worker_contributions.extend(car_quota_worker_contribution(car_quota)?);
     Ok(AdminBundle {
         services,
         worker_contributions,
     })
+}
+
+fn car_quota_worker_contribution(
+    task: car_quota::CarQuotaTask,
+) -> Result<Vec<WorkerContribution>, AdminError> {
+    let id = WorkerId::try_new(
+        WorkerKind::CarQuotaReconciliation,
+        car_quota::CAR_QUOTA_WORKER_OWNER,
+    )
+    .map_err(|_| AdminError::internal("car 额度 Worker ID 不合法"))?;
+    let schedule = WorkerSchedule::try_new(
+        car_quota::CAR_QUOTA_INTERVAL,
+        car_quota::WORKER_INITIAL_BACKOFF,
+        car_quota::WORKER_MAXIMUM_BACKOFF,
+        car_quota::WORKER_LEASE_TTL,
+        car_quota::WORKER_LEASE_RENEWAL,
+    )
+    .map_err(|_| AdminError::internal("car 额度 Worker 调度配置不合法"))?;
+    let lease = WorkerLeaseRequest::try_new(id.clone(), car_quota::WORKER_LEASE_TTL)
+        .map_err(|_| AdminError::internal("car 额度 Worker 租约配置不合法"))?;
+    let registration = WorkerRegistration::try_new(
+        id,
+        WorkerRunnable::Scheduled {
+            schedule,
+            lease: Some(lease),
+            task: Box::new(task),
+        },
+    )
+    .map_err(|_| AdminError::internal("car 额度 Worker 注册信息不合法"))?;
+    Ok(vec![WorkerContribution::Registration(registration)])
 }
 
 /// Backup Worker 注册：单个可取消 Daemon，owner 固定为 `backup`。

@@ -175,6 +175,7 @@ async fn overview_scopes_every_query_and_projects_only_key_visible_fields() {
             "startTime",
             "endTime",
             "key",
+            "seatKeys",
             "summary",
             "trend",
             "healthTimeline",
@@ -198,6 +199,9 @@ async fn overview_scopes_every_query_and_projects_only_key_visible_fields() {
     );
     assert_eq!(data["key"]["dailyUsedUsd"], "0.640001");
     assert_eq!(data["key"]["maxConcurrency"], 0);
+    assert_eq!(data["seatKeys"], json!([]));
+    assert!(data.get("accountUsedPercent").is_none());
+    assert!(data.get("accountCapacityUsd").is_none());
     assert_eq!(data["summary"]["totalTokens"], 1100);
     assert_eq!(data["summary"]["reasoningTokens"], 40);
     assert_eq!(data["trend"][0]["reasoningTokens"], 40);
