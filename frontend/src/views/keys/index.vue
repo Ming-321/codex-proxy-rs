@@ -110,7 +110,7 @@ watch(
     <BasePageHeader
       class="h-17"
       title="API 密钥"
-      description="创建和管理 API 密钥，并设置每个密钥可以使用的账号"
+      description="创建和管理 API 密钥，并设置账号分组或 seat 归属"
     />
 
     <BaseCard

@@ -10,6 +10,53 @@ use gateway_store::redis::{
 use redis::aio::ConnectionManager;
 use uuid::Uuid;
 
+#[tokio::test]
+async fn seat_members_share_concurrency_but_keep_independent_rpm() {
+    let Some((repository, mut connection, namespace)) = repository().await else {
+        return;
+    };
+    let request = |id: &str, key: &str| {
+        let mut request = admission_request(id, key, Duration::from_secs(30));
+        request.concurrency_ref = "seat_shared".to_owned();
+        request.limits.requests_per_minute = 1;
+        request
+    };
+    let a = request("request-a", "key-a");
+    let b = request("request-b", "key-b");
+    let (a_result, b_result) = tokio::join!(
+        repository.admit_client_request(&a),
+        repository.admit_client_request(&b)
+    );
+    assert_eq!(a_result.unwrap(), ClientAdmissionDecision::Granted);
+    assert_eq!(b_result.unwrap(), ClientAdmissionDecision::Granted);
+    assert!(matches!(
+        repository
+            .admit_client_request(&request("request-c", "key-c"))
+            .await
+            .unwrap(),
+        ClientAdmissionDecision::Rejected(_)
+    ));
+    repository
+        .release_client_request("seat_shared", "request-a")
+        .await
+        .unwrap();
+    assert!(matches!(
+        repository
+            .admit_client_request(&request("request-a2", "key-a"))
+            .await
+            .unwrap(),
+        ClientAdmissionDecision::Rejected(_)
+    ));
+    assert_eq!(
+        repository
+            .admit_client_request(&request("request-c", "key-c"))
+            .await
+            .unwrap(),
+        ClientAdmissionDecision::Granted
+    );
+    delete_namespace_keys(&mut connection, &namespace).await;
+}
+
 #[test]
 fn client_admission_rejects_zero_ttl() {
     let request = admission_request("request-1", "key-1", Duration::ZERO);
@@ -27,6 +74,7 @@ fn client_admission_rejects_values_outside_redis_exact_integer_range() {
 fn client_admission_restore_rejects_duplicate_request_ids() {
     let started_at = Utc::now();
     let recovery = ClientAdmissionRestore {
+        concurrency_ref: "key-1".to_owned(),
         client_api_key_ref: "key-1".to_owned(),
         recent_requests: vec![
             recent_request("request-1", started_at),
@@ -63,6 +111,7 @@ async fn restore_rebuilds_lost_cache_without_overwriting_new_admission() {
     );
     let redis_now = redis_now(&mut connection).await;
     let recovery = ClientAdmissionRestore {
+        concurrency_ref: key_ref.to_owned(),
         client_api_key_ref: key_ref.to_owned(),
         recent_requests: vec![
             recent_request(
@@ -172,6 +221,7 @@ async fn restore_uses_redis_time_for_window_and_running_expiry_boundaries() {
     let key_ref = "key-time-boundary";
     let redis_now = redis_now(&mut connection).await;
     let recovery = ClientAdmissionRestore {
+        concurrency_ref: key_ref.to_owned(),
         client_api_key_ref: key_ref.to_owned(),
         recent_requests: vec![
             recent_request(
@@ -229,6 +279,7 @@ async fn restore_rejects_future_window_fact_without_partial_write() {
     };
     let redis_now = redis_now(&mut connection).await;
     let recovery = ClientAdmissionRestore {
+        concurrency_ref: "key-future-fact".to_owned(),
         client_api_key_ref: "key-future-fact".to_owned(),
         recent_requests: vec![
             recent_request("request-valid", redis_now - chrono::Duration::seconds(1)),
@@ -254,6 +305,7 @@ fn admission_request(
     ClientAdmissionRequest {
         allow_concurrency_acquire: true,
         model_request_id: model_request_id.to_owned(),
+        concurrency_ref: client_api_key_ref.to_owned(),
         client_api_key_ref: client_api_key_ref.to_owned(),
         lease_ttl,
         limits: ClientAdmissionLimits {

@@ -4,12 +4,13 @@ use std::time::{Duration, SystemTime};
 
 use futures::future::BoxFuture;
 
-use crate::policy::{ClientApiKeyId, RateLimits};
+use crate::policy::{ClientApiKeyId, ClientConcurrencyId, RateLimits};
 
 use super::{ExecutionStore, ModelRequestId};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ClientAdmissionRequest {
+    pub concurrency_id: ClientConcurrencyId,
     pub model_request_id: ModelRequestId,
     pub client_api_key_id: ClientApiKeyId,
     pub lease_ttl: Duration,
@@ -44,6 +45,7 @@ pub struct RunningAdmissionFact {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ClientAdmissionRecovery {
+    pub concurrency_id: ClientConcurrencyId,
     pub client_api_key_id: ClientApiKeyId,
     pub recent_requests: Vec<RecentAdmissionFact>,
     pub running_requests: Vec<RunningAdmissionFact>,
@@ -61,7 +63,7 @@ pub struct ClientAdmissionError;
 
 pub trait ClientAdmissionPort: Send + Sync {
     /// 请求 future 被取消时移交幂等释放，具体实现拥有异步清理执行器。
-    fn abandon(&self, client_api_key_id: &ClientApiKeyId, model_request_id: &ModelRequestId);
+    fn abandon(&self, concurrency_id: &ClientConcurrencyId, model_request_id: &ModelRequestId);
 
     fn admit(
         &self,
@@ -70,7 +72,7 @@ pub trait ClientAdmissionPort: Send + Sync {
 
     fn release<'a>(
         &'a self,
-        client_api_key_id: &'a ClientApiKeyId,
+        concurrency_id: &'a ClientConcurrencyId,
         model_request_id: &'a ModelRequestId,
     ) -> BoxFuture<'a, Result<bool, ClientAdmissionError>>;
 

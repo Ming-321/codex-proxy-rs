@@ -18,7 +18,7 @@ const windows = computed(() => [
 </script>
 
 <template>
-  <BaseCard title="额度概览">
+  <BaseCard :title="budget.seatName ? `${budget.seatName} · 共享额度` : '额度概览'">
     <div class="flex flex-1 flex-col justify-between gap-6">
       <div class="grid flex-1 gap-6 sm:grid-cols-2">
         <div v-for="window in windows" :key="window.label" class="flex min-w-0 flex-col justify-between gap-4">

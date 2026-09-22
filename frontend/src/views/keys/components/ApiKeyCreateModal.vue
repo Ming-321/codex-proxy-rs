@@ -3,7 +3,8 @@ import type { ApiKeyFormValue } from '../composables/useApiKeyMutations'
 import type { AccountGroup } from '@/api'
 import { Openai, Xai } from '@boxicons/vue'
 import { Copy, DollarSign, KeyRound, Upload } from '@lucide/vue'
-import { computed, shallowRef } from 'vue'
+import { computed, shallowRef, watch } from 'vue'
+import { getSeats } from '@/api'
 
 import AccountGroupCheckboxGrid from '@/components/AccountGroupCheckboxGrid.vue'
 import BaseButton from '@/components/base/BaseButton.vue'
@@ -13,6 +14,7 @@ import BaseIconButton from '@/components/base/BaseIconButton.vue'
 import BaseInput from '@/components/base/BaseInput.vue'
 import BaseModal from '@/components/base/BaseModal/index.vue'
 import BaseSegmented from '@/components/base/BaseSegmented.vue'
+import BaseSelect from '@/components/base/BaseSelect.vue'
 import ClientProfileEditor from '@/components/client-profile/ClientProfileEditor.vue'
 import XaiClientProfileEditor from '@/components/client-profile/XaiClientProfileEditor.vue'
 import { PROVIDER_DISPLAY_NAMES } from '@/utils/providers'
@@ -34,6 +36,19 @@ const createdOpen = defineModel<boolean>('createdOpen', { default: false })
 const form = defineModel<ApiKeyFormValue>('form', { required: true })
 const title = computed(() => props.editing ? '编辑密钥' : '创建 API Key')
 const profileProvider = shallowRef('openai')
+const seatOptions = shallowRef<{ label: string, value: string }[]>([])
+watch([open, () => props.groups], async ([visible]) => {
+  if (!visible || props.editing)
+    return
+  try {
+    const groups = props.groups.filter(group => group.isCar)
+    const pages = await Promise.all(groups.map(group => getSeats(group.id)))
+    seatOptions.value = [{ label: '独立 Key', value: '' }, ...pages.flatMap((seats, i) => seats.map(seat => ({ label: `${groups[i]!.name} / ${seat.name}`, value: seat.id })))]
+  }
+  catch {
+    seatOptions.value = [{ label: '独立 Key', value: '' }]
+  }
+})
 const profileProviderOptions = [
   { label: PROVIDER_DISPLAY_NAMES.openai, value: 'openai', icon: Openai },
   { label: PROVIDER_DISPLAY_NAMES.xai, value: 'xai', icon: Xai },
@@ -44,7 +59,7 @@ const profileProviderOptions = [
   <BaseModal
     v-model="open"
     :title="title"
-    description="配置密钥信息、分组与使用限制"
+    description="配置密钥信息、归属与使用限制"
     tone="info"
     size="lg"
     :dismissible="!saving"
@@ -87,10 +102,16 @@ const profileProviderOptions = [
         />
       </BaseFormItem>
 
-      <BaseFormItem label="分组">
+      <BaseFormItem v-if="!editing && seatOptions.length > 1" label="归属">
+        <BaseSelect v-model="form.seatId" :options="seatOptions" :disabled="saving" />
+      </BaseFormItem>
+      <p v-if="form.seatId" class="text-cp-sm text-cp-text-secondary">
+        {{ form.seatName || '所选 seat' }} 的费用与并发由成员共享，独立保留客户端身份和 RPM
+      </p>
+      <BaseFormItem v-else label="分组">
         <AccountGroupCheckboxGrid
           v-model="form.groupIds"
-          :groups="groups"
+          :groups="groups.filter(group => !group.isCar)"
           :loading="groupLoading"
           :disabled="saving"
         />
@@ -137,7 +158,7 @@ const profileProviderOptions = [
         </XaiClientProfileEditor>
       </BaseFormItem>
 
-      <div class="grid gap-6 sm:grid-cols-2">
+      <div v-if="!form.seatId" class="grid gap-6 sm:grid-cols-2">
         <BaseFormItem label="日限额">
           <BaseInput
             v-model="form.dailyLimitUsd"
@@ -171,7 +192,7 @@ const profileProviderOptions = [
       </div>
 
       <div class="grid gap-6 sm:grid-cols-2">
-        <BaseFormItem label="最大并发">
+        <BaseFormItem v-if="!form.seatId" label="最大并发">
           <BaseInput
             v-model="form.maxConcurrency"
             type="number"

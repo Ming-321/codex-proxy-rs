@@ -21,7 +21,7 @@ struct Admissions {
 impl ClientAdmissionPort for Admissions {
     fn abandon(
         &self,
-        key: &gateway_core::policy::ClientApiKeyId,
+        key: &gateway_core::policy::ClientConcurrencyId,
         request: &gateway_core::engine::ModelRequestId,
     ) {
         let _ = futures::FutureExt::now_or_never(self.release(key, request));
@@ -39,7 +39,7 @@ impl ClientAdmissionPort for Admissions {
     }
     fn release<'a>(
         &'a self,
-        _: &'a ClientApiKeyId,
+        _: &'a gateway_core::policy::ClientConcurrencyId,
         _: &'a ModelRequestId,
     ) -> BoxFuture<'a, Result<bool, ClientAdmissionError>> {
         Box::pin(async {
@@ -70,7 +70,20 @@ struct Budget {
 }
 
 impl ClientBudgetPort for Budget {
-    fn admit(&self, _: ClientApiKeyId) -> BoxFuture<'_, Result<(), GatewayError>> {
+    fn begin_request(
+        &self,
+        key: ClientApiKeyId,
+        seat: Option<gateway_core::policy::SeatId>,
+        _: ModelRequestId,
+        _: SystemTime,
+    ) -> BoxFuture<'_, Result<(), GatewayError>> {
+        self.admit(key, seat)
+    }
+    fn admit(
+        &self,
+        _: ClientApiKeyId,
+        _: Option<gateway_core::policy::SeatId>,
+    ) -> BoxFuture<'_, Result<(), GatewayError>> {
         Box::pin(async {
             assert!(self.active.load(Ordering::SeqCst));
             if self.reject {
@@ -1689,7 +1702,7 @@ struct UnusedAdmissions;
 impl ClientAdmissionPort for UnusedAdmissions {
     fn abandon(
         &self,
-        key: &gateway_core::policy::ClientApiKeyId,
+        key: &gateway_core::policy::ClientConcurrencyId,
         request: &gateway_core::engine::ModelRequestId,
     ) {
         let _ = futures::FutureExt::now_or_never(self.release(key, request));
@@ -1704,7 +1717,7 @@ impl ClientAdmissionPort for UnusedAdmissions {
 
     fn release<'a>(
         &'a self,
-        _: &'a ClientApiKeyId,
+        _: &'a gateway_core::policy::ClientConcurrencyId,
         _: &'a ModelRequestId,
     ) -> BoxFuture<'a, Result<bool, ClientAdmissionError>> {
         Box::pin(async { Ok(true) })
@@ -2071,7 +2084,7 @@ fn account_wait_inherits_the_budget_spent_during_client_admission() {
 }
 
 impl ClientAdmissionPort for BoundedAdmissions {
-    fn abandon(&self, _: &ClientApiKeyId, id: &ModelRequestId) {
+    fn abandon(&self, _: &gateway_core::policy::ClientConcurrencyId, id: &ModelRequestId) {
         self.active.lock().unwrap().remove(id);
     }
 
@@ -2108,7 +2121,7 @@ impl ClientAdmissionPort for BoundedAdmissions {
 
     fn release<'a>(
         &'a self,
-        _: &'a ClientApiKeyId,
+        _: &'a gateway_core::policy::ClientConcurrencyId,
         id: &'a ModelRequestId,
     ) -> BoxFuture<'a, Result<bool, ClientAdmissionError>> {
         Box::pin(async move { Ok(self.active.lock().unwrap().remove(id)) })

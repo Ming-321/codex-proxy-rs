@@ -49,6 +49,7 @@ async fn migrated_keys_persist_exactly_and_keep_short_keys_masked() {
         let (_, record) = store
             .create_client_key(
                 NewClientKey {
+                    seat_id: None,
                     openai_client_profile_override: None,
                     xai_client_profile_override: None,
                     id: id.clone(),
@@ -105,6 +106,7 @@ async fn duplicate_migrated_keys_conflict_atomically_without_extra_audits() {
     };
     let key = "legacy-key-case-sensitive!";
     let command = |id: &str| NewClientKey {
+        seat_id: None,
         openai_client_profile_override: None,
         xai_client_profile_override: None,
         id: ClientApiKeyId::new(id).unwrap(),
@@ -142,6 +144,7 @@ async fn duplicate_migrated_keys_conflict_atomically_without_extra_audits() {
 #[test]
 fn generated_client_key_format_remains_valid() {
     let key = NewClientApiKey {
+        seat_id: None,
         openai_client_profile_override: None,
         xai_client_profile_override: None,
         budget: Default::default(),
@@ -176,6 +179,7 @@ async fn client_key_names_are_checked_atomically_on_create_and_rename() {
         request_id: "duplicate-name-test".to_owned(),
     };
     let create = |id: &str, name: &str| NewClientKey {
+        seat_id: None,
         openai_client_profile_override: None,
         xai_client_profile_override: None,
         id: ClientApiKeyId::new(id).unwrap(),
@@ -643,6 +647,7 @@ async fn dedicated_reveal_returns_plaintext_without_debug_exposure() {
 fn client_key_debug_redacts_plaintext() {
     let secret = format!("sk_{}", "s".repeat(43));
     let key = NewClientApiKey {
+        seat_id: None,
         openai_client_profile_override: None,
         xai_client_profile_override: None,
         budget: Default::default(),
@@ -715,6 +720,7 @@ async fn key_profile_override_roundtrips_and_explicit_clear_restores_inheritance
     let (_, record) = store
         .create_client_key(
             NewClientKey {
+                seat_id: None,
                 id: id.clone(),
                 name: "profile".to_owned(),
                 label: None,

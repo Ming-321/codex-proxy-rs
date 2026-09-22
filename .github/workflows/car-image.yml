@@ -4,6 +4,7 @@ on:
   push:
     branches:
       - car
+      - feat/car-seat-sharing
 
 permissions:
   contents: read

@@ -318,6 +318,25 @@ pub trait ClientKeyStore: Send + Sync {
 /// Provider-neutral account group management transactions.
 #[async_trait]
 pub trait AccountGroupStore: Send + Sync {
+    async fn convert_to_car(
+        &self,
+        id: gateway_core::routing::AccountGroupId,
+        context: &MutationContext,
+    ) -> AdminStoreResult<crate::model::Revision>;
+    async fn list_seats(
+        &self,
+        group_id: gateway_core::routing::AccountGroupId,
+    ) -> AdminStoreResult<Vec<crate::model::account_groups::SeatRecord>>;
+    async fn save_seat(
+        &self,
+        command: crate::model::account_groups::SaveSeat,
+        context: &MutationContext,
+    ) -> AdminStoreResult<crate::model::Revision>;
+    async fn join_seat(
+        &self,
+        command: crate::model::account_groups::JoinSeat,
+        context: &MutationContext,
+    ) -> AdminStoreResult<crate::model::Revision>;
     async fn list_account_groups(
         &self,
         query: AccountGroupListQuery,

@@ -43,6 +43,18 @@ pub(super) async fn reset_client_key_budget(
             id: command.id.as_str().to_owned(),
         });
     }
+    let seat: Option<String> =
+        sqlx::query_scalar("select seat_id from client_api_keys where id = $1")
+            .bind(command.id.as_str())
+            .fetch_one(&mut *tx)
+            .await
+            .map_err(|_| postgres_unavailable("read budget owner"))?;
+    if seat.is_some() {
+        return Err(crate::StoreError::InvalidData {
+            entity: "client API key",
+            message: "seat Key 不能独立重置共享费用".to_owned(),
+        });
+    }
     let daily = matches!(
         command.period,
         ClientKeyBudgetPeriod::Daily | ClientKeyBudgetPeriod::All
@@ -106,22 +118,29 @@ impl PgClientBudgetStore {
         }
     }
 
-    async fn admit_inner(&self, key_id: ClientApiKeyId) -> Result<(), GatewayError> {
+    async fn admit_inner(
+        &self,
+        key_id: ClientApiKeyId,
+        seat_id: Option<gateway_core::policy::SeatId>,
+        request: Option<(gateway_core::engine::ModelRequestId, std::time::SystemTime)>,
+    ) -> Result<(), GatewayError> {
         // 短暂存储故障后按原金额重试；进程退出丢失的费用不转成人工核账或阻断 Key。
         let retries = self
             .retry
             .lock()
             .map_err(|_| unavailable())?
             .values()
-            .filter(|charge| charge.key_id == key_id)
+            .filter(|charge| {
+                charge.key_id == key_id || (seat_id.is_some() && charge.seat_id == seat_id)
+            })
             .cloned()
             .collect::<Vec<_>>();
         for charge in retries {
             self.settle(charge).await.map_err(|_| unavailable())?;
         }
         let mut tx = self.pool.begin().await.map_err(|_| unavailable())?;
-        let row = sqlx::query(
-            "select daily_limit_usd::text, weekly_limit_usd::text, enabled
+        let mut row = sqlx::query(
+            "select daily_limit_usd::text, weekly_limit_usd::text, enabled, seat_id
             from client_api_keys where id = $1 for update",
         )
         .bind(key_id.as_str())
@@ -140,6 +159,28 @@ impl PgClientBudgetStore {
                 "client API key is disabled",
             ));
         }
+        if row.get::<Option<String>, _>("seat_id").as_deref()
+            != seat_id.as_ref().map(gateway_core::policy::SeatId::as_str)
+        {
+            return Err(GatewayError::new(
+                GatewayErrorKind::PolicyDenied,
+                "client key membership changed; retry with current configuration",
+            ));
+        }
+        let owner = match seat_id.as_ref() {
+            Some(id) => {
+                row = sqlx::query("select s.daily_limit_usd::text, s.weekly_limit_usd::text, (s.enabled and g.enabled) as enabled from seats s join account_groups g on g.id = s.account_group_id where s.id = $1 for update of s")
+                    .bind(id.as_str()).fetch_one(&mut *tx).await.map_err(|_| unavailable())?;
+                if !row.get::<bool, _>("enabled") {
+                    return Err(GatewayError::new(
+                        GatewayErrorKind::PolicyDenied,
+                        "seat or car is disabled",
+                    ));
+                }
+                BudgetOwner::Seat(id.as_str())
+            }
+            None => BudgetOwner::Key(key_id.as_str()),
+        };
         let limits = ClientBudgetLimits {
             daily_usd: row
                 .get::<String, _>("daily_limit_usd")
@@ -151,15 +192,15 @@ impl PgClientBudgetStore {
                 .map_err(|_| unavailable())?,
         };
         let now = Utc::now();
-        advance_windows(&mut tx, key_id.as_str(), now)
+        advance_owner_windows(&mut tx, owner, now)
             .await
             .map_err(|_| unavailable())?;
         if limits.is_limited() {
-            let window = sqlx::query(
-                "select daily_used_usd::text, weekly_used_usd::text, daily_end, weekly_end
-                from client_key_budget_windows where client_api_key_id = $1",
-            )
-            .bind(key_id.as_str())
+            // 表名和列名只来自封闭的 BudgetOwner，所有外部值仍使用绑定参数。
+            let window = sqlx::query(sqlx::AssertSqlSafe(format!(
+                "select daily_used_usd::text, weekly_used_usd::text, daily_end, weekly_end from {} where {} = $1", owner.table(), owner.column()
+            )))
+            .bind(owner.id())
             .fetch_one(&mut *tx)
             .await
             .map_err(|_| unavailable())?;
@@ -194,6 +235,11 @@ impl PgClientBudgetStore {
                 .with_retry_after(retry));
             }
         }
+        if let Some((id, deadline)) = request {
+            sqlx::query("insert into client_budget_admissions (request_id, client_api_key_id, expires_at) values ($1, $2, $3) on conflict (request_id) do nothing")
+                .bind(id.as_str()).bind(key_id.as_str()).bind(DateTime::<Utc>::from(deadline) + chrono::Duration::minutes(1))
+                .execute(&mut *tx).await.map_err(|_| unavailable())?;
+        }
         tx.commit().await.map_err(|_| unavailable())
     }
 
@@ -211,6 +257,11 @@ impl PgClientBudgetStore {
         settle_in_transaction(&mut tx, &key, charge)
             .await
             .map_err(|_| ClientBudgetError)?;
+        sqlx::query("delete from client_budget_admissions where request_id = $1")
+            .bind(charge.request_id.as_str())
+            .execute(&mut *tx)
+            .await
+            .map_err(|_| ClientBudgetError)?;
         tx.commit().await.map_err(|_| ClientBudgetError)
     }
 }
@@ -221,16 +272,24 @@ async fn settle_in_transaction(
     charge: &ClientBudgetCharge,
 ) -> Result<(), sqlx::Error> {
     advance_windows(tx, key, Utc::now()).await?;
+    if let Some(id) = &charge.seat_id {
+        sqlx::query("select id from seats where id = $1 for update")
+            .bind(id.as_str())
+            .fetch_one(&mut **tx)
+            .await?;
+        advance_owner_windows(tx, BudgetOwner::Seat(id.as_str()), Utc::now()).await?;
+    }
     // 仅在请求结束时写入费用；请求 ID 冲突时不重复累计。
     let changed = sqlx::query(
-        "insert into client_key_charge_events (request_id, client_api_key_id, amount_usd, completed_at)
-            values ($1, $2, $3::text::numeric, $4)
+        "insert into client_key_charge_events (request_id, client_api_key_id, amount_usd, completed_at, seat_id)
+            values ($1, $2, $3::text::numeric, $4, $5)
             on conflict (request_id) do nothing",
     )
     .bind(charge.request_id.as_str())
     .bind(key)
     .bind(charge.amount_usd.canonical())
     .bind(DateTime::<Utc>::from(charge.completed_at))
+    .bind(charge.seat_id.as_ref().map(gateway_core::policy::SeatId::as_str))
     .execute(&mut **tx)
     .await?
     .rows_affected();
@@ -241,13 +300,38 @@ async fn settle_in_transaction(
                 where client_api_key_id = $1")
                 .bind(key).bind(charge.amount_usd.canonical()).bind(DateTime::<Utc>::from(charge.completed_at))
                 .execute(&mut **tx).await?;
+        if let Some(id) = &charge.seat_id {
+            sqlx::query("update seat_budget_windows set
+                daily_used_usd = daily_used_usd + case when $3 >= daily_start and $3 < daily_end then $2::text::numeric else 0 end,
+                weekly_used_usd = weekly_used_usd + case when $3 >= weekly_start and $3 < weekly_end then $2::text::numeric else 0 end
+                where seat_id = $1")
+                .bind(id.as_str()).bind(charge.amount_usd.canonical()).bind(DateTime::<Utc>::from(charge.completed_at))
+                .execute(&mut **tx).await?;
+        }
     }
     Ok(())
 }
 
 impl ClientBudgetPort for PgClientBudgetStore {
-    fn admit(&self, key_id: ClientApiKeyId) -> BoxFuture<'_, Result<(), GatewayError>> {
-        Box::pin(async move { self.admit_inner(key_id).await })
+    fn admit(
+        &self,
+        key_id: ClientApiKeyId,
+        seat_id: Option<gateway_core::policy::SeatId>,
+    ) -> BoxFuture<'_, Result<(), GatewayError>> {
+        Box::pin(async move { self.admit_inner(key_id, seat_id, None).await })
+    }
+
+    fn begin_request(
+        &self,
+        key_id: ClientApiKeyId,
+        seat_id: Option<gateway_core::policy::SeatId>,
+        request_id: gateway_core::engine::ModelRequestId,
+        deadline_at: std::time::SystemTime,
+    ) -> BoxFuture<'_, Result<(), GatewayError>> {
+        Box::pin(async move {
+            self.admit_inner(key_id, seat_id, Some((request_id, deadline_at)))
+                .await
+        })
     }
 
     fn settle(&self, charge: ClientBudgetCharge) -> BoxFuture<'_, Result<(), ClientBudgetError>> {
@@ -269,18 +353,55 @@ async fn advance_windows(
     key: &str,
     now: DateTime<Utc>,
 ) -> Result<(), sqlx::Error> {
-    sqlx::query("insert into client_key_budget_windows
-        (client_api_key_id, daily_start, daily_end, weekly_start, weekly_end)
+    advance_owner_windows(tx, BudgetOwner::Key(key), now).await
+}
+
+#[derive(Clone, Copy)]
+pub(super) enum BudgetOwner<'a> {
+    Key(&'a str),
+    Seat(&'a str),
+}
+
+impl<'a> BudgetOwner<'a> {
+    fn id(self) -> &'a str {
+        match self {
+            Self::Key(id) | Self::Seat(id) => id,
+        }
+    }
+    fn table(self) -> &'static str {
+        match self {
+            Self::Key(_) => "client_key_budget_windows",
+            Self::Seat(_) => "seat_budget_windows",
+        }
+    }
+    fn column(self) -> &'static str {
+        match self {
+            Self::Key(_) => "client_api_key_id",
+            Self::Seat(_) => "seat_id",
+        }
+    }
+}
+
+pub(super) async fn advance_owner_windows(
+    tx: &mut Transaction<'_, Postgres>,
+    owner: BudgetOwner<'_>,
+    now: DateTime<Utc>,
+) -> Result<(), sqlx::Error> {
+    let table = owner.table();
+    let column = owner.column();
+    // 标识符来自上方枚举，不能由请求指定。
+    sqlx::query(sqlx::AssertSqlSafe(format!("insert into {table}
+        ({column}, daily_start, daily_end, weekly_start, weekly_end)
         select $1, day, day + interval '24 hours', day, day + interval '168 hours'
         from (select date_trunc('day', $2::timestamptz at time zone 'Asia/Shanghai') at time zone 'Asia/Shanghai' as day) d
-        on conflict (client_api_key_id) do update set
-            daily_start = case when client_key_budget_windows.daily_end <= $2 then excluded.daily_start else client_key_budget_windows.daily_start end,
-            daily_end = case when client_key_budget_windows.daily_end <= $2 then excluded.daily_end else client_key_budget_windows.daily_end end,
-            daily_used_usd = case when client_key_budget_windows.daily_end <= $2 then 0 else client_key_budget_windows.daily_used_usd end,
-            weekly_start = case when client_key_budget_windows.weekly_end <= $2 then excluded.weekly_start else client_key_budget_windows.weekly_start end,
-            weekly_end = case when client_key_budget_windows.weekly_end <= $2 then excluded.weekly_end else client_key_budget_windows.weekly_end end,
-            weekly_used_usd = case when client_key_budget_windows.weekly_end <= $2 then 0 else client_key_budget_windows.weekly_used_usd end")
-        .bind(key).bind(now).execute(&mut **tx).await?;
+        on conflict ({column}) do update set
+            daily_start = case when {table}.daily_end <= $2 then excluded.daily_start else {table}.daily_start end,
+            daily_end = case when {table}.daily_end <= $2 then excluded.daily_end else {table}.daily_end end,
+            daily_used_usd = case when {table}.daily_end <= $2 then 0 else {table}.daily_used_usd end,
+            weekly_start = case when {table}.weekly_end <= $2 then excluded.weekly_start else {table}.weekly_start end,
+            weekly_end = case when {table}.weekly_end <= $2 then excluded.weekly_end else {table}.weekly_end end,
+            weekly_used_usd = case when {table}.weekly_end <= $2 then 0 else {table}.weekly_used_usd end")))
+        .bind(owner.id()).bind(now).execute(&mut **tx).await?;
     Ok(())
 }
 
@@ -296,12 +417,22 @@ pub(super) async fn load_client_key_budgets(
         .map(|record| record.id.as_str())
         .collect::<Vec<_>>();
     let rows = sqlx::query(
-        "select k.id, k.daily_limit_usd::text, k.weekly_limit_usd::text,
+        "select k.id, coalesce(s.daily_limit_usd, k.daily_limit_usd)::text as daily_limit_usd,
+        coalesce(s.weekly_limit_usd, k.weekly_limit_usd)::text as weekly_limit_usd,
+        s.id as seat_id, s.name as seat_name, s.max_concurrency as seat_concurrency,
         (case when w.daily_end > now() then w.daily_used_usd else 0 end)::text as daily_used,
         (case when w.weekly_end > now() then w.weekly_used_usd else 0 end)::text as weekly_used,
         case when w.daily_end > now() then w.daily_end end as daily_end,
         case when w.weekly_end > now() then w.weekly_end end as weekly_end
-        from client_api_keys k left join client_key_budget_windows w on w.client_api_key_id = k.id
+        from client_api_keys k
+        left join seats s on s.id = k.seat_id
+        left join lateral (
+            select daily_used_usd, weekly_used_usd, daily_end, weekly_end
+            from client_key_budget_windows where client_api_key_id = k.id and k.seat_id is null
+            union all
+            select daily_used_usd, weekly_used_usd, daily_end, weekly_end
+            from seat_budget_windows where seat_id = k.seat_id
+        ) w on true
         where k.id = any($1)",
     )
     .bind(ids)
@@ -318,6 +449,20 @@ pub(super) async fn load_client_key_budgets(
         budgets.insert(
             row.get::<String, _>("id"),
             ClientBudgetStatus {
+                seat: row
+                    .get::<Option<String>, _>("seat_id")
+                    .map(|id| {
+                        Ok::<_, crate::StoreError>(gateway_core::engine::budget::SeatBudgetRef {
+                            id: gateway_core::policy::SeatId::new(id)
+                                .map_err(|_| postgres_unavailable("decode seat ID"))?,
+                            name: row.get("seat_name"),
+                            max_concurrency: u64::try_from(row.get::<i64, _>("seat_concurrency"))
+                                .map_err(|_| {
+                                postgres_unavailable("decode seat concurrency")
+                            })?,
+                        })
+                    })
+                    .transpose()?,
                 limits: ClientBudgetLimits {
                     daily_usd: parse("daily_limit_usd")?,
                     weekly_usd: parse("weekly_limit_usd")?,

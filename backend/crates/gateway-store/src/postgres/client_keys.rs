@@ -52,6 +52,7 @@ const CLIENT_API_KEY_LAST_USED_SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ClientApiKeySnapshot {
+    pub seat_id: Option<gateway_core::policy::SeatId>,
     pub request_profiles: std::collections::BTreeMap<
         gateway_core::routing::ProviderKind,
         gateway_core::account::OpaqueProviderData,
@@ -72,6 +73,7 @@ impl ClientApiKeySnapshot {
     ) -> StoreResult<Self> {
         Ok(Self {
             request_profiles: std::collections::BTreeMap::new(),
+            seat_id: None,
             id: ClientApiKeyId::new(id).map_err(|_| invalid("persisted key ID is invalid"))?,
             plaintext_key: PlaintextClientApiKey::new(key)
                 .map_err(|_| invalid("persisted plaintext key is invalid"))?,
@@ -273,6 +275,7 @@ pub struct ClientApiKeyPage {
 
 #[derive(Clone)]
 pub struct NewClientApiKey {
+    pub seat_id: Option<String>,
     pub openai_client_profile_override: Option<gateway_core::account::OpaqueProviderData>,
     pub xai_client_profile_override: Option<gateway_core::account::OpaqueProviderData>,
     pub id: String,
@@ -371,7 +374,7 @@ impl ClientApiKeyRepository for PgClientApiKeyRepository {
                     k.max_concurrency, k.requests_per_minute, k.last_used_at, k.created_at,
                     k.updated_at, '[]'::jsonb as groups, '{}'::text[] as provider_kinds
              from client_api_keys k
-             where true",
+             where k.revoked_at is null",
         );
         push_client_key_search(&mut statement, query.search.as_deref());
         if let Some(cursor) = &query.cursor {
@@ -413,7 +416,7 @@ impl ClientApiKeyRepository for PgClientApiKeyRepository {
         require_nonempty(ENTITY, "id", id)?;
         sqlx::query_as::<_, (String, String, bool, i64, i64)>(
             "select id, key, enabled, max_concurrency, requests_per_minute
-             from client_api_keys where id = $1",
+             from client_api_keys where id = $1 and revoked_at is null",
         )
         .bind(id)
         .fetch_optional(&self.pool)
@@ -434,7 +437,7 @@ impl ClientApiKeyRepository for PgClientApiKeyRepository {
                     case
                       when groups.binding_count = 0 then coalesce(
                         (select array_agg(distinct a.provider_kind order by a.provider_kind)
-                         from provider_accounts a),
+                         from provider_accounts a where not exists (select 1 from account_group_accounts ga join account_groups g on g.id = ga.account_group_id where ga.provider_account_id = a.id and g.is_car)),
                         '{}'
                       )
                       else coalesce(groups.provider_kinds, '{}')
@@ -443,22 +446,22 @@ impl ClientApiKeyRepository for PgClientApiKeyRepository {
              left join lateral (
                select
                  (select count(*)::bigint
-                  from client_api_key_groups kg
+                  from client_key_effective_groups kg
                   where kg.client_api_key_id = k.id) as binding_count,
                  (select jsonb_agg(jsonb_build_object(
                            'id', g.id, 'name', g.name, 'color', g.color, 'enabled', g.enabled
                          ) order by g.id)
-                  from client_api_key_groups kg
+                  from client_key_effective_groups kg
                   join account_groups g on g.id = kg.account_group_id
                   where kg.client_api_key_id = k.id) as groups,
                  (select array_agg(distinct a.provider_kind order by a.provider_kind)
-                  from client_api_key_groups kg
+                  from client_key_effective_groups kg
                   join account_groups g on g.id = kg.account_group_id and g.enabled
                   join account_group_accounts gm on gm.account_group_id = g.id
                   join provider_accounts a on a.id = gm.provider_account_id
                   where kg.client_api_key_id = k.id) as provider_kinds
              ) groups on true
-             where k.id = $1",
+             where k.id = $1 and k.revoked_at is null",
         )
         .bind(id)
         .fetch_optional(&self.pool)
@@ -773,6 +776,7 @@ impl ClientKeyStore for PgAdminClientKeyStore {
             .control_plane
             .create_client_api_key(
                 NewClientApiKey {
+                    seat_id: command.seat_id.map(|id| id.as_str().to_owned()),
                     openai_client_profile_override: command.openai_client_profile_override,
                     xai_client_profile_override: command.xai_client_profile_override,
                     id: id.as_str().to_owned(),
@@ -1036,9 +1040,9 @@ pub(crate) async fn insert_client_api_key_in_transaction(
     sqlx::query(
         "insert into client_api_keys (
            id, name, label, key, enabled, max_concurrency, requests_per_minute,
-           last_used_at, created_at, updated_at, daily_limit_usd, weekly_limit_usd, provider_request_profiles_json
+           last_used_at, created_at, updated_at, daily_limit_usd, weekly_limit_usd, provider_request_profiles_json, seat_id
          ) values ($1, $2, $3, $4, true, $5, $6, null, now(), now(), $7::text::numeric, $8::text::numeric, case when $9::jsonb is null then '{}'::jsonb else jsonb_build_object('openai', $9::jsonb) end
-             || case when $10::jsonb is null then '{}'::jsonb else jsonb_build_object('xai', $10::jsonb) end)",
+             || case when $10::jsonb is null then '{}'::jsonb else jsonb_build_object('xai', $10::jsonb) end, $11)",
     )
     .bind(&key.id)
     .bind(key.name.trim())
@@ -1050,6 +1054,7 @@ pub(crate) async fn insert_client_api_key_in_transaction(
     .bind(key.budget.weekly_usd.canonical())
     .bind(key.openai_client_profile_override.as_ref().map(|profile| sqlx::types::Json(profile.expose_to_provider())))
     .bind(key.xai_client_profile_override.as_ref().map(|profile| sqlx::types::Json(profile.expose_to_provider())))
+    .bind(&key.seat_id)
     .execute(&mut **transaction)
     .await
     .map_err(|error| {
@@ -1078,16 +1083,16 @@ pub(crate) async fn update_client_api_key_in_transaction(
     ensure_client_key_name_available(transaction, &key.id, key.name.trim()).await?;
     let result = sqlx::query(
         "update client_api_keys
-         set name = $2, label = $3, max_concurrency = $4,
+         set name = $2, label = $3, max_concurrency = case when seat_id is null then $4 else max_concurrency end,
              requests_per_minute = $5, updated_at = now(),
-             daily_limit_usd = coalesce($6::text::numeric, daily_limit_usd),
-             weekly_limit_usd = coalesce($7::text::numeric, weekly_limit_usd),
+             daily_limit_usd = case when seat_id is null then coalesce($6::text::numeric, daily_limit_usd) else daily_limit_usd end,
+             weekly_limit_usd = case when seat_id is null then coalesce($7::text::numeric, weekly_limit_usd) else weekly_limit_usd end,
              provider_request_profiles_json = (provider_request_profiles_json
                  - case when $8 then array['openai'] else array[]::text[] end
                  - case when $10 then array['xai'] else array[]::text[] end)
                  || case when $9::jsonb is null then '{}'::jsonb else jsonb_build_object('openai', $9::jsonb) end
                  || case when $11::jsonb is null then '{}'::jsonb else jsonb_build_object('xai', $11::jsonb) end
-         where id = $1",
+         where id = $1 and revoked_at is null",
     )
     .bind(&key.id)
     .bind(key.name.trim())
@@ -1126,7 +1131,7 @@ async fn ensure_client_key_name_available(
     // 不回填历史重名数据；创建和保存时统一校验，更新排除当前记录。
     let duplicate: bool = sqlx::query_scalar(
         "select exists(select 1 from client_api_keys
-         where lower(btrim(name)) = lower($1) and id <> $2)",
+         where lower(btrim(name)) = lower($1) and id <> $2 and revoked_at is null)",
     )
     .bind(name)
     .bind(id)
@@ -1150,7 +1155,7 @@ pub(crate) async fn set_client_api_key_enabled_in_transaction(
 ) -> StoreResult<()> {
     require_nonempty(ENTITY, "id", id)?;
     let result =
-        sqlx::query("update client_api_keys set enabled = $2, updated_at = now() where id = $1")
+        sqlx::query("update client_api_keys set enabled = $2, updated_at = now() where id = $1 and revoked_at is null")
             .bind(id)
             .bind(enabled)
             .execute(&mut **transaction)
@@ -1164,7 +1169,14 @@ pub(crate) async fn delete_client_api_key_in_transaction(
     id: &str,
 ) -> StoreResult<()> {
     require_nonempty(ENTITY, "id", id)?;
-    let result = sqlx::query("delete from client_api_keys where id = $1")
+    // seat Key 撤销凭据但保留费用明细及在途结算所需的归属。
+    let revoked = sqlx::query("update client_api_keys set enabled = false, revoked_at = now(), updated_at = now() where id = $1 and seat_id is not null and revoked_at is null")
+        .bind(id).execute(&mut **transaction).await
+        .map_err(|_| postgres_unavailable("revoke seat key"))?;
+    if revoked.rows_affected() == 1 {
+        return Ok(());
+    }
+    let result = sqlx::query("delete from client_api_keys where id = $1 and seat_id is null")
         .bind(id)
         .execute(&mut **transaction)
         .await
@@ -1191,7 +1203,7 @@ async fn replace_client_api_key_groups_in_transaction(
     validate_group_ids(group_ids)?;
     if !group_ids.is_empty() {
         let count = sqlx::query_scalar::<_, i64>(
-            "select count(*)::bigint from account_groups where id = any($1::text[])",
+            "select count(*)::bigint from account_groups where id = any($1::text[]) and not is_car",
         )
         .bind(group_ids)
         .fetch_one(&mut **transaction)
@@ -1306,8 +1318,9 @@ fn client_record_from_row(row: &sqlx::postgres::PgRow) -> StoreResult<ClientApiK
 }
 
 async fn count_client_api_keys(pool: &PgPool, search: Option<&str>) -> StoreResult<u64> {
-    let mut statement =
-        QueryBuilder::<Postgres>::new("select count(*)::bigint from client_api_keys where true");
+    let mut statement = QueryBuilder::<Postgres>::new(
+        "select count(*)::bigint from client_api_keys where revoked_at is null",
+    );
     push_client_key_search(&mut statement, search);
     let count = statement
         .build_query_scalar::<i64>()
@@ -1348,7 +1361,7 @@ async fn load_client_key_memberships(
          global_providers as (
            select coalesce(array_agg(distinct provider_kind order by provider_kind), '{}')
                     as provider_kinds
-             from provider_accounts
+             from provider_accounts a where not exists (select 1 from account_group_accounts ga join account_groups g on g.id = ga.account_group_id where ga.provider_account_id = a.id and g.is_car)
          )
          select requested_keys.key_id,
                 groups.id as group_id, groups.name as group_name, groups.color as group_color,
@@ -1359,7 +1372,7 @@ async fn load_client_key_memberships(
                   as group_provider_kinds
            from requested_keys
            cross join global_providers
-           left join client_api_key_groups bindings
+           left join client_key_effective_groups bindings
              on bindings.client_api_key_id = requested_keys.key_id
            left join account_groups groups on groups.id = bindings.account_group_id
            left join account_group_accounts memberships

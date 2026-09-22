@@ -315,7 +315,7 @@ struct UnusedAdmissions;
 impl ClientAdmissionPort for UnusedAdmissions {
     fn abandon(
         &self,
-        key: &gateway_core::policy::ClientApiKeyId,
+        key: &gateway_core::policy::ClientConcurrencyId,
         request: &gateway_core::engine::ModelRequestId,
     ) {
         let _ = futures::FutureExt::now_or_never(self.release(key, request));
@@ -330,7 +330,7 @@ impl ClientAdmissionPort for UnusedAdmissions {
 
     fn release<'a>(
         &'a self,
-        _: &'a ClientApiKeyId,
+        _: &'a gateway_core::policy::ClientConcurrencyId,
         _: &'a ModelRequestId,
     ) -> BoxFuture<'a, Result<bool, ClientAdmissionError>> {
         Box::pin(async { unreachable!("authentication fixture does not execute") })

@@ -98,6 +98,7 @@ struct AccountGroupIdRequest {
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 struct AccountGroupView {
+    is_car: bool,
     disable_fast: bool,
     id: String,
     name: String,
@@ -139,6 +140,7 @@ struct AccountGroupUsageView {
 impl From<AccountGroupRecord> for AccountGroupView {
     fn from(record: AccountGroupRecord) -> Self {
         Self {
+            is_car: record.is_car,
             id: record.id.to_string(),
             name: record.name,
             description: record.description,
@@ -237,6 +239,13 @@ where
         .route("/api/admin/account-groups/enable", post(enable::<S>))
         .route("/api/admin/account-groups/disable", post(disable::<S>))
         .route("/api/admin/account-groups/delete", post(delete::<S>))
+        .route(
+            "/api/admin/account-groups/convert-car",
+            post(convert_car::<S>),
+        )
+        .route("/api/admin/seats", get(list_seats::<S>))
+        .route("/api/admin/seats/save", post(save_seat::<S>))
+        .route("/api/admin/seats/join", post(join_seat::<S>))
 }
 
 async fn list<S>(
@@ -422,4 +431,176 @@ fn map_wire_error(_: WireValidationError) -> AdminError {
 
 fn map_service_error(error: gateway_admin::model::AdminError) -> AdminError {
     map_admin_service_error(error)
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct SeatQuery {
+    group_id: String,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct SaveSeatRequest {
+    id: Option<String>,
+    group_id: String,
+    name: String,
+    enabled: bool,
+    max_concurrency: u64,
+    daily_limit_usd: String,
+    weekly_limit_usd: String,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct JoinSeatRequest {
+    seat_id: String,
+    key_ids: Vec<String>,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct SeatView {
+    id: String,
+    group_id: String,
+    name: String,
+    enabled: bool,
+    max_concurrency: u64,
+    key_count: u64,
+    daily_limit_usd: String,
+    weekly_limit_usd: String,
+    daily_used_usd: String,
+    weekly_used_usd: String,
+    daily_resets_at: Option<DateTime<Utc>>,
+    weekly_resets_at: Option<DateTime<Utc>>,
+}
+
+impl From<gateway_admin::model::account_groups::SeatRecord> for SeatView {
+    fn from(s: gateway_admin::model::account_groups::SeatRecord) -> Self {
+        Self {
+            id: s.id.as_str().to_owned(),
+            group_id: s.group_id.to_string(),
+            name: s.name,
+            enabled: s.enabled,
+            max_concurrency: s.max_concurrency,
+            key_count: s.key_count,
+            daily_limit_usd: s.budget.limits.daily_usd.canonical(),
+            weekly_limit_usd: s.budget.limits.weekly_usd.canonical(),
+            daily_used_usd: s.budget.daily_used_usd.canonical(),
+            weekly_used_usd: s.budget.weekly_used_usd.canonical(),
+            daily_resets_at: s.budget.daily_resets_at.map(DateTime::from),
+            weekly_resets_at: s.budget.weekly_resets_at.map(DateTime::from),
+        }
+    }
+}
+
+async fn convert_car<S>(
+    auth: AdminAuth,
+    State(state): State<S>,
+    AdminJson(request): AdminJson<AccountGroupIdRequest>,
+) -> Result<impl IntoResponse, AdminError>
+where
+    S: SessionState + Send + Sync,
+{
+    let revision = state
+        .admin_services()
+        .account_groups()
+        .convert_to_car(&auth.context().mutation_context(), group_id(request.id)?)
+        .await
+        .map_err(map_service_error)?;
+    Ok(AdminResponse::new(
+        StatusCode::OK,
+        AdminEnvelope::ok(serde_json::json!({"configRevision": revision.get()})),
+    ))
+}
+
+async fn list_seats<S>(
+    _auth: AdminAuth,
+    State(state): State<S>,
+    AdminQuery(query): AdminQuery<SeatQuery>,
+) -> Result<impl IntoResponse, AdminError>
+where
+    S: SessionState + Send + Sync,
+{
+    let seats = state
+        .admin_services()
+        .account_groups()
+        .seats(group_id(query.group_id)?)
+        .await
+        .map_err(map_service_error)?;
+    Ok(AdminResponse::new(
+        StatusCode::OK,
+        AdminEnvelope::ok(seats.into_iter().map(SeatView::from).collect::<Vec<_>>()),
+    ))
+}
+
+async fn save_seat<S>(
+    auth: AdminAuth,
+    State(state): State<S>,
+    AdminJson(request): AdminJson<SaveSeatRequest>,
+) -> Result<impl IntoResponse, AdminError>
+where
+    S: SessionState + Send + Sync,
+{
+    let command = gateway_admin::model::account_groups::SaveSeat {
+        id: request
+            .id
+            .map(gateway_core::policy::SeatId::new)
+            .transpose()
+            .map_err(|_| AdminError::bad_request("seat ID 无效"))?,
+        group_id: group_id(request.group_id)?,
+        name: request.name,
+        enabled: request.enabled,
+        max_concurrency: request.max_concurrency,
+        limits: gateway_core::engine::budget::ClientBudgetLimits {
+            daily_usd: request
+                .daily_limit_usd
+                .parse()
+                .map_err(|_| AdminError::bad_request("日限额无效"))?,
+            weekly_usd: request
+                .weekly_limit_usd
+                .parse()
+                .map_err(|_| AdminError::bad_request("周限额无效"))?,
+        },
+    };
+    let revision = state
+        .admin_services()
+        .account_groups()
+        .save_seat(&auth.context().mutation_context(), command)
+        .await
+        .map_err(map_service_error)?;
+    Ok(AdminResponse::new(
+        StatusCode::OK,
+        AdminEnvelope::ok(serde_json::json!({"configRevision": revision.get()})),
+    ))
+}
+
+async fn join_seat<S>(
+    auth: AdminAuth,
+    State(state): State<S>,
+    AdminJson(request): AdminJson<JoinSeatRequest>,
+) -> Result<impl IntoResponse, AdminError>
+where
+    S: SessionState + Send + Sync,
+{
+    let command = gateway_admin::model::account_groups::JoinSeat {
+        seat_id: gateway_core::policy::SeatId::new(request.seat_id)
+            .map_err(|_| AdminError::bad_request("seat ID 无效"))?,
+        key_ids: request
+            .key_ids
+            .into_iter()
+            .map(gateway_core::policy::ClientApiKeyId::new)
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(|_| AdminError::bad_request("Key ID 无效"))?,
+    };
+    let revision = state
+        .admin_services()
+        .account_groups()
+        .join_seat(&auth.context().mutation_context(), command)
+        .await
+        .map_err(map_service_error)?;
+    Ok(AdminResponse::new(
+        StatusCode::OK,
+        AdminEnvelope::ok(serde_json::json!({"configRevision": revision.get()})),
+    ))
 }

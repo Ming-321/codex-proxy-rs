@@ -16,7 +16,7 @@ use gateway_core::engine::execution::{
     ProviderCircuitDecision, ProviderCircuitError, ProviderCircuitPort,
 };
 use gateway_core::lifecycle::CancellationToken;
-use gateway_core::policy::ClientApiKeyId;
+use gateway_core::policy::ClientConcurrencyId;
 use gateway_core::routing::ProviderKind;
 use gateway_core::task::{DaemonTask, WorkerTaskError};
 use tokio::sync::{Mutex, mpsc};
@@ -77,7 +77,7 @@ impl BufferedClientAdmissionPort {
 }
 
 impl ClientAdmissionPort for BufferedClientAdmissionPort {
-    fn abandon(&self, key: &ClientApiKeyId, request: &ModelRequestId) {
+    fn abandon(&self, key: &ClientConcurrencyId, request: &ModelRequestId) {
         self.enqueue(AdmissionRelease {
             client_api_key_id: key.clone(),
             model_request_id: request.clone(),
@@ -93,7 +93,7 @@ impl ClientAdmissionPort for BufferedClientAdmissionPort {
 
     fn release<'a>(
         &'a self,
-        client_api_key_id: &'a ClientApiKeyId,
+        client_api_key_id: &'a ClientConcurrencyId,
         model_request_id: &'a ModelRequestId,
     ) -> BoxFuture<'a, Result<bool, ClientAdmissionError>> {
         let enqueued = self.enqueue(AdmissionRelease {
@@ -112,7 +112,7 @@ impl ClientAdmissionPort for BufferedClientAdmissionPort {
 }
 
 struct AdmissionRelease {
-    client_api_key_id: ClientApiKeyId,
+    client_api_key_id: ClientConcurrencyId,
     model_request_id: ModelRequestId,
 }
 
