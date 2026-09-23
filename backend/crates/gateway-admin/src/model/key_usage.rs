@@ -42,6 +42,7 @@ pub struct SeatKeyUsage {
     pub id: ClientApiKeyId,
     pub name: String,
     pub prefix: String,
+    pub revoked: bool,
     pub daily_used_usd: Decimal,
     pub cycle_used_usd: Decimal,
 }

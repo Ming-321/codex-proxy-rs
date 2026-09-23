@@ -617,6 +617,12 @@ async fn capacity_publication_blends_clamps_and_confirms_abnormal_samples() {
     ordinary.sample_percent_millis = Some(20_000);
     let published = groups.reconcile_car_quota(ordinary).await.unwrap();
     assert_eq!(published.published_capacity_usd.canonical(), "665");
+    assert!(
+        (chrono::Utc::now() - published.published_at.unwrap())
+            .num_seconds()
+            .abs()
+            < 10
+    );
 
     let mut too_soon = observation(start, end, "2026-09-03T01:00:00Z".parse().unwrap(), 22_000);
     too_soon.predicted_capacity_usd = Some("720".parse().unwrap());
@@ -626,6 +632,11 @@ async fn capacity_publication_blends_clamps_and_confirms_abnormal_samples() {
     let held = groups.reconcile_car_quota(too_soon).await.unwrap();
     assert_eq!(held.published_capacity_usd.canonical(), "665");
 
+    // 只推进测试库的上次发布时间；新观测本身不能绕过实际6小时发布间隔。
+    sqlx::query("update car_quota_cycles set published_at = now() - interval '6 hours'")
+        .execute(&db.pool)
+        .await
+        .unwrap();
     let mut abnormal = observation(start, end, "2026-09-04T00:00:00Z".parse().unwrap(), 35_000);
     abnormal.predicted_capacity_usd = Some("1000".parse().unwrap());
     abnormal.sample_start = Some("2026-09-03T00:00:00Z".parse().unwrap());
@@ -697,7 +708,7 @@ async fn upgrade_rejects_wrong_history_and_rolls_back_invalid_empty_car_atomical
 }
 
 #[tokio::test]
-async fn disabling_publication_still_activates_cycles_and_incomplete_samples_never_publish() {
+async fn publication_preserves_guards_but_accepts_partial_costs() {
     let Some(db) = setup("car_publication_guards").await else {
         return;
     };
@@ -729,7 +740,7 @@ async fn disabling_publication_still_activates_cycles_and_incomplete_samples_nev
         .await
         .unwrap();
     for (cost_complete, pending, sampled) in
-        [(false, 0, 20_000), (true, 1, 20_000), (true, 0, 5_000)]
+        [(false, 1, 20_000), (true, 1, 20_000), (true, 0, 5_000)]
     {
         sample.observed_at += chrono::Duration::hours(1);
         sample.sample_end = Some(sample.observed_at);
@@ -746,5 +757,99 @@ async fn disabling_publication_still_activates_cycles_and_incomplete_samples_nev
             "130"
         );
     }
+    sample.observed_at += chrono::Duration::hours(1);
+    sample.sample_end = Some(sample.observed_at);
+    sample.cost_complete = false;
+    sample.pending_request_count = 0;
+    sample.sample_percent_millis = Some(20_000);
+    let published = groups.reconcile_car_quota(sample.clone()).await.unwrap();
+    assert_eq!(published.published_capacity_usd.canonical(), "136");
+    assert_eq!(
+        groups.list_seats(group()).await.unwrap()[0]
+            .budget
+            .limits
+            .weekly_usd
+            .canonical(),
+        "136"
+    );
+    sample.observed_at += chrono::Duration::hours(1);
+    sample.sample_end = Some(sample.observed_at);
+    sample.predicted_capacity_usd = Some("160".parse().unwrap());
+    let waiting = groups.reconcile_car_quota(sample).await.unwrap();
+    assert_eq!(waiting.published_capacity_usd.canonical(), "136");
+    assert!(waiting.prediction_reason.unwrap().contains("间隔"));
+    db.close().await;
+}
+
+#[tokio::test]
+async fn expired_account_cycle_preserves_revoked_member_usage_until_confirmation() {
+    let Some(db) = setup("car_member_cycle").await else {
+        return;
+    };
+    let groups = PgAccountGroupRepository::new(db.pool.clone());
+    let budgets = PgClientBudgetStore::new(db.pool.clone());
+    groups
+        .join_seat(join(&["key_a", "key_b"]), &context())
+        .await
+        .unwrap();
+    budgets
+        .settle(charge("key_a", "req_cycle_a", "2", true))
+        .await
+        .unwrap();
+    budgets
+        .settle(charge("key_b", "req_cycle_b", "3", true))
+        .await
+        .unwrap();
+    sqlx::raw_sql("update client_key_charge_events set completed_at = now() - interval '1 hour';
+        update seat_budget_windows set weekly_start = now() - interval '1 day', weekly_end = now() - interval '1 minute';
+        update client_api_keys set revoked_at = now(), enabled = false where id = 'key_b';
+        update account_groups set car_quota_mode = 'active' where is_car;
+        update car_quota_cycles set cycle_start = now() - interval '1 day', cycle_end = now() - interval '1 minute';")
+        .execute(&db.pool).await.unwrap();
+    let clients = PgAdminClientKeyStore::new(db.pool.clone());
+    let members = clients.seat_key_usage(&key("key_a")).await.unwrap();
+    assert_eq!(members.len(), 2);
+    let revoked = members.iter().find(|m| m.id == key("key_b")).unwrap();
+    assert!(revoked.revoked);
+    assert_eq!(revoked.cycle_used_usd.canonical(), "3");
+    assert_eq!(
+        groups.list_seats(group()).await.unwrap()[0]
+            .budget
+            .weekly_used_usd
+            .canonical(),
+        "5"
+    );
+    assert!(
+        clients
+            .seat_key_usage(&key("key_b"))
+            .await
+            .unwrap()
+            .is_empty()
+    );
+    assert!(
+        clients
+            .seat_key_usage(&key("key_c"))
+            .await
+            .unwrap()
+            .is_empty()
+    );
+    // 同样的过期数据在legacy模式按基础窗口展示为零，不清空底层账本。
+    sqlx::query("update account_groups set car_quota_mode = 'legacy'")
+        .execute(&db.pool)
+        .await
+        .unwrap();
+    assert!(
+        clients
+            .seat_key_usage(&key("key_a"))
+            .await
+            .unwrap()
+            .iter()
+            .all(|m| m.cycle_used_usd == "0".parse().unwrap())
+    );
+    let count: i64 = sqlx::query_scalar("select count(*) from client_key_charge_events")
+        .fetch_one(&db.pool)
+        .await
+        .unwrap();
+    assert_eq!(count, 2);
     db.close().await;
 }

@@ -710,13 +710,12 @@ pub(super) async fn reconcile_car_quota(
         let interval_ready = row
             .get::<Option<DateTime<Utc>>, _>("published_at")
             .is_none_or(|at| {
-                observation.observed_at - at
+                Utc::now() - at
                     >= chrono::Duration::seconds(settings.publish_interval_seconds as i64)
             });
         let sample_new = observation.sample_end.is_some()
             && observation.sample_end > row.get::<Option<DateTime<Utc>>, _>("published_sample_end");
         if settings.automatic_updates
-            && observation.cost_complete
             && observation.pending_request_count == 0
             && sampled >= settings.minimum_sample_millis
             && interval_ready
@@ -761,6 +760,21 @@ pub(super) async fn reconcile_car_quota(
             } else {
                 reason = Some("变化未达到最小更新幅度".to_owned());
             }
+        } else {
+            reason = Some(
+                if !settings.automatic_updates {
+                    "自动更新已关闭，保留当前生效限额"
+                } else if observation.pending_request_count > 0 {
+                    "存在尚未结算请求，等待完整交付"
+                } else if sampled < settings.minimum_sample_millis {
+                    "有效样本进度未达到自动更新门槛"
+                } else if !interval_ready {
+                    "未到自动更新间隔，保留当前生效限额"
+                } else {
+                    "尚无新的额度观测，保留当前生效限额"
+                }
+                .to_owned(),
+            );
         }
     }
 
@@ -768,7 +782,7 @@ pub(super) async fn reconcile_car_quota(
         last_observed_at = $5, last_used_percent = $6::text::numeric,
         predicted_capacity_usd = $7::text::numeric, prediction_reason = $8,
         published_capacity_usd = $9::text::numeric,
-        published_at = case when $10 then $5 else published_at end,
+        published_at = case when $10 then now() else published_at end,
         published_sample_end = case when $10 then $11 else published_sample_end end,
         reset_candidate_start = null, reset_candidate_end = null,
         reset_candidate_observed_at = null,

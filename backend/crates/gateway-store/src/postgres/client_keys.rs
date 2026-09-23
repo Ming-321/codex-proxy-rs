@@ -708,16 +708,23 @@ impl PgAdminClientKeyStore {
 #[async_trait]
 impl ClientKeyStore for PgAdminClientKeyStore {
     async fn seat_key_usage(&self, id: &ClientApiKeyId) -> AdminStoreResult<Vec<SeatKeyUsage>> {
-        let rows = sqlx::query("select member.id, member.name,
+        // 成员明细与共享预算使用同一窗口；等待账号周期确认时保留旧周期费用。
+        // 撤销只影响凭据，不移除历史费用；读取不会推进或清空账务。
+        let rows = sqlx::query("select member.id, member.name, member.revoked_at is not null as revoked,
             left(member.key, least(10, length(member.key) / 2)) as key_prefix,
-            coalesce(sum(e.amount_usd) filter (where e.completed_at >= w.daily_start and e.completed_at < w.daily_end), 0)::text as daily_used,
-            coalesce(sum(e.amount_usd) filter (where e.completed_at >= w.weekly_start and e.completed_at < w.weekly_end), 0)::text as cycle_used
+            coalesce(sum(e.amount_usd) filter (where w.daily_end > now() and e.completed_at >= w.daily_start and e.completed_at < w.daily_end), 0)::text as daily_used,
+            coalesce(sum(e.amount_usd) filter (where (g.car_quota_mode = 'active' or w.weekly_end > now()) and e.completed_at >= w.weekly_start and e.completed_at < w.weekly_end), 0)::text as cycle_used
             from client_api_keys current_key
-            join seat_budget_windows w on w.seat_id = current_key.seat_id
-            join client_api_keys member on member.seat_id = current_key.seat_id and member.revoked_at is null
+            join seats s on s.id = current_key.seat_id
+            join account_groups g on g.id = s.account_group_id
+            join client_api_keys member on member.seat_id = current_key.seat_id
+            left join seat_budget_windows w on w.seat_id = current_key.seat_id
             left join client_key_charge_events e on e.client_api_key_id = member.id
-            where current_key.id = $1 and current_key.revoked_at is null
-            group by member.id, member.name, member.key, member.created_at
+                and (e.seat_id = current_key.seat_id or e.seat_id is null)
+                and e.completed_at >= least(w.daily_start, w.weekly_start)
+                and e.completed_at < greatest(w.daily_end, w.weekly_end)
+            where current_key.id = $1 and current_key.enabled and current_key.revoked_at is null
+            group by member.id, member.name, member.key, member.created_at, member.revoked_at
             order by member.created_at, member.id")
             .bind(id.as_str()).fetch_all(&self.keys.pool).await
             .map_err(|error| admin_store_error(ENTITY, StoreError::Unavailable {
@@ -738,6 +745,7 @@ impl ClientKeyStore for PgAdminClientKeyStore {
                     })?,
                     name: row.get("name"),
                     prefix: row.get("key_prefix"),
+                    revoked: row.get("revoked"),
                     daily_used_usd: row.get::<String, _>("daily_used").parse().map_err(|_| {
                         admin_store_error(
                             ENTITY,

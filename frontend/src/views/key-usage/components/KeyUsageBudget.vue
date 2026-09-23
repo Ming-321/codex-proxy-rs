@@ -66,10 +66,10 @@ const windows = computed(() => [
           <span class="text-cp-xs text-cp-text-tertiary">共享额度，分别统计</span>
         </div>
         <div class="grid gap-2">
-          <div v-for="key in seatKeys" :key="key.prefix" class="grid grid-cols-[minmax(0,1fr)_auto_auto] items-center gap-3 rounded-cp bg-cp-fill-quaternary px-3 py-2 text-cp-xs">
-            <span class="min-w-0 truncate text-cp-text"><strong>{{ key.name }}</strong> <span class="font-mono text-cp-text-tertiary">{{ key.prefix }}</span> <span v-if="key.current" class="text-cp-primary">当前</span></span>
+          <div v-for="key in seatKeys" :key="key.id" class="grid grid-cols-2 gap-x-3 gap-y-2 rounded-cp bg-cp-fill-quaternary px-3 py-2 text-cp-xs sm:grid-cols-[minmax(0,1fr)_auto_auto] sm:items-center">
+            <span class="col-span-2 min-w-0 break-words text-cp-text sm:col-span-1"><strong>{{ key.name }}</strong> <span class="font-mono text-cp-text-tertiary">{{ key.prefix }}</span> <span v-if="key.current" class="text-cp-primary">当前</span> <span v-if="key.revoked" class="text-cp-text-tertiary">已撤销</span></span>
             <span class="font-mono text-cp-text-secondary">今日 {{ money(key.dailyUsedUsd) }}</span>
-            <span class="font-mono text-cp-text-secondary">周期 {{ money(key.cycleUsedUsd) }}</span>
+            <span class="font-mono text-cp-text-secondary">{{ budget.accountCycle ? '周期' : '本周' }} {{ money(key.cycleUsedUsd) }}</span>
           </div>
         </div>
       </div>

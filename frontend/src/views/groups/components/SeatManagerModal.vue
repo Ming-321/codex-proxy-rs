@@ -1,7 +1,7 @@
 <script setup lang="ts">
-import type { AccountGroup, ApiKey, CarQuotaState, Seat } from '@/api'
+import type { AccountGroup, ApiKey, CarQuotaSettings, CarQuotaState, Seat } from '@/api'
 import { computed, ref, watch } from 'vue'
-import { convertToCar, getApiKeys, getCarQuota, getSeats, joinSeat, saveCarWeights, saveSeat } from '@/api'
+import { convertToCar, getApiKeys, getCarQuota, getCarQuotaSettings, getSeats, joinSeat, saveCarWeights, saveSeat } from '@/api'
 import BaseButton from '@/components/base/BaseButton.vue'
 import BaseCheckbox from '@/components/base/BaseCheckbox.vue'
 import BaseFormItem from '@/components/base/BaseForm/FormItem.vue'
@@ -19,6 +19,7 @@ const busy = action.loading
 const isCar = ref(false)
 const seats = ref<Seat[]>([])
 const quota = ref<CarQuotaState | null>(null)
+const quotaSettings = ref<CarQuotaSettings | null>(null)
 const now = useUiClock()
 const waitingForCycle = computed(() => quota.value?.mode === 'active'
   && (!quota.value.cycleEnd || Date.parse(quota.value.cycleEnd) <= now.value.getTime()))
@@ -42,7 +43,7 @@ async function load() {
   if (!props.group)
     return
   if (isCar.value) {
-    [seats.value, quota.value] = await Promise.all([getSeats(props.group.id), getCarQuota(props.group.id)])
+    [seats.value, quota.value, quotaSettings.value] = await Promise.all([getSeats(props.group.id), getCarQuota(props.group.id), getCarQuotaSettings()])
     totalWeight.value = quota.value.totalWeight
   }
   else {
@@ -160,16 +161,20 @@ function modeLabel(mode: CarQuotaState['mode']) {
           <div>
             <strong class="text-cp-text">账号周期额度</strong>
             <p class="mt-1 text-cp-xs text-cp-text-secondary">
-              {{ modeLabel(quota.mode) }} · 周期结束 {{ quota.cycleEnd ? reset(quota.cycleEnd) : '等待账号返回' }} · 更新于 {{ reset(quota.updatedAt) }}
+              {{ modeLabel(quota.mode) }} · 周期结束 {{ quota.cycleEnd ? reset(quota.cycleEnd) : '等待账号返回' }}
             </p>
           </div>
           <div class="text-right text-cp-sm">
-            <p>已发布 ${{ amount(quota.publishedCapacityUsd) }}</p>
+            <p>当前生效容量 ${{ amount(quota.publishedCapacityUsd) }}</p>
             <p class="text-cp-xs text-cp-text-secondary">
-              当前估算 {{ quota.predictedCapacityUsd ? `$${amount(quota.predictedCapacityUsd)}` : '暂无' }} · 账号已用 {{ quota.accountUsedPercent == null ? '暂无' : `${quota.accountUsedPercent.toFixed(1)}%` }}
+              最新预测 {{ quota.predictedCapacityUsd != null ? `$${amount(quota.predictedCapacityUsd)}` : '暂无' }} · 账号已用 {{ quota.accountUsedPercent == null ? '暂无' : `${quota.accountUsedPercent.toFixed(1)}%` }}
             </p>
           </div>
         </div>
+        <p v-if="quotaSettings" class="text-cp-xs text-cp-text-secondary">
+          {{ quotaSettings.automaticUpdates ? `满足条件时按 ${amount(String(quotaSettings.publishIntervalSeconds / 3600))} 小时间隔加权更新，新预测占 ${quotaSettings.estimateWeightPercent}%` : '自动更新已关闭，账号周期仍会跟随' }}
+          · 最近调整 {{ quota.publishedAt ? reset(quota.publishedAt) : '尚未自动调整' }}
+        </p>
         <p v-if="quota.predictionReason" class="text-cp-xs text-cp-text-secondary">
           {{ quota.predictionReason }}
         </p>

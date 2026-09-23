@@ -41,8 +41,10 @@ export interface KeyUsageBudget {
 }
 
 export interface SeatKeyUsage {
+  id: string
   name: string
   prefix: string
+  revoked: boolean
   current: boolean
   dailyUsedUsd: string
   cycleUsedUsd: string

@@ -62,8 +62,10 @@ pub(super) struct OverviewView {
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
 struct SeatKeyUsageView {
+    id: String,
     name: String,
     prefix: String,
+    revoked: bool,
     current: bool,
     daily_used_usd: String,
     cycle_used_usd: String,
@@ -156,9 +158,11 @@ pub(super) fn overview(value: KeyUsageOverview) -> OverviewView {
             .seat_keys
             .into_iter()
             .map(|member| SeatKeyUsageView {
+                id: member.id.as_str().to_owned(),
                 current: member.id == key_id,
                 name: member.name,
                 prefix: member.prefix,
+                revoked: member.revoked,
                 daily_used_usd: member.daily_used_usd.canonical(),
                 cycle_used_usd: member.cycle_used_usd.canonical(),
             })
