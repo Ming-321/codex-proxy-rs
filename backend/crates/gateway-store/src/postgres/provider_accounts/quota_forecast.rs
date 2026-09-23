@@ -2,7 +2,7 @@
 
 use gateway_admin::model::quota_forecast_sampling::{
     MAX_FORECAST_HISTORY_POINTS, QuotaForecastHistory, QuotaForecastHistoryPoint,
-    QuotaForecastUsage,
+    QuotaForecastNeighbor, QuotaForecastUsage,
 };
 
 use super::*;
@@ -62,10 +62,29 @@ pub(super) async fn load_history(
                 completed_at: window_usage_value(row, "completed_at")?,
                 usage,
                 provider_observation: ProviderDocument::new(OpaqueProviderData::new(document.0)),
+                previous_observation: neighbor(row, "previous_completed_at", "previous_document")?,
+                next_observation: neighbor(row, "next_completed_at", "next_document")?,
             });
         }
     }
     Ok(history)
+}
+
+fn neighbor(
+    row: &sqlx::postgres::PgRow,
+    time: &'static str,
+    document: &'static str,
+) -> AdminStoreResult<Option<QuotaForecastNeighbor>> {
+    let document = window_usage_value::<
+        Option<sqlx::types::Json<serde_json::Map<String, serde_json::Value>>>,
+    >(row, document)?;
+    let completed_at = window_usage_value::<Option<chrono::DateTime<chrono::Utc>>>(row, time)?;
+    Ok(document
+        .zip(completed_at)
+        .map(|(document, completed_at)| QuotaForecastNeighbor {
+            completed_at,
+            provider_observation: ProviderDocument::new(OpaqueProviderData::new(document.0)),
+        }))
 }
 
 fn history_sql() -> String {
@@ -116,6 +135,11 @@ fn history_sql() -> String {
                 sum(excluded) over w as excluded_request_count
               from facts where settled
               window w as (order by completed_at range between unbounded preceding and current row)
+        ), neighbors as (
+            select id,
+                lag(id) over w as previous_id, lead(id) over w as next_id
+            from scoped where settled and has_document
+            window w as (order by completed_at, id)
         ), selected as (
             select distinct on (bucket) * from cumulative
              where has_document order by bucket, completed_at desc, id desc
@@ -125,8 +149,13 @@ fn history_sql() -> String {
             s.output_tokens::bigint, s.cached_tokens::bigint, s.missing_token_count::bigint,
             s.known_cost_count::bigint, s.unavailable_cost_count::bigint,
             s.usd::double precision, s.excluded_request_count::bigint,
-            0::bigint as pending_count, mr.provider_observation_json as document
+            0::bigint as pending_count, mr.provider_observation_json as document,
+            previous.completed_at as previous_completed_at, previous.provider_observation_json as previous_document,
+            next.completed_at as next_completed_at, next.provider_observation_json as next_document
           from selected s join model_requests mr on mr.id = s.id
+          join neighbors n on n.id = s.id
+          left join model_requests previous on previous.id = n.previous_id
+          left join model_requests next on next.id = n.next_id
         union all
         select true, $3, $3,
             coalesce(sum(request_count), 0)::bigint, coalesce(sum(tokens), 0)::bigint,
@@ -134,7 +163,8 @@ fn history_sql() -> String {
             coalesce(sum(cached), 0)::bigint, coalesce(sum(missing_tokens), 0)::bigint,
             coalesce(sum(known_costs), 0)::bigint, coalesce(sum(missing_costs), 0)::bigint,
             coalesce(sum(usd), 0)::double precision, coalesce(sum(excluded), 0)::bigint,
-            count(*) filter (where settled is not true), null::jsonb
+            count(*) filter (where settled is not true), null::jsonb,
+            null::timestamptz, null::jsonb, null::timestamptz, null::jsonb
           from facts
         order by completed_at, is_total"
     )
