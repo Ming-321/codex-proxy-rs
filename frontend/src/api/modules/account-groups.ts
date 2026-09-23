@@ -44,6 +44,7 @@ export interface Seat {
   name: string
   enabled: boolean
   maxConcurrency: number
+  weight: string
   keyCount: number
   dailyLimitUsd: string
   weeklyLimitUsd: string
@@ -57,11 +58,53 @@ export function getSeats(groupId: string) {
   return request<Seat[]>({ url: '/api/admin/seats', method: 'GET', params: { groupId } })
 }
 
+export interface CarQuotaState {
+  groupId: string
+  totalWeight: string
+  mode: 'legacy' | 'waiting' | 'active'
+  cycleStart: string | null
+  cycleEnd: string | null
+  accountUsedPercent: number | null
+  publishedCapacityUsd: string
+  predictedCapacityUsd: string | null
+  predictionReason: string | null
+  publishedAt: string | null
+  updatedAt: string
+}
+
+export interface CarQuotaSettings {
+  automaticUpdates: boolean
+  publishIntervalSeconds: number
+  outsideUsageProtection: boolean
+  minimumSamplePercent: number
+  estimateWeightPercent: number
+  minimumChangePercent: number
+  maximumAdjustmentPercent: number
+  abnormalChangePercent: number
+  updatedAt: string
+}
+
+export function getCarQuota(groupId: string) {
+  return request<CarQuotaState>({ url: '/api/admin/car-quota', method: 'GET', params: { groupId } })
+}
+
+export function saveCarWeights(groupId: string, totalWeight: string) {
+  return request({ url: '/api/admin/car-weights', method: 'POST', data: { groupId, totalWeight } })
+}
+
+export function getCarQuotaSettings() {
+  return request<CarQuotaSettings>({ url: '/api/admin/car-quota-settings', method: 'GET' })
+}
+
+export function saveCarQuotaSettings(data: Omit<CarQuotaSettings, 'updatedAt'>) {
+  return request<CarQuotaSettings>({ url: '/api/admin/car-quota-settings', method: 'POST', data })
+}
+
 export function convertToCar(id: string) {
   return request({ url: '/api/admin/account-groups/convert-car', method: 'POST', data: { id } })
 }
 
-export function saveSeat(data: Pick<Seat, 'groupId' | 'name' | 'enabled' | 'maxConcurrency' | 'dailyLimitUsd' | 'weeklyLimitUsd'> & { id?: string }) {
+export function saveSeat(data: Pick<Seat, 'groupId' | 'name' | 'enabled' | 'maxConcurrency' | 'weight' | 'dailyLimitUsd' | 'weeklyLimitUsd'> & { id?: string }) {
   return request({ url: '/api/admin/seats/save', method: 'POST', data })
 }
 

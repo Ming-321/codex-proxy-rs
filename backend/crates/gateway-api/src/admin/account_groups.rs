@@ -246,6 +246,12 @@ where
         .route("/api/admin/seats", get(list_seats::<S>))
         .route("/api/admin/seats/save", post(save_seat::<S>))
         .route("/api/admin/seats/join", post(join_seat::<S>))
+        .route("/api/admin/car-quota", get(car_quota::<S>))
+        .route("/api/admin/car-weights", post(save_car_weights::<S>))
+        .route(
+            "/api/admin/car-quota-settings",
+            get(car_quota_settings::<S>).post(replace_car_quota_settings::<S>),
+        )
 }
 
 async fn list<S>(
@@ -447,6 +453,7 @@ struct SaveSeatRequest {
     name: String,
     enabled: bool,
     max_concurrency: u64,
+    weight: String,
     daily_limit_usd: String,
     weekly_limit_usd: String,
 }
@@ -466,6 +473,7 @@ struct SeatView {
     name: String,
     enabled: bool,
     max_concurrency: u64,
+    weight: String,
     key_count: u64,
     daily_limit_usd: String,
     weekly_limit_usd: String,
@@ -483,6 +491,7 @@ impl From<gateway_admin::model::account_groups::SeatRecord> for SeatView {
             name: s.name,
             enabled: s.enabled,
             max_concurrency: s.max_concurrency,
+            weight: s.weight.canonical(),
             key_count: s.key_count,
             daily_limit_usd: s.budget.limits.daily_usd.canonical(),
             weekly_limit_usd: s.budget.limits.weekly_usd.canonical(),
@@ -552,6 +561,10 @@ where
         name: request.name,
         enabled: request.enabled,
         max_concurrency: request.max_concurrency,
+        weight: request
+            .weight
+            .parse()
+            .map_err(|_| AdminError::bad_request("seat 权重无效"))?,
         limits: gateway_core::engine::budget::ClientBudgetLimits {
             daily_usd: request
                 .daily_limit_usd
@@ -572,6 +585,213 @@ where
     Ok(AdminResponse::new(
         StatusCode::OK,
         AdminEnvelope::ok(serde_json::json!({"configRevision": revision.get()})),
+    ))
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct SaveCarWeightsRequest {
+    group_id: String,
+    total_weight: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct CarQuotaStateView {
+    group_id: String,
+    total_weight: String,
+    mode: String,
+    cycle_start: Option<DateTime<Utc>>,
+    cycle_end: Option<DateTime<Utc>>,
+    account_used_percent: Option<f64>,
+    published_capacity_usd: String,
+    predicted_capacity_usd: Option<String>,
+    prediction_reason: Option<String>,
+    published_at: Option<DateTime<Utc>>,
+    updated_at: DateTime<Utc>,
+}
+
+impl From<gateway_admin::model::account_groups::CarQuotaState> for CarQuotaStateView {
+    fn from(state: gateway_admin::model::account_groups::CarQuotaState) -> Self {
+        Self {
+            group_id: state.group_id.to_string(),
+            total_weight: state.total_weight.canonical(),
+            mode: state.mode.as_str().to_owned(),
+            cycle_start: state.cycle_start,
+            cycle_end: state.cycle_end,
+            account_used_percent: state
+                .account_used_percent_millis
+                .map(|value| f64::from(value) / 1_000.0),
+            published_capacity_usd: state.published_capacity_usd.canonical(),
+            predicted_capacity_usd: state.predicted_capacity_usd.map(|value| value.canonical()),
+            prediction_reason: state.prediction_reason,
+            published_at: state.published_at,
+            updated_at: state.updated_at,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct CarQuotaSettingsView {
+    automatic_updates: bool,
+    publish_interval_seconds: u64,
+    outside_usage_protection: bool,
+    minimum_sample_percent: f64,
+    estimate_weight_percent: f64,
+    minimum_change_percent: f64,
+    maximum_adjustment_percent: f64,
+    abnormal_change_percent: f64,
+    updated_at: DateTime<Utc>,
+}
+
+impl From<gateway_admin::model::account_groups::CarQuotaSettings> for CarQuotaSettingsView {
+    fn from(settings: gateway_admin::model::account_groups::CarQuotaSettings) -> Self {
+        let percent = |value| f64::from(value) / 1_000.0;
+        Self {
+            automatic_updates: settings.automatic_updates,
+            publish_interval_seconds: settings.publish_interval_seconds,
+            outside_usage_protection: settings.outside_usage_protection,
+            minimum_sample_percent: percent(settings.minimum_sample_millis),
+            estimate_weight_percent: percent(settings.estimate_weight_millis),
+            minimum_change_percent: percent(settings.minimum_change_millis),
+            maximum_adjustment_percent: percent(settings.maximum_adjustment_millis),
+            abnormal_change_percent: percent(settings.abnormal_change_millis),
+            updated_at: settings.updated_at,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct ReplaceCarQuotaSettingsRequest {
+    automatic_updates: bool,
+    publish_interval_seconds: u64,
+    outside_usage_protection: bool,
+    minimum_sample_percent: f64,
+    estimate_weight_percent: f64,
+    minimum_change_percent: f64,
+    maximum_adjustment_percent: f64,
+    abnormal_change_percent: f64,
+}
+
+fn percent_millis(value: f64, allow_zero: bool) -> Result<u32, AdminError> {
+    if !value.is_finite()
+        || value > 100.0
+        || if allow_zero {
+            value < 0.0
+        } else {
+            value <= 0.0
+        }
+    {
+        return Err(AdminError::bad_request("car 估算百分比应在有效范围内"));
+    }
+    Ok((value * 1_000.0).round() as u32)
+}
+
+async fn car_quota<S>(
+    _auth: AdminAuth,
+    State(state): State<S>,
+    AdminQuery(query): AdminQuery<SeatQuery>,
+) -> Result<impl IntoResponse, AdminError>
+where
+    S: SessionState + Send + Sync,
+{
+    let result = state
+        .admin_services()
+        .account_groups()
+        .car_quota_state(group_id(query.group_id)?)
+        .await
+        .map_err(map_service_error)?;
+    Ok(AdminResponse::new(
+        StatusCode::OK,
+        AdminEnvelope::ok(CarQuotaStateView::from(result)),
+    ))
+}
+
+async fn save_car_weights<S>(
+    auth: AdminAuth,
+    State(state): State<S>,
+    AdminJson(request): AdminJson<SaveCarWeightsRequest>,
+) -> Result<impl IntoResponse, AdminError>
+where
+    S: SessionState + Send + Sync,
+{
+    let revision = state
+        .admin_services()
+        .account_groups()
+        .save_car_weights(
+            &auth.context().mutation_context(),
+            gateway_admin::model::account_groups::SaveCarWeights {
+                group_id: group_id(request.group_id)?,
+                total_weight: request
+                    .total_weight
+                    .parse()
+                    .map_err(|_| AdminError::bad_request("car 总权重无效"))?,
+            },
+        )
+        .await
+        .map_err(map_service_error)?;
+    Ok(AdminResponse::new(
+        StatusCode::OK,
+        AdminEnvelope::ok(serde_json::json!({"configRevision": revision.get()})),
+    ))
+}
+
+async fn car_quota_settings<S>(
+    _auth: AdminAuth,
+    State(state): State<S>,
+    AdminQuery(_): AdminQuery<SeatQueryOptional>,
+) -> Result<impl IntoResponse, AdminError>
+where
+    S: SessionState + Send + Sync,
+{
+    let settings = state
+        .admin_services()
+        .account_groups()
+        .car_quota_settings()
+        .await
+        .map_err(map_service_error)?;
+    Ok(AdminResponse::new(
+        StatusCode::OK,
+        AdminEnvelope::ok(CarQuotaSettingsView::from(settings)),
+    ))
+}
+
+#[derive(Default, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct SeatQueryOptional {}
+
+async fn replace_car_quota_settings<S>(
+    auth: AdminAuth,
+    State(state): State<S>,
+    AdminJson(request): AdminJson<ReplaceCarQuotaSettingsRequest>,
+) -> Result<impl IntoResponse, AdminError>
+where
+    S: SessionState + Send + Sync,
+{
+    if !(300..=2_592_000).contains(&request.publish_interval_seconds) {
+        return Err(AdminError::bad_request("最短发布间隔应为 300～2592000 秒"));
+    }
+    let command = gateway_admin::model::account_groups::ReplaceCarQuotaSettings {
+        automatic_updates: request.automatic_updates,
+        publish_interval_seconds: request.publish_interval_seconds,
+        outside_usage_protection: request.outside_usage_protection,
+        minimum_sample_millis: percent_millis(request.minimum_sample_percent, false)?,
+        estimate_weight_millis: percent_millis(request.estimate_weight_percent, false)?,
+        minimum_change_millis: percent_millis(request.minimum_change_percent, true)?,
+        maximum_adjustment_millis: percent_millis(request.maximum_adjustment_percent, false)?,
+        abnormal_change_millis: percent_millis(request.abnormal_change_percent, false)?,
+    };
+    let settings = state
+        .admin_services()
+        .account_groups()
+        .replace_car_quota_settings(&auth.context().mutation_context(), command)
+        .await
+        .map_err(map_service_error)?;
+    Ok(AdminResponse::new(
+        StatusCode::OK,
+        AdminEnvelope::ok(CarQuotaSettingsView::from(settings)),
     ))
 }
 

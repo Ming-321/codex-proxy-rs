@@ -36,6 +36,7 @@ pub struct SeatBudgetRef {
     pub id: crate::policy::SeatId,
     pub name: String,
     pub max_concurrency: u64,
+    pub account_cycle: bool,
 }
 
 #[derive(Debug, Clone)]

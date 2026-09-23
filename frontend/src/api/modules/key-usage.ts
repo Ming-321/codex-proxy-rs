@@ -27,6 +27,7 @@ export interface KeyUsageMetrics {
 
 export interface KeyUsageBudget {
   seatName: string | null
+  accountCycle: boolean
   name: string
   prefix: string
   maxConcurrency: number

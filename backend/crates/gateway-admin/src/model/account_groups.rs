@@ -3,7 +3,11 @@
 use std::collections::BTreeMap;
 
 use chrono::{DateTime, Utc};
-use gateway_core::{account::AccountStatusFacts, routing::AccountGroupId};
+use gateway_core::{
+    account::{AccountStatusFacts, ProviderAccountId},
+    metering::Decimal,
+    routing::AccountGroupId,
+};
 
 use super::{PageSize, Revision, observability::DecimalAmount};
 
@@ -165,6 +169,7 @@ pub struct SeatRecord {
     pub name: String,
     pub enabled: bool,
     pub max_concurrency: u64,
+    pub weight: Decimal,
     pub key_count: u64,
     pub budget: gateway_core::engine::budget::ClientBudgetStatus,
 }
@@ -176,6 +181,7 @@ pub struct SaveSeat {
     pub name: String,
     pub enabled: bool,
     pub max_concurrency: u64,
+    pub weight: Decimal,
     pub limits: gateway_core::engine::budget::ClientBudgetLimits,
 }
 
@@ -183,4 +189,94 @@ pub struct SaveSeat {
 pub struct JoinSeat {
     pub seat_id: gateway_core::policy::SeatId,
     pub key_ids: Vec<gateway_core::policy::ClientApiKeyId>,
+}
+
+/// 全局 car 容量估算发布设置；百分点参数按千分之一保存。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CarQuotaSettings {
+    pub automatic_updates: bool,
+    pub publish_interval_seconds: u64,
+    pub outside_usage_protection: bool,
+    pub minimum_sample_millis: u32,
+    pub estimate_weight_millis: u32,
+    pub minimum_change_millis: u32,
+    pub maximum_adjustment_millis: u32,
+    pub abnormal_change_millis: u32,
+    pub updated_at: DateTime<Utc>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ReplaceCarQuotaSettings {
+    pub automatic_updates: bool,
+    pub publish_interval_seconds: u64,
+    pub outside_usage_protection: bool,
+    pub minimum_sample_millis: u32,
+    pub estimate_weight_millis: u32,
+    pub minimum_change_millis: u32,
+    pub maximum_adjustment_millis: u32,
+    pub abnormal_change_millis: u32,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CarQuotaMode {
+    Legacy,
+    Waiting,
+    Active,
+}
+
+impl CarQuotaMode {
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Legacy => "legacy",
+            Self::Waiting => "waiting",
+            Self::Active => "active",
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CarQuotaState {
+    pub group_id: AccountGroupId,
+    pub total_weight: Decimal,
+    pub mode: CarQuotaMode,
+    pub window_key: Option<String>,
+    pub cycle_start: Option<DateTime<Utc>>,
+    pub cycle_end: Option<DateTime<Utc>>,
+    pub account_used_percent_millis: Option<u32>,
+    pub published_capacity_usd: Decimal,
+    pub predicted_capacity_usd: Option<Decimal>,
+    pub prediction_reason: Option<String>,
+    pub published_at: Option<DateTime<Utc>>,
+    pub updated_at: DateTime<Utc>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CarAccount {
+    pub group_id: AccountGroupId,
+    pub account_id: ProviderAccountId,
+}
+
+/// Worker 从账号真实窗口和现有预测系统投影出的候选事实。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CarQuotaObservation {
+    pub group_id: AccountGroupId,
+    pub window_key: String,
+    pub cycle_start: DateTime<Utc>,
+    pub cycle_end: DateTime<Utc>,
+    pub observed_at: DateTime<Utc>,
+    pub used_percent_millis: u32,
+    pub predicted_capacity_usd: Option<Decimal>,
+    pub prediction_reason: Option<String>,
+    pub sample_start: Option<DateTime<Utc>>,
+    pub sample_end: Option<DateTime<Utc>>,
+    pub sample_percent_millis: Option<u32>,
+    pub cost_complete: bool,
+    pub pending_request_count: u64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SaveCarWeights {
+    pub group_id: AccountGroupId,
+    pub total_weight: Decimal,
 }

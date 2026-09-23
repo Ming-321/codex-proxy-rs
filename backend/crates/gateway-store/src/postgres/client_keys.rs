@@ -708,13 +708,15 @@ impl PgAdminClientKeyStore {
 #[async_trait]
 impl ClientKeyStore for PgAdminClientKeyStore {
     async fn seat_key_usage(&self, id: &ClientApiKeyId) -> AdminStoreResult<Vec<SeatKeyUsage>> {
-        // 查询与共享预算使用同一窗口，过期窗口只投影为零，不在读取时推进账务。
-        // 撤销只影响凭据，历史成员的费用仍是共享用量的一部分。
+        // 成员明细与共享预算使用同一窗口；等待账号周期确认时保留旧周期费用。
+        // 撤销只影响凭据，不移除历史费用；读取不会推进或清空账务。
         let rows = sqlx::query("select member.id, member.name, member.revoked_at is not null as revoked,
             left(member.key, least(10, length(member.key) / 2)) as key_prefix,
             coalesce(sum(e.amount_usd) filter (where w.daily_end > now() and e.completed_at >= w.daily_start and e.completed_at < w.daily_end), 0)::text as daily_used,
-            coalesce(sum(e.amount_usd) filter (where w.weekly_end > now() and e.completed_at >= w.weekly_start and e.completed_at < w.weekly_end), 0)::text as weekly_used
+            coalesce(sum(e.amount_usd) filter (where (g.car_quota_mode = 'active' or w.weekly_end > now()) and e.completed_at >= w.weekly_start and e.completed_at < w.weekly_end), 0)::text as weekly_used
             from client_api_keys current_key
+            join seats s on s.id = current_key.seat_id
+            join account_groups g on g.id = s.account_group_id
             join client_api_keys member on member.seat_id = current_key.seat_id
             left join seat_budget_windows w on w.seat_id = current_key.seat_id
             left join client_key_charge_events e on e.client_api_key_id = member.id
@@ -758,7 +760,7 @@ impl ClientKeyStore for PgAdminClientKeyStore {
                             ENTITY,
                             StoreError::InvalidData {
                                 entity: ENTITY,
-                                message: "invalid weekly usage".to_owned(),
+                                message: "invalid cycle usage".to_owned(),
                             },
                         )
                     })?,

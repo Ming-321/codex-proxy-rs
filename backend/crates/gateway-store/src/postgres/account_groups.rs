@@ -106,6 +106,42 @@ impl PgAccountGroupRepository {
 
 #[async_trait]
 impl AccountGroupStore for PgAccountGroupRepository {
+    async fn load_car_quota_settings(
+        &self,
+    ) -> AdminStoreResult<gateway_admin::model::account_groups::CarQuotaSettings> {
+        super::seats::load_car_quota_settings(&self.pool).await
+    }
+    async fn replace_car_quota_settings(
+        &self,
+        command: gateway_admin::model::account_groups::ReplaceCarQuotaSettings,
+        context: &MutationContext,
+    ) -> AdminStoreResult<gateway_admin::model::account_groups::CarQuotaSettings> {
+        super::seats::replace_car_quota_settings(&self.pool, command, context).await
+    }
+    async fn list_car_accounts(
+        &self,
+    ) -> AdminStoreResult<Vec<gateway_admin::model::account_groups::CarAccount>> {
+        super::seats::list_car_accounts(&self.pool).await
+    }
+    async fn load_car_quota_state(
+        &self,
+        group_id: AccountGroupId,
+    ) -> AdminStoreResult<gateway_admin::model::account_groups::CarQuotaState> {
+        super::seats::load_car_quota_state(&self.pool, group_id).await
+    }
+    async fn reconcile_car_quota(
+        &self,
+        observation: gateway_admin::model::account_groups::CarQuotaObservation,
+    ) -> AdminStoreResult<gateway_admin::model::account_groups::CarQuotaState> {
+        super::seats::reconcile_car_quota(&self.pool, observation).await
+    }
+    async fn save_car_weights(
+        &self,
+        command: gateway_admin::model::account_groups::SaveCarWeights,
+        context: &MutationContext,
+    ) -> AdminStoreResult<gateway_admin::model::Revision> {
+        super::seats::save_car_weights(&self.pool, command, context).await
+    }
     async fn convert_to_car(
         &self,
         id: AccountGroupId,

@@ -1,13 +1,14 @@
 <script setup lang="ts">
-import type { AccountGroup, ApiKey, Seat } from '@/api'
+import type { AccountGroup, ApiKey, CarQuotaSettings, CarQuotaState, Seat } from '@/api'
 import { computed, ref, watch } from 'vue'
-import { convertToCar, getApiKeys, getSeats, joinSeat, saveSeat } from '@/api'
+import { convertToCar, getApiKeys, getCarQuota, getCarQuotaSettings, getSeats, joinSeat, saveCarWeights, saveSeat } from '@/api'
 import BaseButton from '@/components/base/BaseButton.vue'
 import BaseCheckbox from '@/components/base/BaseCheckbox.vue'
 import BaseFormItem from '@/components/base/BaseForm/FormItem.vue'
 import BaseInput from '@/components/base/BaseInput.vue'
 import BaseModal from '@/components/base/BaseModal/index.vue'
 import { useAsyncAction } from '@/composables/useAsyncAction'
+import { useUiClock } from '@/composables/useUiClock'
 import { formatDateTime } from '@/utils/date'
 
 const props = defineProps<{ group: AccountGroup | null }>()
@@ -17,6 +18,12 @@ const action = useAsyncAction()
 const busy = action.loading
 const isCar = ref(false)
 const seats = ref<Seat[]>([])
+const quota = ref<CarQuotaState | null>(null)
+const quotaSettings = ref<CarQuotaSettings | null>(null)
+const now = useUiClock()
+const waitingForCycle = computed(() => quota.value?.mode === 'active'
+  && (!quota.value.cycleEnd || Date.parse(quota.value.cycleEnd) <= now.value.getTime()))
+const totalWeight = ref('1')
 const keys = ref<ApiKey[]>([])
 const editing = ref(false)
 const joining = ref<Seat | null>(null)
@@ -25,15 +32,24 @@ const form = ref(emptyForm())
 const candidates = computed(() => keys.value.filter(key => !key.seatId))
 const valid = computed(() => form.value.name.trim()
   && /^\d+$/.test(form.value.maxConcurrency) && Number(form.value.maxConcurrency) > 0
+  && /^\d{1,10}(?:\.\d{1,2})?$/.test(form.value.weight) && Number(form.value.weight) > 0
   && [form.value.dailyLimitUsd, form.value.weeklyLimitUsd].every(value => /^\d{1,10}(?:\.\d{1,10})?$/.test(value)))
+const weightValid = computed(() => /^\d{1,10}(?:\.\d{1,2})?$/.test(totalWeight.value) && Number(totalWeight.value) > 0)
 
 function emptyForm() {
-  return { id: '', name: '', enabled: true, maxConcurrency: '2', dailyLimitUsd: '0', weeklyLimitUsd: '0' }
+  return { id: '', name: '', enabled: true, maxConcurrency: '2', weight: '1', dailyLimitUsd: '0', weeklyLimitUsd: '0' }
 }
 async function load() {
   if (!props.group)
     return
-  seats.value = isCar.value ? await getSeats(props.group.id) : []
+  if (isCar.value) {
+    [seats.value, quota.value, quotaSettings.value] = await Promise.all([getSeats(props.group.id), getCarQuota(props.group.id), getCarQuotaSettings()])
+    totalWeight.value = quota.value.totalWeight
+  }
+  else {
+    seats.value = []
+    quota.value = null
+  }
   const all: ApiKey[] = []
   let cursor: string | undefined
   do {
@@ -56,7 +72,7 @@ watch(open, (value) => {
 function edit(seat?: Seat) {
   joining.value = null
   form.value = seat
-    ? { id: seat.id, name: seat.name, enabled: seat.enabled, maxConcurrency: String(seat.maxConcurrency), dailyLimitUsd: seat.dailyLimitUsd, weeklyLimitUsd: seat.weeklyLimitUsd }
+    ? { id: seat.id, name: seat.name, enabled: seat.enabled, maxConcurrency: String(seat.maxConcurrency), weight: seat.weight, dailyLimitUsd: seat.dailyLimitUsd, weeklyLimitUsd: seat.weeklyLimitUsd }
     : emptyForm()
   editing.value = true
 }
@@ -82,8 +98,17 @@ async function save() {
 }
 async function toggle(seat: Seat) {
   await action.run(async () => {
-    const { id, groupId, name, maxConcurrency, dailyLimitUsd, weeklyLimitUsd } = seat
-    await saveSeat({ id, groupId, name, maxConcurrency, dailyLimitUsd, weeklyLimitUsd, enabled: !seat.enabled })
+    const { id, groupId, name, maxConcurrency, weight, dailyLimitUsd, weeklyLimitUsd } = seat
+    await saveSeat({ id, groupId, name, maxConcurrency, weight, dailyLimitUsd, weeklyLimitUsd, enabled: !seat.enabled })
+    await load()
+    emit('changed')
+  })
+}
+async function saveWeights() {
+  if (!props.group || !weightValid.value)
+    return
+  await action.run(async () => {
+    await saveCarWeights(props.group!.id, totalWeight.value)
     await load()
     emit('changed')
   })
@@ -115,6 +140,9 @@ function reset(value: string | null) {
 function remaining(used: string, limit: string) {
   return Number(limit) === 0 ? '不限额' : `$${amount(String(Math.max(0, Number(limit) - Number(used))))}`
 }
+function modeLabel(mode: CarQuotaState['mode']) {
+  return waitingForCycle.value ? '等待新周期确认，暂停新请求' : mode === 'active' ? '已按账号周期运行' : mode === 'waiting' ? '等待账号周期确认' : '沿用原周窗口，确认后自动切换'
+}
 </script>
 
 <template>
@@ -128,6 +156,37 @@ function remaining(used: string, limit: string) {
       </BaseButton>
     </div>
     <div v-else class="grid gap-5">
+      <div v-if="quota" class="grid gap-3 rounded-xl border border-cp-border bg-cp-fill-quaternary p-4">
+        <div class="flex flex-wrap items-start justify-between gap-3">
+          <div>
+            <strong class="text-cp-text">账号周期额度</strong>
+            <p class="mt-1 text-cp-xs text-cp-text-secondary">
+              {{ modeLabel(quota.mode) }} · 周期结束 {{ quota.cycleEnd ? reset(quota.cycleEnd) : '等待账号返回' }}
+            </p>
+          </div>
+          <div class="text-right text-cp-sm">
+            <p>当前生效容量 ${{ amount(quota.publishedCapacityUsd) }}</p>
+            <p class="text-cp-xs text-cp-text-secondary">
+              最新预测 {{ quota.predictedCapacityUsd != null ? `$${amount(quota.predictedCapacityUsd)}` : '暂无' }} · 账号已用 {{ quota.accountUsedPercent == null ? '暂无' : `${quota.accountUsedPercent.toFixed(1)}%` }}
+            </p>
+          </div>
+        </div>
+        <p v-if="quotaSettings" class="text-cp-xs text-cp-text-secondary">
+          {{ quotaSettings.automaticUpdates ? `满足条件时按 ${amount(String(quotaSettings.publishIntervalSeconds / 3600))} 小时间隔加权更新，新预测占 ${quotaSettings.estimateWeightPercent}%` : '自动更新已关闭，账号周期仍会跟随' }}
+          · 最近调整 {{ quota.publishedAt ? reset(quota.publishedAt) : '尚未自动调整' }}
+        </p>
+        <p v-if="quota.predictionReason" class="text-cp-xs text-cp-text-secondary">
+          {{ quota.predictionReason }}
+        </p>
+        <div class="flex flex-wrap items-end gap-3">
+          <BaseFormItem class="min-w-48 flex-1" label="总权重" description="seat 权重之和不能超过总权重，未分配部分保留">
+            <BaseInput v-model="totalWeight" type="number" min="0.01" step="0.01" aria-label="car 总权重" :disabled="busy" />
+          </BaseFormItem>
+          <BaseButton variant="secondary" :loading="busy" :disabled="!weightValid" @click="saveWeights">
+            保存总权重
+          </BaseButton>
+        </div>
+      </div>
       <div class="flex flex-wrap items-center justify-between gap-3">
         <p class="text-cp-sm text-cp-text-secondary">
           同一 seat 下的 Key 共用一份预算与并发上限，客户端身份和 RPM 各自保留
@@ -138,7 +197,7 @@ function remaining(used: string, limit: string) {
       </div>
       <div v-for="seat in seats" :key="seat.id" class="grid gap-3 rounded-xl border border-cp-border p-4">
         <div class="flex flex-wrap items-center justify-between gap-2">
-          <strong class="text-cp-text">{{ seat.name }} <span class="text-cp-xs font-normal text-cp-text-secondary">{{ seat.enabled ? '已启用' : '已禁用' }} · 并发 {{ seat.maxConcurrency }} · {{ seat.keyCount }} 个 Key</span></strong>
+          <strong class="text-cp-text">{{ seat.name }} <span class="text-cp-xs font-normal text-cp-text-secondary">{{ seat.enabled ? '已启用' : '已禁用' }} · 权重 {{ seat.weight }} · 并发 {{ seat.maxConcurrency }} · {{ seat.keyCount }} 个 Key</span></strong>
           <div class="flex gap-2">
             <BaseButton variant="secondary" size="sm" :disabled="busy" @click="edit(seat)">
               编辑
@@ -158,7 +217,7 @@ function remaining(used: string, limit: string) {
             </p>
           </div>
           <div>
-            周已用 ${{ amount(seat.weeklyUsedUsd) }} / {{ Number(seat.weeklyLimitUsd) ? `$${amount(seat.weeklyLimitUsd)}` : '不限额' }}<p class="text-cp-xs text-cp-text-secondary">
+            {{ quota?.mode === 'active' ? '账号周期已用' : '周额度已用' }} ${{ amount(seat.weeklyUsedUsd) }} / {{ Number(seat.weeklyLimitUsd) ? `$${amount(seat.weeklyLimitUsd)}` : '不限额' }}<p class="text-cp-xs text-cp-text-secondary">
               剩余 {{ remaining(seat.weeklyUsedUsd, seat.weeklyLimitUsd) }} · {{ reset(seat.weeklyResetsAt) }}
             </p>
           </div>
@@ -175,19 +234,22 @@ function remaining(used: string, limit: string) {
         <BaseFormItem label="seat 名称">
           <BaseInput v-model="form.name" aria-label="seat 名称" :disabled="busy" />
         </BaseFormItem>
-        <div class="grid gap-3 sm:grid-cols-3">
+        <div class="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
           <BaseFormItem label="共享并发">
             <BaseInput v-model="form.maxConcurrency" type="number" min="1" step="1" aria-label="seat 共享并发" :disabled="busy" />
+          </BaseFormItem>
+          <BaseFormItem label="额度权重">
+            <BaseInput v-model="form.weight" type="number" min="0.01" step="0.01" aria-label="seat 额度权重" :disabled="busy" />
           </BaseFormItem>
           <BaseFormItem label="日限额（美元）">
             <BaseInput v-model="form.dailyLimitUsd" type="number" min="0" step="any" aria-label="seat 日限额" :disabled="busy" />
           </BaseFormItem>
-          <BaseFormItem label="周限额（美元）">
-            <BaseInput v-model="form.weeklyLimitUsd" type="number" min="0" step="any" aria-label="seat 周限额" :disabled="busy" />
+          <BaseFormItem :label="quota?.mode === 'active' ? '账号周期限额（自动）' : '原周限额（过渡）'">
+            <BaseInput v-model="form.weeklyLimitUsd" type="number" min="0" step="any" aria-label="seat 周期限额" :disabled="busy || quota?.mode === 'active'" />
           </BaseFormItem>
         </div>
         <p class="text-cp-xs text-cp-text-secondary">
-          0 表示不限额，日窗口按北京时间零点，周窗口为 168 小时，费用在请求结束后计入
+          日限额按北京时间零点重置；账号周期限额由已发布容量和权重自动计算，费用在请求结束后计入
         </p>
         <div class="flex justify-end gap-2">
           <BaseButton variant="secondary" :disabled="busy" @click="editing = false">
