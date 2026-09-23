@@ -36,7 +36,7 @@ use crate::event::{GatewayEvent, ProviderEvent, ProviderResponseHeader};
 use crate::identity::ProviderKind;
 use crate::lifecycle::CancellationToken;
 use crate::operation::{Operation, ProviderSessionState};
-use crate::policy::{ClientApiKeyId, ClientPolicy};
+use crate::policy::{ClientApiKeyId, ClientConcurrencyId, ClientPolicy};
 use crate::routing::{
     ProviderCatalogUnavailable, PublicModelDescriptor, PublicModelId, RoutingContext,
     RuntimeSnapshot, UpstreamModelId,
@@ -274,7 +274,7 @@ pub struct DefaultExecutionService {
     observations: Arc<dyn ExecutionStore>,
     providers: ProviderRegistry,
     admissions: Arc<dyn ClientAdmissionPort>,
-    admission_waiting: ConcurrencyWaitQueue<ClientApiKeyId>,
+    admission_waiting: ConcurrencyWaitQueue<ClientConcurrencyId>,
     circuits: Arc<dyn ProviderCircuitPort>,
     continuation: Arc<dyn NativeContinuationPort>,
     client_api_key_usage: Arc<dyn ClientApiKeyUsageSink>,
@@ -536,7 +536,14 @@ impl DefaultExecutionService {
             .await?;
         let admission_decision_ms = duration_ms(admission_started_at.elapsed());
         if let Some(budget) = &self.budget
-            && let Err(error) = budget.admit(client.policy.key_id().clone()).await
+            && let Err(error) = budget
+                .begin_request(
+                    client.policy.key_id().clone(),
+                    client.policy.seat_id().cloned(),
+                    request_id.clone(),
+                    deadline_at,
+                )
+                .await
         {
             admission.release().await;
             return Err(error);
@@ -552,6 +559,7 @@ impl DefaultExecutionService {
                 )
             });
         let new_request = NewModelRequest {
+            seat_id: client.policy.seat_id().cloned(),
             id: request_id.clone(),
             client_api_key_id: Some(client.policy.key_id().clone()),
             client_api_key_ref: client.policy.key_id().clone(),
@@ -593,6 +601,7 @@ impl DefaultExecutionService {
                     settle_budget(
                         budget.as_ref(),
                         ClientBudgetCharge {
+                            seat_id: client.policy.seat_id().cloned(),
                             key_id: client.policy.key_id().clone(),
                             request_id: request_id.clone(),
                             amount_usd: crate::metering::Decimal::ZERO,
@@ -629,10 +638,11 @@ impl DefaultExecutionService {
         let policy = client.snapshot.client_queue_policy();
         let limits = client.policy.limits();
         let key = client.policy.key_id();
+        let concurrency_id = client.policy.concurrency_id();
         let mut waiting = CapacityWait::new(&self.admission_waiting, policy, deadline_at, budget);
         let mut admission = AdmissionLease {
+            concurrency_id: concurrency_id.clone(),
             port: Arc::clone(&self.admissions),
-            client_api_key_id: key.clone(),
             model_request_id: request_id.clone(),
             armed: false,
         };
@@ -651,10 +661,12 @@ impl DefaultExecutionService {
             let acquire = self
                 .admissions
                 .admit(ClientAdmissionRequest {
+                    concurrency_id: concurrency_id.clone(),
                     model_request_id: request_id.clone(),
                     client_api_key_id: key.clone(),
                     lease_ttl: remaining,
-                    allow_concurrency_acquire: limits.max_concurrency == 0 || waiting.can_try(key),
+                    allow_concurrency_acquire: limits.max_concurrency == 0
+                        || waiting.can_try(&concurrency_id),
                     limits,
                 })
                 .fuse();
@@ -687,9 +699,11 @@ impl DefaultExecutionService {
                     if waiting.elapsed().is_zero()
                         && let Some(budget) = &self.budget
                     {
-                        budget.admit(key.clone()).await?;
+                        budget
+                            .admit(key.clone(), client.policy.seat_id().cloned())
+                            .await?;
                     }
-                    waiting.wait(std::slice::from_ref(key)).await.map_err(|error| {
+                    waiting.wait(std::slice::from_ref(&concurrency_id)).await.map_err(|error| {
                         tracing::info!(request_id = request_id.as_str(), queue_layer = "client_key", queue_wait_ms = duration_ms(waiting.elapsed()), reason = %error, "Key 排队请求被拒绝");
                         error.gateway_error()
                     })?;
@@ -787,6 +801,7 @@ impl DefaultExecutionService {
         let actor = ClientApiKeyId::new("admin_connection_test")
             .map_err(|_| GatewayError::new(GatewayErrorKind::Internal, "invalid admin actor"))?;
         let new_request = NewModelRequest {
+            seat_id: None,
             id: request_id,
             client_api_key_id: None,
             client_api_key_ref: actor,
@@ -1121,7 +1136,7 @@ impl AccountProbe for DefaultExecutionService {
 struct AdmissionLease {
     armed: bool,
     port: Arc<dyn ClientAdmissionPort>,
-    client_api_key_id: ClientApiKeyId,
+    concurrency_id: ClientConcurrencyId,
     model_request_id: ModelRequestId,
 }
 
@@ -1135,7 +1150,7 @@ impl AdmissionLease {
     async fn release(mut self) {
         if let Err(error) = self
             .port
-            .release(&self.client_api_key_id, &self.model_request_id)
+            .release(&self.concurrency_id, &self.model_request_id)
             .await
         {
             tracing::warn!(%error, "Client admission 释放失败，依赖租约 TTL 收敛");
@@ -1148,7 +1163,7 @@ impl Drop for AdmissionLease {
     fn drop(&mut self) {
         if self.armed {
             self.port
-                .abandon(&self.client_api_key_id, &self.model_request_id);
+                .abandon(&self.concurrency_id, &self.model_request_id);
         }
     }
 }

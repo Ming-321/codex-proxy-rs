@@ -916,7 +916,7 @@ impl ExecutionStore for SettlementPorts {
 impl ClientAdmissionPort for SettlementPorts {
     fn abandon(
         &self,
-        key: &gateway_core::policy::ClientApiKeyId,
+        key: &gateway_core::policy::ClientConcurrencyId,
         request: &gateway_core::engine::ModelRequestId,
     ) {
         let _ = futures::FutureExt::now_or_never(self.release(key, request));
@@ -934,7 +934,7 @@ impl ClientAdmissionPort for SettlementPorts {
 
     fn release<'a>(
         &'a self,
-        _: &'a ClientApiKeyId,
+        _: &'a gateway_core::policy::ClientConcurrencyId,
         request_id: &'a ModelRequestId,
     ) -> BoxFuture<'a, Result<bool, ClientAdmissionError>> {
         Box::pin(async move {
@@ -960,7 +960,20 @@ impl ClientAdmissionPort for SettlementPorts {
 }
 
 impl ClientBudgetPort for SettlementPorts {
-    fn admit(&self, _: ClientApiKeyId) -> BoxFuture<'_, Result<(), GatewayError>> {
+    fn begin_request(
+        &self,
+        key: ClientApiKeyId,
+        seat: Option<gateway_core::policy::SeatId>,
+        _: ModelRequestId,
+        _: SystemTime,
+    ) -> BoxFuture<'_, Result<(), GatewayError>> {
+        ClientBudgetPort::admit(self, key, seat)
+    }
+    fn admit(
+        &self,
+        _: ClientApiKeyId,
+        _: Option<gateway_core::policy::SeatId>,
+    ) -> BoxFuture<'_, Result<(), GatewayError>> {
         Box::pin(async { Ok(()) })
     }
 

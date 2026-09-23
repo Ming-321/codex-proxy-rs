@@ -42,7 +42,7 @@ use gateway_core::{
 
 fn map_store_error(error: AdminStoreError, resource: &'static str) -> AdminError {
     let kind = match error.kind() {
-        AdminStoreErrorKind::Invalid => AdminErrorKind::Invalid,
+        AdminStoreErrorKind::Invalid | AdminStoreErrorKind::CarCapacity => AdminErrorKind::Invalid,
         AdminStoreErrorKind::NotFound => AdminErrorKind::NotFound,
         AdminStoreErrorKind::StaleRevision
         | AdminStoreErrorKind::DuplicateName
@@ -50,6 +50,11 @@ fn map_store_error(error: AdminStoreError, resource: &'static str) -> AdminError
         AdminStoreErrorKind::Unavailable => AdminErrorKind::Unavailable,
     };
     tracing::warn!(resource, error_kind = ?error.kind(), "admin store operation failed");
+    if error.kind() == AdminStoreErrorKind::CarCapacity {
+        return AdminError::invalid(
+            "car 账号必须有正数有效并发上限，且不得小于 seat 数量或任一 seat 上限，请检查账号独立上限与全局默认值",
+        );
+    }
     let message = match kind {
         AdminErrorKind::Invalid => "请求参数不合法",
         AdminErrorKind::NotFound => "请求的资源不存在",

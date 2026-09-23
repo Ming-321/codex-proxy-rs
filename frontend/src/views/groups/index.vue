@@ -1,4 +1,6 @@
 <script setup lang="ts">
+import type { AccountGroup } from '@/api'
+import { shallowRef } from 'vue'
 import BaseCard from '@/components/base/BaseCard.vue'
 import BaseCheckbox from '@/components/base/BaseCheckbox.vue'
 import BaseConfirmModal from '@/components/base/BaseConfirmModal.vue'
@@ -10,10 +12,12 @@ import AccountGroupActions from './components/AccountGroupActions.vue'
 import AccountGroupFilters from './components/AccountGroupFilters.vue'
 import AccountGroupFormModal from './components/AccountGroupFormModal.vue'
 import AccountGroupMetricsCell from './components/AccountGroupMetricsCell.vue'
+import SeatManagerModal from './components/SeatManagerModal.vue'
 import { useAccountGroups } from './composables/useAccountGroups'
 import { accountGroupColumns } from './constants'
 
 const {
+  reload,
   groups,
   loading,
   pagination,
@@ -46,6 +50,13 @@ const {
   handlePageSizeChange,
 } = useAccountGroups()
 
+const seatGroup = shallowRef<AccountGroup | null>(null)
+const showSeats = shallowRef(false)
+function manageSeats(group: AccountGroup) {
+  seatGroup.value = group
+  showSeats.value = true
+}
+
 const { allSelected, indeterminate, selectedRowKeys, toggleSelection, toggleAll }
   = usePageSelection(groups, selectedIds)
 </script>
@@ -55,7 +66,7 @@ const { allSelected, indeterminate, selectedRowKeys, toggleSelection, toggleAll 
     <BasePageHeader
       class="h-17"
       title="分组管理"
-      description="将账号归类管理，并为每个 API 密钥指定可使用的账号"
+      description="将账号归类管理；car 可在这里创建和管理 seat"
     />
 
     <BaseCard
@@ -103,6 +114,12 @@ const { allSelected, indeterminate, selectedRowKeys, toggleSelection, toggleAll 
                   <strong class="truncate text-cp text-cp-text">
                     {{ row.name }}
                   </strong>
+                  <span
+                    v-if="row.isCar"
+                    class="inline-flex h-6 shrink-0 items-center rounded-lg bg-cp-fill-tertiary px-2 text-cp-xs font-bold text-cp-text-secondary"
+                  >
+                    拼车
+                  </span>
                   <span
                     v-if="row.disableFast"
                     class="inline-flex h-6 shrink-0 items-center rounded-lg bg-cp-fill-tertiary px-2 text-cp-xs font-bold text-cp-text-secondary"
@@ -154,6 +171,7 @@ const { allSelected, indeterminate, selectedRowKeys, toggleSelection, toggleAll 
                 :deleting="deleting"
                 :updating-status="updatingStatusGroupIds.has(row.id)"
                 @edit="openEdit"
+                @seats="manageSeats"
                 @toggle="requestToggle"
                 @delete="requestDelete"
               />
@@ -169,6 +187,7 @@ const { allSelected, indeterminate, selectedRowKeys, toggleSelection, toggleAll 
       </template>
     </BaseCard>
 
+    <SeatManagerModal v-model="showSeats" :group="seatGroup" @changed="reload" />
     <AccountGroupFormModal
       v-model="showFormModal"
       v-model:form="form"

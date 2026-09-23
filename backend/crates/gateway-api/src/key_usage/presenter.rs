@@ -53,6 +53,7 @@ pub(super) struct OverviewView {
     start_time: DateTime<Utc>,
     end_time: DateTime<Utc>,
     key: KeyView,
+    seat_keys: Vec<SeatKeyUsageView>,
     summary: MetricsView,
     trend: Vec<TrendPointView>,
     health_timeline: HealthTimelineView,
@@ -60,7 +61,20 @@ pub(super) struct OverviewView {
 
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
+struct SeatKeyUsageView {
+    id: String,
+    name: String,
+    prefix: String,
+    current: bool,
+    revoked: bool,
+    daily_used_usd: String,
+    weekly_used_usd: String,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
 struct KeyView {
+    seat_name: Option<String>,
     name: String,
     prefix: String,
     max_concurrency: u64,
@@ -116,14 +130,20 @@ struct TrendPointView {
 
 pub(super) fn overview(value: KeyUsageOverview) -> OverviewView {
     let key = value.key;
+    let key_id = key.id.clone();
     OverviewView {
         as_of: Utc::now(),
         start_time: value.overview.range.start,
         end_time: value.overview.range.end,
         key: KeyView {
+            seat_name: key.budget.seat.as_ref().map(|s| s.name.clone()),
             name: key.name,
             prefix: key.prefix,
-            max_concurrency: key.limits.max_concurrency,
+            max_concurrency: key
+                .budget
+                .seat
+                .as_ref()
+                .map_or(key.limits.max_concurrency, |s| s.max_concurrency),
             requests_per_minute: key.limits.requests_per_minute,
             daily_limit_usd: key.budget.limits.daily_usd.canonical(),
             daily_used_usd: key.budget.daily_used_usd.canonical(),
@@ -132,6 +152,19 @@ pub(super) fn overview(value: KeyUsageOverview) -> OverviewView {
             weekly_used_usd: key.budget.weekly_used_usd.canonical(),
             weekly_resets_at: key.budget.weekly_resets_at.map(DateTime::from),
         },
+        seat_keys: value
+            .seat_keys
+            .into_iter()
+            .map(|member| SeatKeyUsageView {
+                current: member.id == key_id,
+                id: member.id.as_str().to_owned(),
+                name: member.name,
+                prefix: member.prefix,
+                revoked: member.revoked,
+                daily_used_usd: member.daily_used_usd.canonical(),
+                weekly_used_usd: member.weekly_used_usd.canonical(),
+            })
+            .collect(),
         summary: metrics(
             &value.overview.requests,
             &value.overview.attempts.costs,

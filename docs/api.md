@@ -25,6 +25,12 @@ Client Key 通过账号分组限定路由范围：未绑定分组时可使用全
 已启用分组成员的并集。分组可以混合 `openai` 与 `xai` 账号；同一请求只会在模型能力明确匹配且满足
 重放安全边界时跨 Provider fallback。
 
+`car` 是恰好独占一个账号的特殊分组。`seat` 属于一个 car，加入 seat 的多个 Client Key 继承该 car
+的账号范围，并共享 seat 的日／周 USD 限额与并发上限；各 Key 的 RPM 和客户端身份覆盖仍独立保存。
+car 账号不进入普通 Key 的“全部账号”范围。
+car 账号必须具有正数有效并发上限，不能继承 `0＝不限`；停用 seat 仍计入 seat 数量。
+seat 数量及任一 seat 的并发上限均不能超过账号容量，各 seat 上限之和不受此限制。
+
 运行设置可以分别配置 `minCodexDesktopVersion` 与 `minCodexCliVersion`。两者只接受 SemVer，`null`
 表示不限制。API 在 Client Key 鉴权成功后识别官方 Desktop/CLI 请求头；适用门禁的客户端没有合法版本，或版本
 低于对应门槛时，除只读 `/v1/usage` 外的 `/v1/*` HTTP 请求和新 WebSocket 握手在访问上游前返回 `426 Upgrade Required`。
@@ -337,7 +343,7 @@ OpenAI 选号阶段确认本次可选账号全部额度耗尽时，HTTP 返回 `
 管理员和密钥登录共用 `/api/auth/*`。登录模式 `mode` 只用于选择凭据验证方式，不直接授予权限；
 验证成功后，由后端写入身份和绑定 ID。一个浏览器只持有一份 `cpr_session` HttpOnly Cookie，
 原始 Key 不进入 URL、Pinia 或浏览器存储。登录页的切换只改变本地表单，不改变 URL。
-管理员进入管理端；Key 登录后进入 `/key-usage`，只读取当前会话绑定 Key 的数据。
+管理员进入管理端；Key 登录后进入 `/key-usage`，读取当前会话绑定 Key 的数据；seat Key 另可读取同 seat 的成员费用汇总。
 
 | 方法 | 路由 | 请求 | 说明 |
 | --- | --- | --- | --- |
@@ -388,10 +394,15 @@ OpenAI 选号阶段确认本次可选账号全部额度耗尽时，HTTP 返回 `
 不接受 Key ID、账号、Provider 等范围参数或其他未知字段。页码默认 1，每页默认 20，允许 1–100 条；
 `kind` 为 `success`（默认）或 `error`。分页响应为 `{ items, currentPage, pageSize, total }`。
 
-overview 返回 `asOf`、`startTime`、`endTime`、`key`、`summary`、`trend`、`healthTimeline`。
-`key` 仅包含名称、掩码前缀、并发/RPM、日与周限额、已用 USD 及重置时间；零限额表示不限，
+overview 返回 `asOf`、`startTime`、`endTime`、`key`、`seatKeys`、`summary`、`trend`、`healthTimeline`。
+`key` 包含 `seatName`（独立 Key 为 null）、名称、掩码前缀、有效并发/RPM、日与周限额、已用 USD 及重置时间；零限额表示不限，
 未启动窗口的重置时间为 null。额度使用现有结算账本，不受日志日期或模型筛选影响。
 健康时间线沿用管理端的 96 个北京时间日内桶与可用性语义，不受历史范围和模型筛选影响。
+
+`seatKeys` 对独立 Key 返回空数组；seat Key 返回同 seat 的成员 `id`、`name`、`prefix`、
+`current`、`revoked`、`dailyUsedUsd`、`weeklyUsedUsd`。成员费用采用共享预算的同一日／周窗口，
+不受日志查询范围影响；过期窗口投影为零，读取不推进账务。已撤销 Key 仍保留费用并标记 `revoked`。
+该汇总不包含其他 Key 的完整凭据或逐请求记录，也不开放跨 seat 查询；summary、trend、healthTimeline 和 records 仍仅属于当前 Key。
 
 汇总和趋势返回请求数、输入、输出、缓存读写、推理、总 Tokens 与 USD 成本；输入已包含缓存读写，
 推理为输出的明细，不得把缓存或推理重复计入总消耗。趋势另含 `time` 与 `bucketSeconds`。
@@ -930,6 +941,10 @@ HTTP 请求头及新建 WS 的握手提示按当时的最终出站档位构造�
 | `POST` | `/api/admin/account-groups/enable` | `{ id }` | 启用 |
 | `POST` | `/api/admin/account-groups/disable` | `{ id }` | 禁用；已绑定 Key 保持受限，不回退到全部账号 |
 | `POST` | `/api/admin/account-groups/delete` | `{ id }` | 删除未被 Client Key 引用的组 |
+| `POST` | `/api/admin/account-groups/convert-car` | `{ id }` | 将恰好包含一个独占账号的普通分组转为 car |
+| `GET` | `/api/admin/seats` | `groupId` | 查询 car 下的 seat、共享额度窗口和 Key 数量 |
+| `POST` | `/api/admin/seats/save` | seat 字段 | 创建或更新 seat；并发不能超过 car 账号容量，seat 数量也不能超过容量 |
+| `POST` | `/api/admin/seats/join` | `{ seatId, keyIds }` | 将独立 Key 永久加入 seat，并原子承接同窗口的已用费用 |
 
 列表数据为 `{ items, page, configRevision }`，其中 item 返回 `memberCount`、按 Provider 聚合的
 `providerCounts` 和 `clientKeyCount`。查询分组成员使用账号列表的 `groupId` 筛选，
@@ -948,10 +963,12 @@ HTTP 请求头及新建 WS 的握手提示按当时的最终出站档位构造�
 | `POST` | `/api/admin/client-keys/reset-budget` | `{ id, period }` | 管理员清零日／周已用金额；`period` 为 `daily`、`weekly` 或 `all` |
 | `POST` | `/api/admin/client-keys/enable` | `{ id }` | 启用 |
 | `POST` | `/api/admin/client-keys/disable` | `{ id }` | 禁用 |
-| `POST` | `/api/admin/client-keys/delete` | `{ id }` | 删除 |
+| `POST` | `/api/admin/client-keys/delete` | `{ id }` | 删除独立 Key；seat Key 撤销凭据并保留费用历史 |
 
-创建字段为 `name`、可选 `label`、`groupIds`、`maxConcurrency`、`requestsPerMinute`、可选
+创建字段为 `name`、可选 `label`、`groupIds`、可选 `seatId`、`maxConcurrency`、`requestsPerMinute`、可选
 `dailyLimitUsd`、`weeklyLimitUsd`、`customKey`、`openaiClientProfileOverride` 和 `xaiClientProfileOverride`。更新请求携带 `id`，不接受 `customKey`。
+创建 seat Key 时 `groupIds` 必须为空；共享限额与并发取自 seat，因此 Key 自身对应字段不生效。
+seat Key 不能独立重置共享费用。已有 Key 加入 seat 时承接当前日／周窗口中的费用；有在途请求或已有消费的窗口不兼容时，整次迁入拒绝，不留下部分迁入结果。加入后不支持退出或跨 seat 转移。
 `groupIds` 必须显式提交：空数组派生 `routingScope: "all"`，非空数组派生
 `routingScope: "groups"`。响应同时返回分组引用 `groups`，以及从当前有效账号池派生、仅供展示的
 `providerKinds`。创建和 reveal 响应会返回完整明文 Key，调用方

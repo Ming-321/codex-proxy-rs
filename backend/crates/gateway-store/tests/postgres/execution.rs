@@ -40,6 +40,7 @@ fn postgres_execution_adapter_implements_core_port() {
 fn model_request_rejects_mismatched_client_key_live_id() {
     let started_at = Utc::now();
     let request = NewModelRequest {
+        seat_id: None,
         admission_decision_ms: None,
         id: "request-1".to_owned(),
         client_api_key_id: Some("key-live".to_owned()),
@@ -92,6 +93,7 @@ async fn merged_model_less_first_attempt_should_match_sequential_semantics() {
     .await
     .expect("seed provider account");
     let request = NewModelRequest {
+        seat_id: None,
         admission_decision_ms: None,
         id: "req_merged".to_owned(),
         client_api_key_id: None,
@@ -207,6 +209,7 @@ async fn model_request_persists_group_routing_snapshot_without_live_group_foreig
     let started_at = Utc::now();
     repository
         .insert_model_request(NewModelRequest {
+            seat_id: None,
             admission_decision_ms: None,
             id: "req_group_history".to_owned(),
             client_api_key_id: None,
@@ -1401,6 +1404,7 @@ pub(super) fn accepted_request(id: &str) -> CoreNewModelRequest {
             .expect("PostgreSQL timestamp precision"),
     );
     CoreNewModelRequest {
+        seat_id: None,
         id: ModelRequestId::new(id).expect("request id"),
         client_api_key_id: None,
         client_api_key_ref: ClientApiKeyId::new("key_zero_attempt").expect("client key ref"),

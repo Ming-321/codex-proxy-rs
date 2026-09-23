@@ -7,6 +7,8 @@ export type ApiKeyRoutingScope = 'all' | 'groups'
 export type ApiKeyBudgetPeriod = 'daily' | 'weekly' | 'all'
 
 export interface ApiKey {
+  seatId: string | null
+  seatName: string | null
   openaiClientProfileOverride: ClientProfileSelection | null
   xaiClientProfileOverride: XaiClientProfileSelection | null
 
@@ -79,6 +81,7 @@ interface ApiKeyUpdateParam extends ApiKeyWriteParam {
 }
 
 interface ApiKeyCreateParam extends ApiKeyWriteParam {
+  seatId?: string
   customKey?: string
 }
 

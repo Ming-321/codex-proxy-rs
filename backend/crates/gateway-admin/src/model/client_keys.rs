@@ -146,6 +146,7 @@ impl fmt::Debug for ClientKeySecret {
 /// API 提交的 Client Key 创建命令。
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CreateClientKey {
+    pub seat_id: Option<gateway_core::policy::SeatId>,
     pub openai_client_profile_override: Option<gateway_core::account::OpaqueProviderData>,
     pub xai_client_profile_override: Option<gateway_core::account::OpaqueProviderData>,
     pub custom_key: Option<PlaintextClientApiKey>,
@@ -159,6 +160,7 @@ pub struct CreateClientKey {
 /// 管理用例生成 ID 与明文后的持久化命令。
 #[derive(Clone, PartialEq, Eq)]
 pub struct NewClientKey {
+    pub seat_id: Option<gateway_core::policy::SeatId>,
     pub openai_client_profile_override: Option<gateway_core::account::OpaqueProviderData>,
     pub xai_client_profile_override: Option<gateway_core::account::OpaqueProviderData>,
     pub id: ClientApiKeyId,

@@ -26,6 +26,7 @@ mod provider_accounts;
 mod proxies;
 mod retention;
 mod runtime_settings;
+mod seats;
 mod snapshot;
 mod usage_facts;
 
@@ -211,10 +212,9 @@ impl ControlPlaneRepository for PgControlPlaneRepository {
         .await;
         match result {
             Ok(snapshot) => {
-                transaction
-                    .commit()
-                    .await
-                    .map_err(|_| postgres_unavailable("commit control plane replacement"))?;
+                transaction.commit().await.map_err(|error| {
+                    seats::configuration_error(error, "commit control plane replacement")
+                })?;
                 Ok(snapshot)
             }
             Err(error) => {

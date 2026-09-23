@@ -28,6 +28,7 @@ mod query_budget;
 mod retention;
 mod runtime_settings;
 mod schema_integrity;
+mod seats;
 mod snapshot;
 mod snapshots;
 
@@ -58,6 +59,10 @@ pub(super) fn admin_account_store(pool: &PgPool) -> PgAdminAccountStore {
 
 impl TestDatabase {
     pub(super) async fn create(label: &str) -> Option<Self> {
+        Self::create_through(label, i64::MAX).await
+    }
+
+    pub(super) async fn create_through(label: &str, version: i64) -> Option<Self> {
         let database_url = crate::support::test_env("CPR_TEST_DATABASE_URL")?;
         let schema = format!("cpr_store_{label}_{}", Uuid::new_v4().simple());
         let admin = PgPoolOptions::new()
@@ -85,10 +90,18 @@ impl TestDatabase {
             .connect(&database_url)
             .await
             .expect("connect isolated test schema");
-        TEST_MIGRATOR
-            .run(&pool)
-            .await
-            .expect("apply test migrations");
+        let mut migrator = sqlx::migrate::Migrator {
+            migrations: std::borrow::Cow::Owned(
+                TEST_MIGRATOR
+                    .iter()
+                    .filter(|m| m.version <= version)
+                    .cloned()
+                    .collect(),
+            ),
+            ..sqlx::migrate::Migrator::DEFAULT
+        };
+        migrator.set_locking(false);
+        migrator.run(&pool).await.expect("apply test migrations");
         Some(Self {
             admin,
             pool,
@@ -233,13 +246,17 @@ async fn connect_and_migrate_should_apply_all_migrations_once_and_reopen_cleanly
             "backup_settings",
             "client_api_key_groups",
             "client_api_keys",
+            "client_budget_admissions",
             "client_key_budget_windows",
             "client_key_charge_events",
+            "client_key_effective_groups",
             "model_requests",
             "ops_events",
             "outbound_proxies",
             "provider_accounts",
             "runtime_settings",
+            "seat_budget_windows",
+            "seats",
         ]
     );
     assert_eq!(session_settings, ("codex-proxy-rs".to_owned(), 30, 5, 30));

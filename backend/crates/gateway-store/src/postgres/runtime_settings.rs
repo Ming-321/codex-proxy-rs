@@ -222,10 +222,9 @@ impl RuntimeSettingsRepository for PgRuntimeSettingsRepository {
             .await
             .map_err(|_| postgres_unavailable("begin runtime settings update"))?;
         let revision = update_runtime_settings_in_transaction(&mut transaction, &update).await?;
-        transaction
-            .commit()
-            .await
-            .map_err(|_| postgres_unavailable("commit runtime settings update"))?;
+        transaction.commit().await.map_err(|error| {
+            super::seats::configuration_error(error, "commit runtime settings update")
+        })?;
         Ok(revision)
     }
 }

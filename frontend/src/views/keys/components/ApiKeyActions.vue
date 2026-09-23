@@ -54,7 +54,7 @@ const emit = defineEmits<{
       </template>
       <template #default="{ close }">
         <div class="w-44 p-1.5">
-          <BaseMenuItem @click.stop="(close(), emit('resetBudget', apiKey))">
+          <BaseMenuItem v-if="!apiKey.seatId" @click.stop="(close(), emit('resetBudget', apiKey))">
             <template #icon>
               <RotateCcw class="size-3.5 text-cp-text-quaternary" />
             </template>
@@ -76,7 +76,7 @@ const emit = defineEmits<{
             <template #icon>
               <Trash2 class="size-3.5" />
             </template>
-            删除密钥
+            {{ apiKey.seatId ? '撤销密钥' : '删除密钥' }}
           </BaseMenuItem>
         </div>
       </template>

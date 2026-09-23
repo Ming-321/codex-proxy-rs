@@ -139,6 +139,7 @@ impl ClientKeyService for DefaultClientKeyService {
             .store
             .create_client_key(
                 NewClientKey {
+                    seat_id: command.seat_id,
                     openai_client_profile_override: command.openai_client_profile_override,
                     xai_client_profile_override: command.xai_client_profile_override,
                     id,

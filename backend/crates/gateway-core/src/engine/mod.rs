@@ -595,6 +595,7 @@ impl AttemptContext {
 /// 创建唯一 `model_requests` 行所需的入口事实。
 #[derive(Debug, Clone)]
 pub struct NewModelRequest {
+    pub seat_id: Option<crate::policy::SeatId>,
     pub id: ModelRequestId,
     pub client_api_key_id: Option<ClientApiKeyId>,
     pub client_api_key_ref: ClientApiKeyId,

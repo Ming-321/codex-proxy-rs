@@ -1,11 +1,11 @@
 <script setup lang="ts">
-import type { KeyUsageBudget } from '@/api/modules/key-usage'
+import type { KeyUsageBudget, SeatKeyUsage } from '@/api/modules/key-usage'
 import { Clock3, Gauge, Network } from '@lucide/vue'
 import { computed } from 'vue'
 import BaseCard from '@/components/base/BaseCard.vue'
 import { keyUsageTime, money } from '../utils/format'
 
-const props = defineProps<{ budget: KeyUsageBudget }>()
+const props = defineProps<{ budget: KeyUsageBudget, seatKeys: SeatKeyUsage[] }>()
 const windows = computed(() => [
   { label: '今日额度', limit: props.budget.dailyLimitUsd, used: props.budget.dailyUsedUsd, reset: props.budget.dailyResetsAt },
   { label: '周额度', limit: props.budget.weeklyLimitUsd, used: props.budget.weeklyUsedUsd, reset: props.budget.weeklyResetsAt },
@@ -18,7 +18,7 @@ const windows = computed(() => [
 </script>
 
 <template>
-  <BaseCard title="额度概览">
+  <BaseCard :title="budget.seatName ? `${budget.seatName} · 共享额度` : '额度概览'">
     <div class="flex flex-1 flex-col justify-between gap-6">
       <div class="grid flex-1 gap-6 sm:grid-cols-2">
         <div v-for="window in windows" :key="window.label" class="flex min-w-0 flex-col justify-between gap-4">
@@ -51,6 +51,19 @@ const windows = computed(() => [
         </div>
         <div class="flex items-center justify-between gap-2 rounded-cp bg-cp-fill-quaternary p-3 text-cp-xs text-cp-text-secondary">
           <span class="flex items-center gap-1.5 leading-none"><Gauge class="size-3.5 shrink-0 -translate-y-px" />每分钟请求</span><strong class="font-mono">{{ budget.requestsPerMinute || '∞' }}</strong>
+        </div>
+      </div>
+      <div v-if="budget.seatName && seatKeys.length" class="space-y-3">
+        <div class="flex flex-wrap items-center justify-between gap-2">
+          <strong class="text-cp-sm text-cp-text">seat 内 Key 用量</strong>
+          <span class="text-cp-xs text-cp-text-tertiary">共享额度，分别统计</span>
+        </div>
+        <div class="grid gap-2">
+          <div v-for="key in seatKeys" :key="key.id" class="grid grid-cols-2 gap-x-3 gap-y-2 rounded-cp bg-cp-fill-quaternary px-3 py-2 text-cp-xs sm:grid-cols-[minmax(0,1fr)_auto_auto] sm:items-center">
+            <span class="col-span-2 min-w-0 break-words text-cp-text sm:col-span-1"><strong>{{ key.name }}</strong> <span class="font-mono text-cp-text-tertiary">{{ key.prefix }}</span> <span v-if="key.current" class="text-cp-primary">当前</span> <span v-if="key.revoked" class="text-cp-text-tertiary">已撤销</span></span>
+            <span class="font-mono text-cp-text-secondary">今日 {{ money(key.dailyUsedUsd) }}</span>
+            <span class="font-mono text-cp-text-secondary">本周 {{ money(key.weeklyUsedUsd) }}</span>
+          </div>
         </div>
       </div>
     </div>

@@ -15,7 +15,7 @@ const requestIntervalMs = defineModel<string>('requestIntervalMs', { required: t
     <BaseForm class="max-w-6xl sm:grid-cols-2">
       <BaseFormItem
         label="默认账号并发上限"
-        description="账号未单独设置时使用的并发上限，0 表示不限制"
+        description="0 表示不限，设置前须为所有 car 账号配置正数独立上限"
       >
         <BaseInput
           v-model="maxConcurrentPerAccount"

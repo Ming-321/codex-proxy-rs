@@ -80,6 +80,7 @@ pub struct AccountGroupListQuery {
 /// Complete account group summary.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct AccountGroupRecord {
+    pub is_car: bool,
     pub disable_fast: bool,
     pub id: AccountGroupId,
     pub name: String,
@@ -154,4 +155,32 @@ pub struct AccountGroupMutation {
     pub config_revision: Revision,
     pub id: AccountGroupId,
     pub record: Option<AccountGroupRecord>,
+}
+
+/// car 下一个 seat 的配置与共享余额，不包含成员 Key 凭据。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SeatRecord {
+    pub id: gateway_core::policy::SeatId,
+    pub group_id: AccountGroupId,
+    pub name: String,
+    pub enabled: bool,
+    pub max_concurrency: u64,
+    pub key_count: u64,
+    pub budget: gateway_core::engine::budget::ClientBudgetStatus,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SaveSeat {
+    pub id: Option<gateway_core::policy::SeatId>,
+    pub group_id: AccountGroupId,
+    pub name: String,
+    pub enabled: bool,
+    pub max_concurrency: u64,
+    pub limits: gateway_core::engine::budget::ClientBudgetLimits,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct JoinSeat {
+    pub seat_id: gateway_core::policy::SeatId,
+    pub key_ids: Vec<gateway_core::policy::ClientApiKeyId>,
 }

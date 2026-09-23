@@ -123,6 +123,7 @@ impl SnapshotSettingsFacts {
 /// Store 读取到的一个启用 Client API Key 策略事实。
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SnapshotClientPolicyFacts {
+    seat_id: Option<crate::policy::SeatId>,
     request_profiles: BTreeMap<ProviderKind, crate::account::OpaqueProviderData>,
     key_id: ClientApiKeyId,
     plaintext_key: PlaintextClientApiKey,
@@ -131,6 +132,11 @@ pub struct SnapshotClientPolicyFacts {
 }
 
 impl SnapshotClientPolicyFacts {
+    #[must_use]
+    pub fn with_seat(mut self, seat_id: Option<crate::policy::SeatId>) -> Self {
+        self.seat_id = seat_id;
+        self
+    }
     #[must_use]
     pub fn with_request_profiles(
         mut self,
@@ -149,6 +155,7 @@ impl SnapshotClientPolicyFacts {
     ) -> Self {
         Self {
             key_id,
+            seat_id: None,
             request_profiles: BTreeMap::new(),
             plaintext_key,
             group_ids,
@@ -160,6 +167,7 @@ impl SnapshotClientPolicyFacts {
 /// Store 读取到的账号分组事实。
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SnapshotAccountGroupFacts {
+    is_car: bool,
     disable_fast: bool,
     id: AccountGroupId,
     name: String,
@@ -167,6 +175,11 @@ pub struct SnapshotAccountGroupFacts {
 }
 
 impl SnapshotAccountGroupFacts {
+    #[must_use]
+    pub const fn with_car(mut self, is_car: bool) -> Self {
+        self.is_car = is_car;
+        self
+    }
     #[must_use]
     pub const fn with_disable_fast(mut self, disable_fast: bool) -> Self {
         self.disable_fast = disable_fast;
@@ -176,6 +189,7 @@ impl SnapshotAccountGroupFacts {
     #[must_use]
     pub fn new(id: AccountGroupId, name: String, enabled: bool) -> Self {
         Self {
+            is_car: false,
             id,
             name,
             enabled,
@@ -435,6 +449,19 @@ async fn compile_runtime_snapshot(
         *account = RuntimeAccount::new(account.provider_kind().clone(), group_ids)
             .with_model_access(account.model_access().clone());
     }
+    // 普通 Key 与管理诊断共享权限机制，但只有普通 Key 排除 car 专属账号。
+    let ordinary_directory = Arc::new(RuntimeAccountDirectory::new(
+        accounts
+            .iter()
+            .filter(|(_, account)| {
+                !account
+                    .group_ids()
+                    .iter()
+                    .any(|id| groups.get(id).is_some_and(|g| g.is_car))
+            })
+            .map(|(id, account)| (id.clone(), account.clone()))
+            .collect(),
+    ));
     let account_directory = Arc::new(RuntimeAccountDirectory::new(accounts));
 
     if facts.settings.max_waiting_per_key > 1_000
@@ -486,11 +513,14 @@ async fn compile_runtime_snapshot(
     let mut client_policies = Vec::with_capacity(facts.client_policies.len());
     for policy in facts.client_policies {
         let mut disable_fast = false;
+        let is_seat = policy.seat_id.is_some();
+        let directory = if is_seat {
+            &account_directory
+        } else {
+            &ordinary_directory
+        };
         let account_scope = if policy.group_ids.is_empty() {
-            FrozenAccountScope::new(
-                Arc::clone(&account_directory),
-                ClientRoutingScope::all_accounts(),
-            )
+            FrozenAccountScope::new(Arc::clone(directory), ClientRoutingScope::all_accounts())
         } else {
             let mut seen = BTreeSet::new();
             let mut bound_groups = Vec::with_capacity(policy.group_ids.len());
@@ -508,31 +538,34 @@ async fn compile_runtime_snapshot(
                     group.id.clone(),
                     group.name.clone(),
                 ));
-                if group.enabled {
+                if group.enabled && (is_seat || !group.is_car) {
                     enabled_group_ids.insert(group_id);
                 }
             }
             bound_groups.sort_by(|left, right| left.id().cmp(right.id()));
-            let provider_kinds = account_directory.providers_for_groups(&enabled_group_ids);
+            let provider_kinds = directory.providers_for_groups(&enabled_group_ids);
             FrozenAccountScope::new(
-                Arc::clone(&account_directory),
+                Arc::clone(directory),
                 ClientRoutingScope::restricted(bound_groups, enabled_group_ids, provider_kinds)
                     .map_err(|_| RuntimeSnapshotCompileError::InvalidData)?,
             )
         };
         let mut request_profiles = facts.settings.request_profiles.clone();
         request_profiles.extend(policy.request_profiles);
-        client_policies.push(ClientPolicy::new(
-            policy.key_id,
-            policy.plaintext_key,
-            Arc::new(
-                account_scope
-                    .with_disable_fast(disable_fast)
-                    .with_request_profiles(request_profiles),
-            ),
-            true,
-            policy.limits,
-        ));
+        client_policies.push(
+            ClientPolicy::new(
+                policy.key_id,
+                policy.plaintext_key,
+                Arc::new(
+                    account_scope
+                        .with_disable_fast(disable_fast)
+                        .with_request_profiles(request_profiles),
+                ),
+                true,
+                policy.limits,
+            )
+            .with_seat(policy.seat_id),
+        );
     }
 
     // 关闭自定义时保留持久化值，但不生成全局覆盖；请求继续使用客户端字段。

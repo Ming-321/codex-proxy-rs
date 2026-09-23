@@ -100,6 +100,14 @@ pub(crate) fn mutation_audit(
 }
 
 pub(crate) fn admin_store_error(resource: &'static str, error: StoreError) -> AdminStoreError {
+    // 仅转发已由约束名称映射的受控提示，不暴露原始数据库错误。
+    if let StoreError::InvalidData {
+        entity: "car capacity",
+        message,
+    } = &error
+    {
+        return AdminStoreError::new(AdminStoreErrorKind::CarCapacity, resource, message.clone());
+    }
     let kind = match error {
         StoreError::NotFound { .. } => AdminStoreErrorKind::NotFound,
         StoreError::Conflict {
