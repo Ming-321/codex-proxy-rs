@@ -3,12 +3,16 @@ import type { KeyUsageBudget, SeatKeyUsage } from '@/api/modules/key-usage'
 import { Clock3, Gauge, Network } from '@lucide/vue'
 import { computed } from 'vue'
 import BaseCard from '@/components/base/BaseCard.vue'
+import { useUiClock } from '@/composables/useUiClock'
 import { keyUsageTime, money } from '../utils/format'
 
 const props = defineProps<{ budget: KeyUsageBudget, seatKeys: SeatKeyUsage[] }>()
+const now = useUiClock()
+const waitingForCycle = computed(() => props.budget.accountCycle
+  && (!props.budget.weeklyResetsAt || Date.parse(props.budget.weeklyResetsAt) <= now.value.getTime()))
 const windows = computed(() => [
   { label: '今日额度', limit: props.budget.dailyLimitUsd, used: props.budget.dailyUsedUsd, reset: props.budget.dailyResetsAt },
-  { label: props.budget.seatName ? '账号周期额度' : '周额度', limit: props.budget.weeklyLimitUsd, used: props.budget.weeklyUsedUsd, reset: props.budget.weeklyResetsAt },
+  { label: props.budget.accountCycle ? '账号周期额度' : '周额度', limit: props.budget.weeklyLimitUsd, used: props.budget.weeklyUsedUsd, reset: props.budget.weeklyResetsAt },
 ].map(window => ({
   ...window,
   limited: Number(window.limit) > 0,
@@ -20,6 +24,9 @@ const windows = computed(() => [
 <template>
   <BaseCard :title="budget.seatName ? `${budget.seatName} · 共享额度` : '额度概览'">
     <div class="flex flex-1 flex-col justify-between gap-6">
+      <p v-if="waitingForCycle" role="status" class="text-cp-sm text-cp-warning">
+        等待账号新周期确认，暂不接受新请求，确认后自动恢复
+      </p>
       <div class="grid flex-1 gap-6 sm:grid-cols-2">
         <div v-for="window in windows" :key="window.label" class="flex min-w-0 flex-col justify-between gap-4">
           <div>

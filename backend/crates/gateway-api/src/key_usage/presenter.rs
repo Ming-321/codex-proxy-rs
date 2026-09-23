@@ -73,6 +73,7 @@ struct SeatKeyUsageView {
 #[serde(rename_all = "camelCase")]
 struct KeyView {
     seat_name: Option<String>,
+    account_cycle: bool,
     name: String,
     prefix: String,
     max_concurrency: u64,
@@ -135,6 +136,7 @@ pub(super) fn overview(value: KeyUsageOverview) -> OverviewView {
         end_time: value.overview.range.end,
         key: KeyView {
             seat_name: key.budget.seat.as_ref().map(|s| s.name.clone()),
+            account_cycle: key.budget.seat.as_ref().is_some_and(|s| s.account_cycle),
             name: key.name,
             prefix: key.prefix,
             max_concurrency: key

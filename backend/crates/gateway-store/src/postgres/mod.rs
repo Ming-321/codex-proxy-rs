@@ -212,10 +212,9 @@ impl ControlPlaneRepository for PgControlPlaneRepository {
         .await;
         match result {
             Ok(snapshot) => {
-                transaction
-                    .commit()
-                    .await
-                    .map_err(|_| postgres_unavailable("commit control plane replacement"))?;
+                transaction.commit().await.map_err(|error| {
+                    seats::configuration_error(error, "commit control plane replacement")
+                })?;
                 Ok(snapshot)
             }
             Err(error) => {

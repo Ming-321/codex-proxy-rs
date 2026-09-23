@@ -29,6 +29,11 @@ Client Key 通过账号分组限定路由范围：未绑定分组时可使用全
 的账号范围，并共享 seat 的日／周 USD 限额与并发上限；各 Key 的 RPM 和客户端身份覆盖仍独立保存。
 car 账号不进入普通 Key 的“全部账号”范围。
 
+car 账号必须有正数有效并发上限，包含尚无 seat 的 car；普通账号仍允许继承默认不限。
+账号周期已激活的 seat 到期后等待可信新周期，期间新请求返回 `429`、
+`seat_cycle_confirmation_pending` 与 60 秒 `Retry-After`，不自动清零或开启本地周窗。
+在途请求继续结算，确认新周期后按账本归集费用并恢复正常准入。
+
 运行设置可以分别配置 `minCodexDesktopVersion` 与 `minCodexCliVersion`。两者只接受 SemVer，`null`
 表示不限制。API 在 Client Key 鉴权成功后识别官方 Desktop/CLI 请求头；适用门禁的客户端没有合法版本，或版本
 低于对应门槛时，除只读 `/v1/usage` 外的 `/v1/*` HTTP 请求和新 WebSocket 握手在访问上游前返回 `426 Upgrade Required`。
@@ -240,13 +245,17 @@ HTML 或截断正文当作 message。
 OpenAI Provider 按客户端传入的 `client_version` 请求上游目录，完整保留每个模型 JSON 对象，包括
 `base_instructions`、`model_messages`、`service_tiers`、工具与能力字段，以及未知嵌套字段、显式 `null`
 和字段缺失的区别。
+API Key 上游返回完整 Codex `models` 目录时沿用该合同；仅返回普通 `data` 模型列表时使用通用画像，
+未提供的推理能力保持未知，不补充推理档位。
 模型别名仅替换 `slug`，不替换上游展示名、提示词、能力或 `priority`；保持原生模型顺序，新增别名附在后面。
 目录按当前路由快照的模型存在性及账号模型政策过滤，避免公布已知无法路由的模型；新模型需待后台目录对账后进入列表。
 xAI 没有 Codex 原生目录，继续使用明确的通用画像适配。
 
-目录账号只能来自本次 Client Key 冻结的账号范围。OpenAI 在其中按账号 ID 排序，使用首个成功读取的
-合格账号，最多尝试三个账号；同名模型不跨账号或套餐混拼字段。因此单账号、无别名时可保持该账号的
-模型对象一致，多账号/多 Provider 聚合不代表“与某个官方账号的整个目录完全一致”，也不会固定后续推理账号。
+目录账号只能来自本次 Client Key 冻结的账号范围。OpenAI 的 OAuth 目录按账号 ID 排序，使用首个成功读取的
+合格账号，最多尝试三个账号；API Key 目录按账号模型权限过滤后聚合。同名模型优先采用 OAuth 原生对象，
+其次采用 API Key 的完整 Codex 对象，再使用普通模型 ID；同类 API Key 目录按账号 ID 确定来源，不跨账号
+或套餐混拼字段。因此单账号、无别名时可保持该账号的模型对象一致，多账号/多 Provider 聚合不代表
+“与某个官方账号的整个目录完全一致”，也不会固定后续推理账号。
 读取失败返回 `503 model_catalog_unavailable`，不以简化模板或空成功响应覆盖客户端缓存。
 
 原生目录可能返回缓存结果，成功缓存有效期为 5 分钟。每次查询都检查账号资格和 Client Key 范围。
@@ -323,7 +332,7 @@ OpenAI 选号阶段确认本次可选账号全部额度耗尽时，HTTP 返回 `
 ```
 
 金额使用十进制字符串，`total` 为当前周期限额，`used` 为该周期已结算金额，`remaining` 为限额减已用且最低为零。
-不限额时 `total`、`remaining` 均为 `null`，仍返回已用金额。`resetsAt` 为 RFC3339 时间，尚未开启或已到期的窗口返回 `null`，
+不限额时 `total`、`remaining` 均为 `null`，仍返回已用金额。`resetsAt` 为 RFC3339 时间，普通窗口尚未开启或已到期时返回 `null`，
 已到期窗口的 `used` 为 `"0"`。日窗口按北京时间零点划分，周窗口沿用首次使用起的七天周期，不固定为周一。
 修改限额、管理员重置和费用结算均复用现有 Key 账本，不从请求日志重算余额。
 
@@ -391,6 +400,9 @@ OpenAI 选号阶段确认本次可选账号全部额度耗尽时，HTTP 返回 `
 overview 返回 `asOf`、`startTime`、`endTime`、`key`、`summary`、`trend`、`healthTimeline`。
 `key` 仅包含名称、掩码前缀、并发/RPM、日与周限额、已用 USD 及重置时间；零限额表示不限，
 未启动窗口的重置时间为 null。额度使用现有结算账本，不受日志日期或模型筛选影响。
+seat Key 另含 `seatName` 和 `accountCycle`，后者为 true 才表示已跟随账号周期。
+账号周期到期未确认时保留原已用金额和到期时间，不能把已到期解释成已获得新额度。
+`seatKeys` 展示同 seat 成员的分别记账明细，账本仍保留撤销 Key 的费用。
 健康时间线沿用管理端的 96 个北京时间日内桶与可用性语义，不受历史范围和模型筛选影响。
 
 汇总和趋势返回请求数、输入、输出、缓存读写、推理、总 Tokens 与 USD 成本；输入已包含缓存读写，
@@ -938,6 +950,12 @@ HTTP 请求头及新建 WS 的握手提示按当时的最终出站档位构造�
 列表数据为 `{ items, page, configRevision }`，其中 item 返回 `memberCount`、按 Provider 聚合的
 `providerCounts` 和 `clientKeyCount`。查询分组成员使用账号列表的 `groupId` 筛选，
 不提供独立的分组成员路由；账号的 Provider 不代表整个分组的 Provider。
+`capacity.totalSlots` 为 `number | null`：`null` 表示可用成员中存在继承无限并发的账号，`0` 表示没有可用槽位。
+`capacity.usedSlots` 继续返回实际在途数；Redis 不可用时为 `null`。
+
+car 的 seat 数量（含停用项）及任一 seat 并发上限都不能超过账号有效容量，不限制这些上限之和。
+将全局默认改为0之前必须为所有 car 设置正数独立上限；清除账号覆盖或下调容量后不满足约束时整次修改拒绝。
+关闭自动发布估算容量不关闭账号周期跟随，seat 周期限额仍按已发布容量与权重计算。
 
 ## 7. Client Key
 
@@ -1075,6 +1093,10 @@ accountAutoFreezeAdaptiveConcurrency
 字段约束与[代理位置](#独立代理管理--managed-proxies)一致。全局自定义开启后，OpenAI Responses 使用全局位置，
 关联代理配置了自定义位置时优先使用代理值。保存后通过现有配置发布机制对新请求生效，
 已开始请求及其重试保持同一份全局值；普通文本、绝对时间戳和数据驻留要求不受影响。
+
+`maxConcurrentPerAccount` 是默认账号并发上限，取值 0～4294967295；`0` 表示不限制。
+账号的 `concurrencyLimit: null` 继承该默认值，单独设置的正数上限仍优先生效。
+无限并发仍统计在途请求，并遵守最小请求间隔、账号可用性与 Client Key 限制。
 
 `maxWaitingPerKey` 与 `maxWaitingPerAccount` 是全局统一的排队容量，取值 0～1,000，默认 0（关闭）；
 每个 Key、每个账号各自独立计数，没有单对象覆盖字段。执行并发为 5、最大排队数为 5 时，
@@ -1329,6 +1351,10 @@ errorCode, errorMessage, startedAt, completedAt, expiresAt, createdAt, updatedAt
 | `GET` | `/api/admin/usage/insights/overview` | 用量、成本与成功率洞察 |
 | `GET` | `/api/admin/usage/insights/diagnostics` | 按维度聚合诊断 |
 | `GET` | `/api/admin/operations/errors` | 运维错误分页列表 |
+
+Dashboard 的 `capacityInfo.maxConcurrentPerAccount` 为默认账号并发上限，`0` 表示不限制。
+`capacityInfo.totalSlots` 为 `number | null`；可用账号池含无限并发账号时为 `null`，此时 `availableSlots` 也为 `null`。
+`usedSlots` 仍表示实际在途数，Redis 不可用时为 `null`；没有可用账号时 `totalSlots` 为 `0`。
 
 用量查询可组合页码/游标、时间范围、Provider、Client Key、账号、模型、route、transport、状态码、
 request/response/upstream ID、outcome 与搜索文本。诊断 `dimension` 可取 `model`、`account`、

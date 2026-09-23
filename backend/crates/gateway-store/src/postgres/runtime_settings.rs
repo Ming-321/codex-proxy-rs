@@ -162,7 +162,6 @@ impl RuntimeSettingsUpdate {
             || isize::try_from(self.responses_max_decompressed_body_bytes).is_err()
             || self.refresh_margin_seconds == 0
             || self.refresh_concurrency == 0
-            || self.max_concurrent_per_account == 0
             || self.max_waiting_per_key > 1_000
             || self.max_waiting_per_account > 1_000
             || !(1..=120).contains(&self.concurrency_wait_timeout_seconds)
@@ -223,10 +222,9 @@ impl RuntimeSettingsRepository for PgRuntimeSettingsRepository {
             .await
             .map_err(|_| postgres_unavailable("begin runtime settings update"))?;
         let revision = update_runtime_settings_in_transaction(&mut transaction, &update).await?;
-        transaction
-            .commit()
-            .await
-            .map_err(|_| postgres_unavailable("commit runtime settings update"))?;
+        transaction.commit().await.map_err(|error| {
+            super::seats::configuration_error(error, "commit runtime settings update")
+        })?;
         Ok(revision)
     }
 }

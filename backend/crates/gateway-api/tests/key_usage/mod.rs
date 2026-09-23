@@ -187,6 +187,7 @@ async fn overview_scopes_every_query_and_projects_only_key_visible_fields() {
             "name",
             "prefix",
             "seatName",
+            "accountCycle",
             "maxConcurrency",
             "requestsPerMinute",
             "dailyLimitUsd",
@@ -198,6 +199,7 @@ async fn overview_scopes_every_query_and_projects_only_key_visible_fields() {
         ],
     );
     assert_eq!(data["key"]["dailyUsedUsd"], "0.640001");
+    assert_eq!(data["key"]["accountCycle"], false);
     assert_eq!(data["key"]["maxConcurrency"], 0);
     assert_eq!(data["seatKeys"], json!([]));
     assert!(data.get("accountUsedPercent").is_none());

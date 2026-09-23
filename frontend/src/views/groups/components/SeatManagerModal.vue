@@ -8,6 +8,7 @@ import BaseFormItem from '@/components/base/BaseForm/FormItem.vue'
 import BaseInput from '@/components/base/BaseInput.vue'
 import BaseModal from '@/components/base/BaseModal/index.vue'
 import { useAsyncAction } from '@/composables/useAsyncAction'
+import { useUiClock } from '@/composables/useUiClock'
 import { formatDateTime } from '@/utils/date'
 
 const props = defineProps<{ group: AccountGroup | null }>()
@@ -18,6 +19,9 @@ const busy = action.loading
 const isCar = ref(false)
 const seats = ref<Seat[]>([])
 const quota = ref<CarQuotaState | null>(null)
+const now = useUiClock()
+const waitingForCycle = computed(() => quota.value?.mode === 'active'
+  && (!quota.value.cycleEnd || Date.parse(quota.value.cycleEnd) <= now.value.getTime()))
 const totalWeight = ref('1')
 const keys = ref<ApiKey[]>([])
 const editing = ref(false)
@@ -136,7 +140,7 @@ function remaining(used: string, limit: string) {
   return Number(limit) === 0 ? '不限额' : `$${amount(String(Math.max(0, Number(limit) - Number(used))))}`
 }
 function modeLabel(mode: CarQuotaState['mode']) {
-  return mode === 'active' ? '已按账号周期运行' : mode === 'waiting' ? '等待账号周期确认' : '沿用原周窗口，确认后自动切换'
+  return waitingForCycle.value ? '等待新周期确认，暂停新请求' : mode === 'active' ? '已按账号周期运行' : mode === 'waiting' ? '等待账号周期确认' : '沿用原周窗口，确认后自动切换'
 }
 </script>
 
@@ -208,7 +212,7 @@ function modeLabel(mode: CarQuotaState['mode']) {
             </p>
           </div>
           <div>
-            账号周期已用 ${{ amount(seat.weeklyUsedUsd) }} / {{ Number(seat.weeklyLimitUsd) ? `$${amount(seat.weeklyLimitUsd)}` : '不限额' }}<p class="text-cp-xs text-cp-text-secondary">
+            {{ quota?.mode === 'active' ? '账号周期已用' : '周额度已用' }} ${{ amount(seat.weeklyUsedUsd) }} / {{ Number(seat.weeklyLimitUsd) ? `$${amount(seat.weeklyLimitUsd)}` : '不限额' }}<p class="text-cp-xs text-cp-text-secondary">
               剩余 {{ remaining(seat.weeklyUsedUsd, seat.weeklyLimitUsd) }} · {{ reset(seat.weeklyResetsAt) }}
             </p>
           </div>

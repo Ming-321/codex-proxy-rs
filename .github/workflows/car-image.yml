@@ -5,6 +5,8 @@ on:
     branches:
       - car
       - feat/car-seat-sharing
+    tags:
+      - car-v*
 
 permissions:
   contents: read
@@ -45,12 +47,16 @@ jobs:
           set -euo pipefail
           base_version="$(ruby -ryaml -e 'print YAML.load_file("release/version.yaml").fetch("version").delete_prefix("v")')"
           short_sha="${GITHUB_SHA:0:12}"
-          # Build metadata identifies the fork without changing SemVer precedence
-          # or turning a stable upstream version into an unknown prerelease channel.
-          if [[ "$base_version" == *+* ]]; then
-            version="${base_version}.car.${short_sha}"
+          # 正式版本由不可移动的发布 tag 标识，普通构建只标 dev 与提交。
+          if [[ "$GITHUB_REF_TYPE" == tag ]]; then
+            version="${GITHUB_REF_NAME#car-v}"
+            suffix="${version#"${base_version}+car."}"
+            if [[ "$version" != "${base_version}+car.${suffix}" || ! "$suffix" =~ ^[1-9][0-9]*$ ]]; then
+              echo '::error::car release tag must match the upstream version and a positive release sequence'
+              exit 1
+            fi
           else
-            version="${base_version}+car.${short_sha}"
+            version="${base_version}+car.dev.${short_sha}"
           fi
           {
             echo "version=$version"

@@ -27,6 +27,9 @@ fn invalid(message: &str) -> AdminStoreError {
 }
 
 fn database(error: sqlx::Error) -> AdminStoreError {
+    if let Some(message) = capacity_error_message(&error) {
+        return AdminStoreError::new(AdminStoreErrorKind::CarCapacity, "seat", message);
+    }
     if let Some(db) = error.as_database_error()
         && (db.is_check_violation() || db.is_unique_violation() || db.is_foreign_key_violation())
     {
@@ -37,6 +40,31 @@ fn database(error: sqlx::Error) -> AdminStoreError {
         "seat",
         "seat 存储暂不可用",
     )
+}
+
+fn capacity_error_message(error: &sqlx::Error) -> Option<&'static str> {
+    match error.as_database_error()?.constraint()? {
+        "car_finite_capacity" => Some(
+            "car 账号必须有正数并发上限，请先为继承默认值的 car 账号设置独立上限，再将全局默认设为不限",
+        ),
+        "car_seat_capacity" => {
+            Some("账号并发上限不能小于 seat 数量或任一 seat 上限，停用 seat 也计入数量")
+        }
+        _ => None,
+    }
+}
+
+pub(super) fn configuration_error(
+    error: sqlx::Error,
+    operation: &'static str,
+) -> crate::StoreError {
+    if let Some(message) = capacity_error_message(&error) {
+        return crate::StoreError::InvalidData {
+            entity: "car capacity",
+            message: message.to_owned(),
+        };
+    }
+    crate::postgres_unavailable(operation)
 }
 
 async fn begin(pool: &PgPool) -> AdminStoreResult<(Transaction<'_, Postgres>, crate::Revision)> {
@@ -128,10 +156,11 @@ pub(super) async fn list_seats(
     let rows = sqlx::query("select s.*, s.weight::text as seat_weight, s.daily_limit_usd::text as daily_limit, s.weekly_limit_usd::text as weekly_limit,
         (select count(*) from client_api_keys k where k.seat_id = s.id and k.revoked_at is null) as key_count,
         (case when w.daily_end > now() then w.daily_used_usd else 0 end)::text as daily_used,
-        (case when w.weekly_end > now() then w.weekly_used_usd else 0 end)::text as weekly_used,
+        (case when g.car_quota_mode = 'active' or w.weekly_end > now() then w.weekly_used_usd else 0 end)::text as weekly_used,
         case when w.daily_end > now() then w.daily_end end as daily_end,
-        case when w.weekly_end > now() then w.weekly_end end as weekly_end
-        from seats s left join seat_budget_windows w on w.seat_id = s.id where s.account_group_id = $1 order by s.created_at, s.id")
+        case when g.car_quota_mode = 'active' or w.weekly_end > now() then w.weekly_end end as weekly_end
+        from seats s join account_groups g on g.id = s.account_group_id
+        left join seat_budget_windows w on w.seat_id = s.id where s.account_group_id = $1 order by s.created_at, s.id")
         .bind(group_id.as_str()).fetch_all(pool).await.map_err(database)?;
     rows.iter()
         .map(|row| {
@@ -560,13 +589,19 @@ pub(super) async fn reconcile_car_quota(
     pool: &PgPool,
     observation: CarQuotaObservation,
 ) -> AdminStoreResult<CarQuotaState> {
+    if observation.cycle_start > observation.observed_at
+        || observation.observed_at >= observation.cycle_end
+        || observation.used_percent_millis > 100_000
+    {
+        return Err(invalid("账号周期观测的时间或用量无效"));
+    }
     let settings = load_car_quota_settings(pool).await?;
     let mut tx = pool.begin().await.map_err(database)?;
     let row = sqlx::query(
         "select g.car_quota_mode, g.car_total_weight::text as total_weight,
-        c.cycle_start, c.cycle_end, c.last_observed_at, c.last_used_percent::text as last_used,
+        c.window_key, c.cycle_start, c.cycle_end, c.last_observed_at, c.last_used_percent::text as last_used,
         c.published_capacity_usd::text as published_capacity, c.published_at,
-        c.published_sample_end, c.reset_candidate_end, c.reset_candidate_observed_at,
+        c.published_sample_end, c.reset_candidate_start, c.reset_candidate_end, c.reset_candidate_observed_at,
         c.abnormal_candidate_usd::text as abnormal_candidate,
         c.abnormal_candidate_sample_end
         from account_groups g join car_quota_cycles c on c.account_group_id = g.id
@@ -579,6 +614,7 @@ pub(super) async fn reconcile_car_quota(
     .ok_or_else(|| invalid("car 周期状态不存在"))?;
     let mode = quota_mode(row.get::<String, _>("car_quota_mode").as_str())?;
     let current_end = row.get::<Option<DateTime<Utc>>, _>("cycle_end");
+    let current_start = row.get::<Option<DateTime<Utc>>, _>("cycle_start");
     let last_observed = row.get::<Option<DateTime<Utc>>, _>("last_observed_at");
     if last_observed.is_some_and(|last| observation.observed_at <= last) {
         tx.rollback().await.map_err(database)?;
@@ -588,30 +624,44 @@ pub(super) async fn reconcile_car_quota(
         .get::<Option<String>, _>("last_used")
         .and_then(|value| value.parse::<f64>().ok())
         .map(|value| (value * 1_000.0).round() as u32);
-    let clear_roll = current_end
-        .is_some_and(|end| observation.cycle_start >= end || observation.observed_at >= end);
-    let earlier_new_end = current_end.is_some_and(|end| observation.cycle_end > end) && !clear_roll;
+    let first_cycle = current_end.is_none();
+    let same_cycle = current_start == Some(observation.cycle_start)
+        && current_end == Some(observation.cycle_end)
+        && row.get::<Option<String>, _>("window_key").as_deref() == Some(&observation.window_key);
+    let forward_cycle = current_end.is_some_and(|end| observation.cycle_end > end)
+        && current_start.is_some_and(|start| observation.cycle_start > start);
+    if !first_cycle && !same_cycle && !forward_cycle {
+        tx.rollback().await.map_err(database)?;
+        return load_car_quota_state(pool, observation.group_id).await;
+    }
+    let clear_roll = forward_cycle
+        && current_end
+            .is_some_and(|end| observation.cycle_start >= end || observation.observed_at >= end);
+    let earlier_new_end = forward_cycle && !clear_roll;
+    let usage_reset = last_used.is_some_and(|used| observation.used_percent_millis + 1_000 < used);
     let candidate_confirmed = earlier_new_end
+        && row.get::<Option<DateTime<Utc>>, _>("reset_candidate_start")
+            == Some(observation.cycle_start)
         && row.get::<Option<DateTime<Utc>>, _>("reset_candidate_end")
             == Some(observation.cycle_end)
         && row
             .get::<Option<DateTime<Utc>>, _>("reset_candidate_observed_at")
             .is_some_and(|at| at < observation.observed_at)
-        && last_used.is_some_and(|used| observation.used_percent_millis + 1_000 < used);
-    let first_cycle = current_end.is_none();
+        && usage_reset;
     let new_cycle = first_cycle || clear_roll || candidate_confirmed;
 
     if earlier_new_end && !candidate_confirmed {
         sqlx::query(
-            "update car_quota_cycles set reset_candidate_end = $2,
+            "update car_quota_cycles set reset_candidate_end = $2, reset_candidate_start = $4,
             reset_candidate_observed_at = $3, prediction_reason = '提前重置等待再次确认',
-            last_observed_at = $3, last_used_percent = $4::text::numeric, updated_at = now()
+            last_observed_at = $3, updated_at = now()
             where account_group_id = $1",
         )
         .bind(observation.group_id.as_str())
-        .bind(observation.cycle_end)
+        .bind(usage_reset.then_some(observation.cycle_end))
         .bind(observation.observed_at)
-        .bind(millis_text(observation.used_percent_millis))
+        // 保留重置前用量基线，下一次新周期消费增加也能确认。
+        .bind(usage_reset.then_some(observation.cycle_start))
         .execute(&mut *tx)
         .await
         .map_err(database)?;
@@ -720,8 +770,8 @@ pub(super) async fn reconcile_car_quota(
         published_capacity_usd = $9::text::numeric,
         published_at = case when $10 then $5 else published_at end,
         published_sample_end = case when $10 then $11 else published_sample_end end,
-        reset_candidate_end = case when $12 then null else reset_candidate_end end,
-        reset_candidate_observed_at = case when $12 then null else reset_candidate_observed_at end,
+        reset_candidate_start = null, reset_candidate_end = null,
+        reset_candidate_observed_at = null,
         abnormal_candidate_usd = case when $10 then null else abnormal_candidate_usd end,
         abnormal_candidate_sample_end = case when $10 then null else abnormal_candidate_sample_end end,
         updated_at = now() where account_group_id = $1")
@@ -729,7 +779,7 @@ pub(super) async fn reconcile_car_quota(
         .bind(observation.cycle_start).bind(observation.cycle_end).bind(observation.observed_at)
         .bind(millis_text(observation.used_percent_millis))
         .bind(predicted.map(Decimal::canonical))
-        .bind(reason).bind(published.canonical()).bind(publish).bind(observation.sample_end).bind(new_cycle)
+        .bind(reason).bind(published.canonical()).bind(publish).bind(observation.sample_end)
         .execute(&mut *tx).await.map_err(database)?;
     if publish {
         sqlx::query("update seats s set weekly_limit_usd = $2::text::numeric * s.weight / g.car_total_weight,

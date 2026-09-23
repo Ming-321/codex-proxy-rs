@@ -195,6 +195,28 @@ impl PgClientBudgetStore {
         advance_owner_windows(&mut tx, owner, now)
             .await
             .map_err(|_| unavailable())?;
+        if let Some(id) = seat_id.as_ref() {
+            // seat 行锁使准入与周期切换串行；到期不意味着已确认新额度。
+            let waiting: bool = sqlx::query_scalar(
+                "select g.car_quota_mode = 'active' and
+                (c.cycle_end is null or c.cycle_end <= $2) from seats s
+                join account_groups g on g.id = s.account_group_id
+                left join car_quota_cycles c on c.account_group_id = g.id where s.id = $1",
+            )
+            .bind(id.as_str())
+            .bind(now)
+            .fetch_one(&mut *tx)
+            .await
+            .map_err(|_| unavailable())?;
+            if waiting {
+                return Err(GatewayError::new(
+                    GatewayErrorKind::RateLimited,
+                    "seat is waiting for confirmation of the next account quota cycle",
+                )
+                .with_client_code("seat_cycle_confirmation_pending")
+                .with_retry_after(Duration::from_secs(60)));
+            }
+        }
         if limits.is_limited() {
             // 表名和列名只来自封闭的 BudgetOwner，所有外部值仍使用绑定参数。
             let window = sqlx::query(sqlx::AssertSqlSafe(format!(
@@ -389,6 +411,31 @@ pub(super) async fn advance_owner_windows(
 ) -> Result<(), sqlx::Error> {
     let table = owner.table();
     let column = owner.column();
+    if let BudgetOwner::Seat(id) = owner {
+        let cycle = sqlx::query_as::<_, (Option<DateTime<Utc>>, Option<DateTime<Utc>>)>(
+            "select c.cycle_start, c.cycle_end from seats s
+            join account_groups g on g.id = s.account_group_id
+            left join car_quota_cycles c on c.account_group_id = g.id
+            where s.id = $1 and g.car_quota_mode = 'active'",
+        )
+        .bind(id)
+        .fetch_optional(&mut **tx)
+        .await?;
+        if let Some((start, end)) = cycle {
+            // 热路径只推进日窗口；账号周期只能由可信观测推进，结算仍可写账本。
+            sqlx::query("insert into seat_budget_windows
+                (seat_id, daily_start, daily_end, weekly_start, weekly_end)
+                select $1, day, day + interval '24 hours', $3, $4
+                from (select date_trunc('day', $2::timestamptz at time zone 'Asia/Shanghai') at time zone 'Asia/Shanghai' as day) d
+                where $3::timestamptz is not null and $4::timestamptz is not null
+                on conflict (seat_id) do update set
+                    daily_start = case when seat_budget_windows.daily_end <= $2 then excluded.daily_start else seat_budget_windows.daily_start end,
+                    daily_end = case when seat_budget_windows.daily_end <= $2 then excluded.daily_end else seat_budget_windows.daily_end end,
+                    daily_used_usd = case when seat_budget_windows.daily_end <= $2 then 0 else seat_budget_windows.daily_used_usd end")
+                .bind(id).bind(now).bind(start).bind(end).execute(&mut **tx).await?;
+            return Ok(());
+        }
+    }
     // 标识符来自上方枚举，不能由请求指定。
     sqlx::query(sqlx::AssertSqlSafe(format!("insert into {table}
         ({column}, daily_start, daily_end, weekly_start, weekly_end)
@@ -420,12 +467,14 @@ pub(super) async fn load_client_key_budgets(
         "select k.id, coalesce(s.daily_limit_usd, k.daily_limit_usd)::text as daily_limit_usd,
         coalesce(s.weekly_limit_usd, k.weekly_limit_usd)::text as weekly_limit_usd,
         s.id as seat_id, s.name as seat_name, s.max_concurrency as seat_concurrency,
+        coalesce(g.car_quota_mode = 'active', false) as account_cycle,
         (case when w.daily_end > now() then w.daily_used_usd else 0 end)::text as daily_used,
-        (case when w.weekly_end > now() then w.weekly_used_usd else 0 end)::text as weekly_used,
+        (case when g.car_quota_mode = 'active' or w.weekly_end > now() then w.weekly_used_usd else 0 end)::text as weekly_used,
         case when w.daily_end > now() then w.daily_end end as daily_end,
-        case when w.weekly_end > now() then w.weekly_end end as weekly_end
+        case when g.car_quota_mode = 'active' or w.weekly_end > now() then w.weekly_end end as weekly_end
         from client_api_keys k
         left join seats s on s.id = k.seat_id
+        left join account_groups g on g.id = s.account_group_id
         left join lateral (
             select daily_used_usd, weekly_used_usd, daily_end, weekly_end
             from client_key_budget_windows where client_api_key_id = k.id and k.seat_id is null
@@ -456,6 +505,7 @@ pub(super) async fn load_client_key_budgets(
                             id: gateway_core::policy::SeatId::new(id)
                                 .map_err(|_| postgres_unavailable("decode seat ID"))?,
                             name: row.get("seat_name"),
+                            account_cycle: row.get("account_cycle"),
                             max_concurrency: u64::try_from(row.get::<i64, _>("seat_concurrency"))
                                 .map_err(|_| {
                                 postgres_unavailable("decode seat concurrency")

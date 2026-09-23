@@ -77,6 +77,9 @@ onMounted(load)
 <template>
   <BaseCard title="账号周期额度估算" description="控制 car 账号容量估算的发布频率与稳定策略，全局生效">
     <BaseForm class="max-w-6xl sm:grid-cols-2">
+      <p class="col-span-full text-cp-xs text-cp-text-secondary">
+        关闭自动发布后，仍跟随账号周期，并按已发布容量和权重分配 seat 额度
+      </p>
       <BaseSwitch v-model="form.automaticUpdates" class="col-span-full justify-self-start" label="自动发布估算容量" show-label />
       <BaseFormItem label="最短发布间隔" description="即使获得新样本，也不会比此间隔更频繁地调整 seat 周期额度">
         <BaseInput v-model="form.publishIntervalHours" type="number" min="0.083333" max="720" step="any" aria-label="估算最短发布间隔" :disabled="busy || !form.automaticUpdates">

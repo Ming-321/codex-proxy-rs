@@ -94,7 +94,10 @@ fn charge(id: &str, request: &str, amount: &str, shared: bool) -> ClientBudgetCh
     }
 }
 async fn setup(label: &str) -> Option<TestDatabase> {
-    let db = TestDatabase::create(label).await?;
+    setup_through(label, i64::MAX).await
+}
+async fn setup_through(label: &str, version: i64) -> Option<TestDatabase> {
+    let db = TestDatabase::create_through(label, version).await?;
     sqlx::raw_sql("insert into provider_accounts (id, provider_kind, name, upstream_user_id, authentication_kind, provider_credentials_json, credential_revision, has_refresh_token, enabled, credential_state, credential_observed_at, created_at, updated_at, concurrency_limit)
         values ('acct_car', 'openai', 'car', 'car-user', 'oauth', '{}', 1, false, true, 'ready', now(), now(), now(), 3);
         insert into account_groups (id, name, color, created_at, updated_at) values ('grp_00000000000000000000000000000001', 'car', '#2563EBFF', now(), now());
@@ -379,12 +382,205 @@ async fn account_cycle_activates_weighted_limits_and_requires_two_early_reset_ob
             next_start,
             next_end,
             next_start + chrono::Duration::hours(2),
-            2_000,
+            6_000,
         ))
         .await
         .unwrap();
     assert_eq!(confirmed.cycle_start, Some(next_start));
     assert_eq!(confirmed.cycle_end, Some(next_end));
+    let old_window = groups
+        .reconcile_car_quota(observation(
+            start,
+            end,
+            next_start + chrono::Duration::hours(3),
+            70_000,
+        ))
+        .await
+        .unwrap();
+    assert_eq!(old_window.cycle_start, Some(next_start));
+    assert_eq!(old_window.cycle_end, Some(next_end));
+    db.close().await;
+}
+
+#[tokio::test]
+async fn expired_account_cycle_blocks_new_requests_but_settles_and_recovers_from_the_ledger() {
+    let Some(db) = setup("car_expired_cycle").await else {
+        return;
+    };
+    let groups = PgAccountGroupRepository::new(db.pool.clone());
+    let budgets = PgClientBudgetStore::new(db.pool.clone());
+    groups
+        .join_seat(join(&["key_a", "key_b"]), &context())
+        .await
+        .unwrap();
+    let now =
+        chrono::DateTime::from_timestamp_micros(chrono::Utc::now().timestamp_micros()).unwrap();
+    let end = now - chrono::Duration::minutes(1);
+    let start = end - chrono::Duration::days(7);
+    groups
+        .reconcile_car_quota(observation(
+            start,
+            end,
+            end - chrono::Duration::minutes(2),
+            60_000,
+        ))
+        .await
+        .unwrap();
+    let mut old_charge = charge("key_a", "req_old_cycle", "7", true);
+    old_charge.completed_at = (end - chrono::Duration::minutes(1)).into();
+    budgets.settle(old_charge.clone()).await.unwrap();
+    for id in ["key_a", "key_b"] {
+        let error = budgets
+            .begin_request(
+                key(id),
+                Some(seat()),
+                ModelRequestId::new(format!("req_blocked_{id}")).unwrap(),
+                SystemTime::now() + Duration::from_secs(60),
+            )
+            .await
+            .unwrap_err();
+        assert_eq!(
+            error.client_error_code(),
+            Some("seat_cycle_confirmation_pending")
+        );
+    }
+    let pending: i64 = sqlx::query_scalar("select count(*) from client_budget_admissions")
+        .fetch_one(&db.pool)
+        .await
+        .unwrap();
+    assert_eq!(pending, 0);
+    let late_charge = charge("key_b", "req_late_cycle", "3", true);
+    budgets.settle(late_charge.clone()).await.unwrap();
+    budgets.settle(late_charge).await.unwrap();
+    let old = groups.list_seats(group()).await.unwrap().remove(0);
+    assert_eq!(old.budget.weekly_used_usd.canonical(), "7");
+    assert_eq!(old.budget.weekly_resets_at, Some(end.into()));
+    let key_view = PgClientApiKeyRepository::new(db.pool.clone())
+        .get_client_api_key("key_a")
+        .await
+        .unwrap()
+        .unwrap();
+    assert!(key_view.budget.seat.unwrap().account_cycle);
+    assert_eq!(key_view.budget.weekly_used_usd.canonical(), "7");
+    let new_end = end + chrono::Duration::days(7);
+    groups
+        .reconcile_car_quota(observation(end, new_end, now, 2_000))
+        .await
+        .unwrap();
+    for id in ["key_a", "key_b"] {
+        budgets.admit(key(id), Some(seat())).await.unwrap();
+    }
+    budgets.settle(old_charge).await.unwrap();
+    let new = groups.list_seats(group()).await.unwrap().remove(0);
+    assert_eq!(new.budget.weekly_used_usd.canonical(), "3");
+    assert_eq!(new.budget.weekly_resets_at, Some(new_end.into()));
+    let events: i64 = sqlx::query_scalar("select count(*) from client_key_charge_events")
+        .fetch_one(&db.pool)
+        .await
+        .unwrap();
+    assert_eq!(events, 2);
+    db.close().await;
+}
+
+#[tokio::test]
+async fn car_capacity_stays_finite_with_unlimited_defaults_including_empty_cars() {
+    let Some(db) = setup("car_unlimited_default").await else {
+        return;
+    };
+    sqlx::query("update runtime_settings set max_concurrent_per_account = 0")
+        .execute(&db.pool)
+        .await
+        .unwrap();
+    let error =
+        sqlx::query("update provider_accounts set concurrency_limit = null where id = 'acct_car'")
+            .execute(&db.pool)
+            .await
+            .unwrap_err();
+    assert_eq!(
+        error.as_database_error().unwrap().constraint(),
+        Some("car_finite_capacity")
+    );
+    sqlx::query("delete from seats")
+        .execute(&db.pool)
+        .await
+        .unwrap();
+    assert!(
+        sqlx::query("update provider_accounts set concurrency_limit = null where id = 'acct_car'")
+            .execute(&db.pool)
+            .await
+            .is_err()
+    );
+    sqlx::query("update runtime_settings set max_concurrent_per_account = 3")
+        .execute(&db.pool)
+        .await
+        .unwrap();
+    sqlx::query("update provider_accounts set concurrency_limit = null where id = 'acct_car'")
+        .execute(&db.pool)
+        .await
+        .unwrap();
+    assert!(
+        sqlx::query("update runtime_settings set max_concurrent_per_account = 0")
+            .execute(&db.pool)
+            .await
+            .is_err()
+    );
+    let current: i64 =
+        sqlx::query_scalar("select max_concurrent_per_account from runtime_settings")
+            .fetch_one(&db.pool)
+            .await
+            .unwrap();
+    assert_eq!(current, 3);
+    db.close().await;
+}
+
+#[tokio::test]
+async fn fork_upgrade_preserves_migration_history_and_shared_accounting() {
+    let Some(db) = setup_through("car_upgrade", 18).await else {
+        return;
+    };
+    let groups = PgAccountGroupRepository::new(db.pool.clone());
+    groups
+        .join_seat(join(&["key_a"]), &context())
+        .await
+        .unwrap();
+    PgClientBudgetStore::new(db.pool.clone())
+        .settle(charge("key_a", "req_upgrade", "12.5", true))
+        .await
+        .unwrap();
+    PgAdminClientKeyStore::new(db.pool.clone())
+        .delete_client_key(DeleteClientKey { id: key("key_a") }, &context())
+        .await
+        .unwrap();
+    let snapshot_sql = "select jsonb_build_object(
+        'migrations', (select jsonb_agg(to_jsonb(m) order by version) from _sqlx_migrations m where version <= 18),
+        'groups', (select jsonb_agg(to_jsonb(g) order by id) from account_groups g),
+        'seats', (select jsonb_agg(to_jsonb(s) order by id) from seats s),
+        'keys', (select jsonb_agg(to_jsonb(k) order by id) from client_api_keys k),
+        'events', (select jsonb_agg(to_jsonb(e) order by request_id) from client_key_charge_events e),
+        'windows', (select jsonb_agg(to_jsonb(w) order by seat_id) from seat_budget_windows w),
+        'cycles', (select jsonb_agg(to_jsonb(c) - 'reset_candidate_start' order by account_group_id) from car_quota_cycles c))";
+    let before: serde_json::Value = sqlx::query_scalar(snapshot_sql)
+        .fetch_one(&db.pool)
+        .await
+        .unwrap();
+    super::TEST_MIGRATOR.run(&db.pool).await.unwrap();
+    super::TEST_MIGRATOR.run(&db.pool).await.unwrap();
+    let after: serde_json::Value = sqlx::query_scalar(snapshot_sql)
+        .fetch_one(&db.pool)
+        .await
+        .unwrap();
+    assert_eq!(before, after);
+    let old = sqlx::migrate::Migrator::with_migrations(
+        super::TEST_MIGRATOR
+            .iter()
+            .filter(|m| m.version <= 18)
+            .cloned()
+            .collect(),
+    );
+    assert!(matches!(
+        old.run(&db.pool).await,
+        Err(sqlx::migrate::MigrateError::VersionMissing(19))
+    ));
     db.close().await;
 }
 
@@ -449,5 +645,106 @@ async fn capacity_publication_blends_clamps_and_confirms_abnormal_samples() {
     confirmed.sample_percent_millis = Some(15_000);
     let published = groups.reconcile_car_quota(confirmed).await.unwrap();
     assert_eq!(published.published_capacity_usd.canonical(), "731.5");
+    db.close().await;
+}
+
+#[tokio::test]
+async fn upgrade_rejects_wrong_history_and_rolls_back_invalid_empty_car_atomically() {
+    let Some(db) = setup_through("car_upgrade_rejected", 18).await else {
+        return;
+    };
+    let checksum: Vec<u8> =
+        sqlx::query_scalar("select checksum from _sqlx_migrations where version = 17")
+            .fetch_one(&db.pool)
+            .await
+            .unwrap();
+    sqlx::query("update _sqlx_migrations set checksum = decode('aa', 'hex') where version = 17")
+        .execute(&db.pool)
+        .await
+        .unwrap();
+    let mut connection = db.pool.acquire().await.unwrap();
+    let rejected = super::TEST_MIGRATOR.run(&mut *connection).await;
+    // 与生产启动失败后关闭 migration pool 一致，释放失败连接持有的 advisory lock。
+    connection.close().await.unwrap();
+    assert!(matches!(
+        rejected,
+        Err(sqlx::migrate::MigrateError::VersionMismatch(17))
+    ));
+    sqlx::query("update _sqlx_migrations set checksum = $1 where version = 17")
+        .bind(checksum)
+        .execute(&db.pool)
+        .await
+        .unwrap();
+    // 构造旧约束漏检的零 seat car；这里只修改一次性测试库。
+    sqlx::raw_sql("delete from seats;
+        update provider_accounts set concurrency_limit = null;
+        alter table runtime_settings drop constraint runtime_settings_refresh_ck;
+        alter table runtime_settings add constraint runtime_settings_refresh_ck check (max_concurrent_per_account >= 0);
+        update runtime_settings set max_concurrent_per_account = 0;").execute(&db.pool).await.unwrap();
+    let mut connection = db.pool.acquire().await.unwrap();
+    let rejected = super::TEST_MIGRATOR.run(&mut *connection).await;
+    connection.close().await.unwrap();
+    assert!(rejected.is_err());
+    let (count, helper): (i64, bool) = sqlx::query_as("select (select count(*) from _sqlx_migrations), to_regprocedure('check_car_seat_relations()') is not null").fetch_one(&db.pool).await.unwrap();
+    assert_eq!(count, 18);
+    assert!(!helper);
+    sqlx::query("update provider_accounts set concurrency_limit = 3")
+        .execute(&db.pool)
+        .await
+        .unwrap();
+    super::TEST_MIGRATOR.run(&db.pool).await.unwrap();
+    db.close().await;
+}
+
+#[tokio::test]
+async fn disabling_publication_still_activates_cycles_and_incomplete_samples_never_publish() {
+    let Some(db) = setup("car_publication_guards").await else {
+        return;
+    };
+    let groups = PgAccountGroupRepository::new(db.pool.clone());
+    sqlx::query("update car_quota_settings set automatic_updates = false")
+        .execute(&db.pool)
+        .await
+        .unwrap();
+    let start = "2026-09-01T00:00:00Z".parse().unwrap();
+    let end = "2026-09-08T00:00:00Z".parse().unwrap();
+    let mut sample = observation(start, end, "2026-09-02T00:00:00Z".parse().unwrap(), 20_000);
+    sample.predicted_capacity_usd = Some("150".parse().unwrap());
+    sample.sample_start = Some(start);
+    sample.sample_end = Some(sample.observed_at);
+    sample.sample_percent_millis = Some(20_000);
+    let first = groups.reconcile_car_quota(sample.clone()).await.unwrap();
+    assert_eq!(first.mode, CarQuotaMode::Active);
+    assert_eq!(first.published_capacity_usd.canonical(), "130");
+    assert_eq!(
+        groups.list_seats(group()).await.unwrap()[0]
+            .budget
+            .limits
+            .weekly_usd
+            .canonical(),
+        "130"
+    );
+    sqlx::query("update car_quota_settings set automatic_updates = true")
+        .execute(&db.pool)
+        .await
+        .unwrap();
+    for (cost_complete, pending, sampled) in
+        [(false, 0, 20_000), (true, 1, 20_000), (true, 0, 5_000)]
+    {
+        sample.observed_at += chrono::Duration::hours(1);
+        sample.sample_end = Some(sample.observed_at);
+        sample.cost_complete = cost_complete;
+        sample.pending_request_count = pending;
+        sample.sample_percent_millis = Some(sampled);
+        assert_eq!(
+            groups
+                .reconcile_car_quota(sample.clone())
+                .await
+                .unwrap()
+                .published_capacity_usd
+                .canonical(),
+            "130"
+        );
+    }
     db.close().await;
 }

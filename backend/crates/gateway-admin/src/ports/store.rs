@@ -42,6 +42,7 @@ use crate::model::{
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum AdminStoreErrorKind {
     Invalid,
+    CarCapacity,
     NotFound,
     StaleRevision,
     DuplicateName,
