@@ -26,7 +26,7 @@ Client Key 通过账号分组限定路由范围：未绑定分组时可使用全
 重放安全边界时跨 Provider fallback。
 
 `car` 是恰好独占一个账号的特殊分组。`seat` 属于一个 car，加入 seat 的多个 Client Key 继承该 car
-的账号范围，并共享 seat 的日／周 USD 限额与并发上限；各 Key 的 RPM 和客户端身份覆盖仍独立保存。
+的账号范围，并共享 seat 的日／周 USD 限额、并发与 RPM；各 Key 仅保留独立的凭据、身份、启停及用量明细。
 car 账号不进入普通 Key 的“全部账号”范围。
 
 car 账号必须有正数有效并发上限，包含尚无 seat 的 car；普通账号仍允许继承默认不限。
@@ -948,6 +948,7 @@ HTTP 请求头及新建 WS 的握手提示按当时的最终出站档位构造�
 | `GET` | `/api/admin/seats` | `groupId` | 查询 car 下的 seat、共享额度窗口和 Key 数量 |
 | `POST` | `/api/admin/seats/save` | seat 字段 | 创建或更新 seat；并发不能超过 car 账号容量，seat 数量也不能超过容量 |
 | `POST` | `/api/admin/seats/join` | `{ seatId, keyIds }` | 将独立 Key 永久加入 seat，并原子承接同窗口的已用费用 |
+| `POST` | `/api/admin/car-management/save` | 完整拼车草稿 | 一次保存分组、账号、车位与 Key，失败整次回滚 |
 
 列表数据为 `{ items, page, configRevision }`，其中 item 返回 `memberCount`、按 Provider 聚合的
 `providerCounts` 和 `clientKeyCount`。查询分组成员使用账号列表的 `groupId` 筛选，
@@ -957,7 +958,13 @@ HTTP 请求头及新建 WS 的握手提示按当时的最终出站档位构造�
 
 car 的 seat 数量（含停用项）及任一 seat 并发上限都不能超过账号有效容量，不限制这些上限之和。
 将全局默认改为0之前必须为所有 car 设置正数独立上限；清除账号覆盖或下调容量后不满足约束时整次修改拒绝。
-关闭自动发布估算容量不关闭账号周期跟随，seat 周期限额仍按已发布容量与权重计算。
+整车草稿包含 UUID `requestId`、`expectedRevision`、`quotaUpdatedAt`、分组字段、`accountId`、
+`quotaPolicy`（manual/cycle/automatic）、`allocation`（equal/custom）、`totalWeight`、可选 `initialCapacityUsd` 与 `seats`。
+每个车位包含稳定 ID、名称、启用状态、`maxConcurrency`、`requestsPerMinute`、份额、日／周期金额与 `keys`；
+每个 Key 指明稳定 ID、是否新建、名称、标签、启用／撤销状态和两种 Provider 的客户端身份覆盖。
+同一 `requestId` 的相同内容重试返回原回执；不同内容或旧版本被拒绝。回执只返回配置版本、分组 ID 与新建 Key ID，
+明文由现有管理员 reveal 接口读取。`seats/save` 的 `requestsPerMinute` 为必填；0 表示共享 RPM 不限。
+切换 automatic → cycle 保留金额与账号窗口；切回 manual 须核对历史账本且无在途请求，否则拒绝。
 
 ### 账号周期容量与自动更新
 
@@ -965,16 +972,18 @@ car 的 seat 数量（含停用项）及任一 seat 并发上限都不能超过�
 `publishedCapacityUsd`（当前生效容量）、`publishedAt`（实际容量更新时间）及 `predictionReason`。
 `updatedAt` 是周期状态观测处理时间，不代表容量已经调整。预测不可用时不保留旧预测冒充最新值，生效容量保持。
 `POST /api/admin/car-weights` 更新总权重；seat 权重通过 seat 保存接口更新。
-`GET/POST /api/admin/car-quota-settings` 读取或修改自动发布设置。
+`GET/POST /api/admin/car-quota-settings` 读取或修改稳定参数；`automaticUpdates` 仅表示新建拼车的界面默认选项，通用默认关闭。
+每辆车实际采用的策略由 `quotaPolicy` 保存；`mode` 是当前周期运行状态。查询同时返回 `configRevision`、`accountId` 和 `allocation`。
 
 默认至少间隔6小时，以当前生效容量70%与最新预测30%混合，单次最多调整10%；最低样本为10个百分点，
 变化未达5%不更新，超过30%的异常变化等待独立样本确认。首次发布没有前次时间时可直接评估。
 还需有新样本且无待结算请求；因此有预测或间隔已到不保证本轮调整。部分费用缺失只提示可能低估，
 不单独阻止有效美元预测发布；未知金额不补零，仅有Token预测不能调整美元限额。
 
-seat 周限额等于生效容量乘以其权重占总权重的比例；未分配权重不分给其他seat。调整不清空已用费用，
-低于已用量时拒绝后续超额准入，在途请求仍正常结算。首次周期激活使用总权重乘130美元的默认容量，
-它是策略初始值而非官方额度，会接管手工周限额；关闭自动发布也不阻止该激活。
+自动模式下 seat 周限额等于生效容量乘以其权重占总权重的比例；均分模式按车位数量精确均分。
+未分配份额保留，停用和空车位仍占份额；手动份额支持一位小数。调整不清空已用费用，
+低于已用量时拒绝后续超额准入，在途请求仍正常结算。首次启用自动模式必须确认初始总额度，不按套餐倍率推算美元金额。
+手动模式保持原窗口和金额；跟随周期模式仅更新窗口，预测不改限额。
 账号周期到期但新周期未确认时，总用量和成员用量共同保留旧周期费用并提示等待，不能本地重置后继续发放额度。
 成员用量包含已撤销Key的历史费用，`id`为稳定成员标识、`revoked`表示凭据已撤销；凭据撤销不清账。
 

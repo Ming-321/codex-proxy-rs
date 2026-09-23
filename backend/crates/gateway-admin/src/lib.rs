@@ -398,6 +398,7 @@ pub async fn initialize(
         store.account_groups(),
         store.account_runtime(),
         snapshot.clone(),
+        registry.clone(),
     ));
     let services = AdminServices {
         key_usage,

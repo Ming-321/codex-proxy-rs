@@ -22,11 +22,11 @@ use sqlx::{PgPool, Postgres, Row, Transaction};
 
 use super::client_budgets::{BudgetOwner, advance_owner_windows};
 
-fn invalid(message: &str) -> AdminStoreError {
+pub(super) fn invalid(message: &str) -> AdminStoreError {
     AdminStoreError::new(AdminStoreErrorKind::Invalid, "seat", message)
 }
 
-fn database(error: sqlx::Error) -> AdminStoreError {
+pub(super) fn database(error: sqlx::Error) -> AdminStoreError {
     if let Some(message) = capacity_error_message(&error) {
         return AdminStoreError::new(AdminStoreErrorKind::CarCapacity, "seat", message);
     }
@@ -110,7 +110,7 @@ pub(super) async fn convert_to_car(
     }
     sqlx::query(
         "insert into car_quota_cycles (account_group_id, published_capacity_usd, prediction_reason)
-        select id, car_total_weight * 130, '等待账号周期数据' from account_groups where id = $1
+        select id, 0, '尚未启用账号周期' from account_groups where id = $1
         on conflict (account_group_id) do nothing",
     )
     .bind(id.as_str())
@@ -125,28 +125,38 @@ pub(super) async fn save_seat(
     command: SaveSeat,
     context: &MutationContext,
 ) -> AdminStoreResult<Revision> {
-    let id = command.id.ok_or_else(|| invalid("seat ID 缺失"))?;
     let (mut tx, revision) = begin(pool).await?;
-    let result = sqlx::query("insert into seats (id, account_group_id, name, enabled, max_concurrency, weight, daily_limit_usd, weekly_limit_usd)
-        values ($1, $2, $3, $4, $5, $6::text::numeric, $7::text::numeric, $8::text::numeric)
+    save_seat_in_transaction(&mut tx, &command).await?;
+    let id = command.id.as_ref().ok_or_else(|| invalid("seat ID 缺失"))?;
+    commit(tx, revision, context, "save_seat", id.as_str()).await
+}
+
+pub(super) async fn save_seat_in_transaction(
+    tx: &mut Transaction<'_, Postgres>,
+    command: &SaveSeat,
+) -> AdminStoreResult<()> {
+    let id = command.id.as_ref().ok_or_else(|| invalid("seat ID 缺失"))?;
+    let result = sqlx::query("insert into seats (id, account_group_id, name, enabled, max_concurrency, weight, daily_limit_usd, weekly_limit_usd, requests_per_minute)
+        values ($1, $2, $3, $4, $5, $6::text::numeric, $7::text::numeric, $8::text::numeric, $9)
         on conflict (id) do update set name = excluded.name, enabled = excluded.enabled,
-        max_concurrency = excluded.max_concurrency, weight = excluded.weight,
+        max_concurrency = excluded.max_concurrency, weight = excluded.weight, requests_per_minute = excluded.requests_per_minute,
         daily_limit_usd = excluded.daily_limit_usd,
         weekly_limit_usd = excluded.weekly_limit_usd, updated_at = now()
         where seats.account_group_id = excluded.account_group_id")
-        .bind(id.as_str()).bind(command.group_id.as_str()).bind(command.name).bind(command.enabled)
+        .bind(id.as_str()).bind(command.group_id.as_str()).bind(&command.name).bind(command.enabled)
         .bind(i64::try_from(command.max_concurrency).map_err(|_| invalid("并发上限无效"))?)
         .bind(command.weight.canonical())
         .bind(command.limits.daily_usd.canonical()).bind(command.limits.weekly_usd.canonical())
-        .execute(&mut *tx).await.map_err(database)?;
+        .bind(i64::try_from(command.requests_per_minute).map_err(|_| invalid("RPM 无效"))?)
+        .execute(&mut **tx).await.map_err(database)?;
     if result.rows_affected() != 1 {
         return Err(invalid("seat 不允许跨 car 转移"));
     }
-    sqlx::query("update seats s set weekly_limit_usd = c.published_capacity_usd * s.weight / g.car_total_weight
+    sqlx::query("update seats s set weekly_limit_usd = trunc(c.published_capacity_usd * (case when g.car_allocation = 'equal' then 1::numeric / (select count(*) from seats where account_group_id = g.id) else s.weight / g.car_total_weight end), 10)
         from account_groups g, car_quota_cycles c where s.id = $1 and g.id = s.account_group_id
-          and c.account_group_id = g.id and g.car_quota_mode = 'active'")
-        .bind(id.as_str()).execute(&mut *tx).await.map_err(database)?;
-    commit(tx, revision, context, "save_seat", id.as_str()).await
+          and c.account_group_id = g.id and g.car_quota_policy = 'automatic'")
+        .bind(id.as_str()).execute(&mut **tx).await.map_err(database)?;
+    Ok(())
 }
 
 pub(super) async fn list_seats(
@@ -174,6 +184,8 @@ pub(super) async fn list_seats(
                 group_id: group_id.clone(),
                 name: row.get("name"),
                 enabled: row.get("enabled"),
+                requests_per_minute: u64::try_from(row.get::<i64, _>("requests_per_minute"))
+                    .map_err(|_| invalid("RPM 无效"))?,
                 max_concurrency: u64::try_from(row.get::<i64, _>("max_concurrency"))
                     .map_err(|_| invalid("并发上限无效"))?,
                 weight: amount("seat_weight")?,
@@ -205,6 +217,14 @@ pub(super) async fn join_seat(
     context: &MutationContext,
 ) -> AdminStoreResult<Revision> {
     let (mut tx, revision) = begin(pool).await?;
+    join_seat_in_transaction(&mut tx, &command).await?;
+    commit(tx, revision, context, "join_seat", command.seat_id.as_str()).await
+}
+
+pub(super) async fn join_seat_in_transaction(
+    tx: &mut Transaction<'_, Postgres>,
+    command: &JoinSeat,
+) -> AdminStoreResult<()> {
     let mut ids = command
         .key_ids
         .iter()
@@ -217,7 +237,7 @@ pub(super) async fn join_seat(
         "select id, seat_id from client_api_keys where id = any($1) and revoked_at is null order by id for update",
     )
     .bind(&ids)
-    .fetch_all(&mut *tx)
+    .fetch_all(&mut **tx)
     .await
     .map_err(database)?;
     if keys.len() != ids.len() {
@@ -225,7 +245,7 @@ pub(super) async fn join_seat(
     }
     sqlx::query("select id from seats where id = $1 for update")
         .bind(command.seat_id.as_str())
-        .fetch_optional(&mut *tx)
+        .fetch_optional(&mut **tx)
         .await
         .map_err(database)?
         .ok_or_else(|| invalid("seat 不存在"))?;
@@ -239,27 +259,27 @@ pub(super) async fn join_seat(
             return Err(invalid("Key 不允许在 seat 之间转移"));
         }
         let running: bool = sqlx::query_scalar("select exists(select 1 from client_budget_admissions where client_api_key_id = $1 and expires_at > now()) or exists(select 1 from model_requests where client_api_key_id = $1 and outcome = 'running')")
-            .bind(&id).fetch_one(&mut *tx).await.map_err(database)?;
+            .bind(&id).fetch_one(&mut **tx).await.map_err(database)?;
         if running {
             return Err(invalid("请等待 Key 的在途请求完成后再迁入"));
         }
-        advance_owner_windows(&mut tx, BudgetOwner::Key(&id), now)
+        advance_owner_windows(tx, BudgetOwner::Key(&id), now)
             .await
             .map_err(database)?;
-        carry_budget(&mut tx, &id, command.seat_id.as_str(), now).await?;
+        carry_budget(tx, &id, command.seat_id.as_str(), now).await?;
         sqlx::query("delete from client_api_key_groups where client_api_key_id = $1")
             .bind(&id)
-            .execute(&mut *tx)
+            .execute(&mut **tx)
             .await
             .map_err(database)?;
         sqlx::query("update client_api_keys set seat_id = $2, updated_at = now() where id = $1")
             .bind(&id)
             .bind(command.seat_id.as_str())
-            .execute(&mut *tx)
+            .execute(&mut **tx)
             .await
             .map_err(database)?;
     }
-    commit(tx, revision, context, "join_seat", command.seat_id.as_str()).await
+    Ok(())
 }
 
 async fn carry_budget(
@@ -457,7 +477,7 @@ pub(super) async fn list_car_accounts(pool: &PgPool) -> AdminStoreResult<Vec<Car
     let rows = sqlx::query(
         "select g.id as group_id, a.provider_account_id as account_id
         from account_groups g join account_group_accounts a on a.account_group_id = g.id
-        where g.is_car and g.enabled order by g.id",
+        where g.is_car and g.enabled and g.car_quota_policy <> 'manual' order by g.id",
     )
     .fetch_all(pool)
     .await
@@ -488,13 +508,15 @@ pub(super) async fn load_car_quota_state(
     group_id: AccountGroupId,
 ) -> AdminStoreResult<CarQuotaState> {
     let row = sqlx::query(
-        "select g.car_total_weight::text as total_weight, g.car_quota_mode,
+        "select g.car_total_weight::text as total_weight, g.car_quota_mode, g.car_quota_policy, g.car_allocation,
+        (select config_revision from runtime_settings limit 1) as config_revision,
+        (select provider_account_id from account_group_accounts where account_group_id = g.id order by provider_account_id limit 1) as account_id,
         c.window_key, c.cycle_start, c.cycle_end, c.last_used_percent::text as last_used,
-        c.published_capacity_usd::text as published_capacity,
+        coalesce(c.published_capacity_usd, 0)::text as published_capacity,
         c.predicted_capacity_usd::text as predicted_capacity, c.prediction_reason,
-        c.published_at, c.updated_at
+        c.published_at, coalesce(c.updated_at, g.updated_at) as updated_at
         from account_groups g left join car_quota_cycles c on c.account_group_id = g.id
-        where g.id = $1 and g.is_car",
+        where g.id = $1",
     )
     .bind(group_id.as_str())
     .fetch_optional(pool)
@@ -510,6 +532,11 @@ pub(super) async fn load_car_quota_state(
         })
         .transpose()?;
     Ok(CarQuotaState {
+        config_revision: u64::try_from(row.get::<i64, _>("config_revision"))
+            .map_err(|_| invalid("配置版本无效"))?,
+        account_id: row.get("account_id"),
+        quota_policy: row.get("car_quota_policy"),
+        allocation: row.get("car_allocation"),
         group_id,
         total_weight: amount(&row, "total_weight")?,
         mode: quota_mode(row.get::<String, _>("car_quota_mode").as_str())?,
@@ -546,22 +573,7 @@ pub(super) async fn save_car_weights(
     if result.rows_affected() != 1 {
         return Err(invalid("car 不存在"));
     }
-    sqlx::query(
-        "update car_quota_cycles c set published_capacity_usd = $2::text::numeric * 130,
-        prediction_reason = '等待账号周期数据', updated_at = now()
-        from account_groups g where c.account_group_id = $1 and g.id = c.account_group_id
-          and g.car_quota_mode <> 'active'",
-    )
-    .bind(command.group_id.as_str())
-    .bind(command.total_weight.canonical())
-    .execute(&mut *tx)
-    .await
-    .map_err(database)?;
-    sqlx::query("update seats s set weekly_limit_usd = c.published_capacity_usd * s.weight / g.car_total_weight,
-        updated_at = now() from account_groups g, car_quota_cycles c
-        where s.account_group_id = $1 and g.id = s.account_group_id
-          and c.account_group_id = g.id and g.car_quota_mode = 'active'")
-        .bind(command.group_id.as_str()).execute(&mut *tx).await.map_err(database)?;
+    super::car_management::allocate(&mut tx, command.group_id.as_str()).await?;
     commit(
         tx,
         revision,
@@ -598,7 +610,7 @@ pub(super) async fn reconcile_car_quota(
     let settings = load_car_quota_settings(pool).await?;
     let mut tx = pool.begin().await.map_err(database)?;
     let row = sqlx::query(
-        "select g.car_quota_mode, g.car_total_weight::text as total_weight,
+        "select g.car_quota_mode, g.car_quota_policy,
         c.window_key, c.cycle_start, c.cycle_end, c.last_observed_at, c.last_used_percent::text as last_used,
         c.published_capacity_usd::text as published_capacity, c.published_at,
         c.published_sample_end, c.reset_candidate_start, c.reset_candidate_end, c.reset_candidate_observed_at,
@@ -612,6 +624,11 @@ pub(super) async fn reconcile_car_quota(
     .await
     .map_err(database)?
     .ok_or_else(|| invalid("car 周期状态不存在"))?;
+    let policy: String = row.get("car_quota_policy");
+    if policy == "manual" {
+        tx.rollback().await.map_err(database)?;
+        return load_car_quota_state(pool, observation.group_id).await;
+    }
     let mode = quota_mode(row.get::<String, _>("car_quota_mode").as_str())?;
     let current_end = row.get::<Option<DateTime<Utc>>, _>("cycle_end");
     let current_start = row.get::<Option<DateTime<Utc>>, _>("cycle_start");
@@ -670,11 +687,6 @@ pub(super) async fn reconcile_car_quota(
     }
 
     if new_cycle {
-        let total_weight = amount(&row, "total_weight")?;
-        let mut capacity = amount(&row, "published_capacity")?;
-        if capacity == Decimal::ZERO {
-            capacity = decimal_from_f64(decimal_f64(total_weight) * 130.0)?;
-        }
         sqlx::query(
             "update account_groups set car_quota_mode = 'active', updated_at = now() where id = $1",
         )
@@ -682,10 +694,7 @@ pub(super) async fn reconcile_car_quota(
         .execute(&mut *tx)
         .await
         .map_err(database)?;
-        sqlx::query("update seats s set weekly_limit_usd = $2::text::numeric * s.weight / g.car_total_weight,
-            updated_at = now() from account_groups g where s.account_group_id = $1 and g.id = s.account_group_id")
-            .bind(observation.group_id.as_str()).bind(capacity.canonical())
-            .execute(&mut *tx).await.map_err(database)?;
+        super::car_management::allocate(&mut tx, observation.group_id.as_str()).await?;
         sqlx::query("insert into seat_budget_windows (seat_id, daily_start, daily_end, weekly_start, weekly_end, weekly_used_usd)
             select s.id, date_trunc('day', now() at time zone 'Asia/Shanghai') at time zone 'Asia/Shanghai',
                 (date_trunc('day', now() at time zone 'Asia/Shanghai') + interval '1 day') at time zone 'Asia/Shanghai',
@@ -715,7 +724,7 @@ pub(super) async fn reconcile_car_quota(
             });
         let sample_new = observation.sample_end.is_some()
             && observation.sample_end > row.get::<Option<DateTime<Utc>>, _>("published_sample_end");
-        if settings.automatic_updates
+        if policy == "automatic"
             && observation.pending_request_count == 0
             && sampled >= settings.minimum_sample_millis
             && interval_ready
@@ -762,7 +771,7 @@ pub(super) async fn reconcile_car_quota(
             }
         } else {
             reason = Some(
-                if !settings.automatic_updates {
+                if policy != "automatic" {
                     "自动更新已关闭，保留当前生效限额"
                 } else if observation.pending_request_count > 0 {
                     "存在尚未结算请求，等待完整交付"
@@ -796,10 +805,7 @@ pub(super) async fn reconcile_car_quota(
         .bind(reason).bind(published.canonical()).bind(publish).bind(observation.sample_end)
         .execute(&mut *tx).await.map_err(database)?;
     if publish {
-        sqlx::query("update seats s set weekly_limit_usd = $2::text::numeric * s.weight / g.car_total_weight,
-            updated_at = now() from account_groups g where s.account_group_id = $1 and g.id = s.account_group_id")
-            .bind(observation.group_id.as_str()).bind(published.canonical())
-            .execute(&mut *tx).await.map_err(database)?;
+        super::car_management::allocate(&mut tx, observation.group_id.as_str()).await?;
     }
     tx.commit().await.map_err(database)?;
     load_car_quota_state(pool, observation.group_id).await

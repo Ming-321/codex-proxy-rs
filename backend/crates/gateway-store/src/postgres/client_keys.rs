@@ -372,7 +372,8 @@ impl ClientApiKeyRepository for PgClientApiKeyRepository {
             "select k.id, k.name, k.label, k.provider_request_profiles_json -> 'openai' as openai_client_profile_override,
                     k.provider_request_profiles_json -> 'xai' as xai_client_profile_override,
                     left(k.key, least(10, length(k.key) / 2)) as prefix, k.enabled,
-                    k.max_concurrency, k.requests_per_minute, k.last_used_at, k.created_at,
+                    coalesce((select s.max_concurrency from seats s where s.id = k.seat_id), k.max_concurrency) as max_concurrency,
+                    coalesce((select s.requests_per_minute from seats s where s.id = k.seat_id), k.requests_per_minute) as requests_per_minute, k.last_used_at, k.created_at,
                     k.updated_at, '[]'::jsonb as groups, '{}'::text[] as provider_kinds
              from client_api_keys k
              where k.revoked_at is null",
@@ -416,8 +417,11 @@ impl ClientApiKeyRepository for PgClientApiKeyRepository {
     async fn reveal_client_api_key(&self, id: &str) -> StoreResult<Option<ClientApiKeySecret>> {
         require_nonempty(ENTITY, "id", id)?;
         sqlx::query_as::<_, (String, String, bool, i64, i64)>(
-            "select id, key, enabled, max_concurrency, requests_per_minute
-             from client_api_keys where id = $1 and revoked_at is null",
+            "select k.id, k.key, k.enabled,
+             coalesce(s.max_concurrency, k.max_concurrency),
+             coalesce(s.requests_per_minute, k.requests_per_minute)
+             from client_api_keys k left join seats s on s.id = k.seat_id
+             where k.id = $1 and k.revoked_at is null",
         )
         .bind(id)
         .fetch_optional(&self.pool)
@@ -433,7 +437,8 @@ impl ClientApiKeyRepository for PgClientApiKeyRepository {
             "select k.id, k.name, k.label, k.provider_request_profiles_json -> 'openai' as openai_client_profile_override,
                     k.provider_request_profiles_json -> 'xai' as xai_client_profile_override,
                     left(k.key, least(10, length(k.key) / 2)) as prefix, k.enabled,
-                    k.max_concurrency, k.requests_per_minute, k.last_used_at, k.created_at,
+                    coalesce((select s.max_concurrency from seats s where s.id = k.seat_id), k.max_concurrency) as max_concurrency,
+                    coalesce((select s.requests_per_minute from seats s where s.id = k.seat_id), k.requests_per_minute) as requests_per_minute, k.last_used_at, k.created_at,
                     k.updated_at, coalesce(groups.groups, '[]'::jsonb) as groups,
                     case
                       when groups.binding_count = 0 then coalesce(
@@ -1146,7 +1151,7 @@ pub(crate) async fn update_client_api_key_in_transaction(
     let result = sqlx::query(
         "update client_api_keys
          set name = $2, label = $3, max_concurrency = case when seat_id is null then $4 else max_concurrency end,
-             requests_per_minute = $5, updated_at = now(),
+             requests_per_minute = case when seat_id is null then $5 else requests_per_minute end, updated_at = now(),
              daily_limit_usd = case when seat_id is null then coalesce($6::text::numeric, daily_limit_usd) else daily_limit_usd end,
              weekly_limit_usd = case when seat_id is null then coalesce($7::text::numeric, weekly_limit_usd) else weekly_limit_usd end,
              provider_request_profiles_json = (provider_request_profiles_json

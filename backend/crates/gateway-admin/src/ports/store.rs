@@ -326,6 +326,18 @@ pub trait ClientKeyStore: Send + Sync {
 /// Provider-neutral account group management transactions.
 #[async_trait]
 pub trait AccountGroupStore: Send + Sync {
+    async fn save_car_management(
+        &self,
+        command: crate::model::account_groups::PreparedCarManagement,
+        context: &MutationContext,
+    ) -> AdminStoreResult<crate::model::account_groups::CarManagementResult> {
+        let _ = (command, context);
+        Err(AdminStoreError::new(
+            AdminStoreErrorKind::Invalid,
+            "car",
+            "拼车管理不可用",
+        ))
+    }
     async fn load_car_quota_settings(
         &self,
     ) -> AdminStoreResult<crate::model::account_groups::CarQuotaSettings> {

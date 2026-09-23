@@ -106,6 +106,13 @@ impl PgAccountGroupRepository {
 
 #[async_trait]
 impl AccountGroupStore for PgAccountGroupRepository {
+    async fn save_car_management(
+        &self,
+        command: gateway_admin::model::account_groups::PreparedCarManagement,
+        context: &MutationContext,
+    ) -> AdminStoreResult<gateway_admin::model::account_groups::CarManagementResult> {
+        super::car_management::save(&self.pool, command, context).await
+    }
     async fn load_car_quota_settings(
         &self,
     ) -> AdminStoreResult<gateway_admin::model::account_groups::CarQuotaSettings> {

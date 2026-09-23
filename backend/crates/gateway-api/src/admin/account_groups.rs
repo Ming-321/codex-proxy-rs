@@ -247,6 +247,10 @@ where
         .route("/api/admin/seats/save", post(save_seat::<S>))
         .route("/api/admin/seats/join", post(join_seat::<S>))
         .route("/api/admin/car-quota", get(car_quota::<S>))
+        .route(
+            "/api/admin/car-management/save",
+            post(save_car_management::<S>),
+        )
         .route("/api/admin/car-weights", post(save_car_weights::<S>))
         .route(
             "/api/admin/car-quota-settings",
@@ -453,6 +457,7 @@ struct SaveSeatRequest {
     name: String,
     enabled: bool,
     max_concurrency: u64,
+    requests_per_minute: u64,
     weight: String,
     daily_limit_usd: String,
     weekly_limit_usd: String,
@@ -473,6 +478,7 @@ struct SeatView {
     name: String,
     enabled: bool,
     max_concurrency: u64,
+    requests_per_minute: u64,
     weight: String,
     key_count: u64,
     daily_limit_usd: String,
@@ -491,6 +497,7 @@ impl From<gateway_admin::model::account_groups::SeatRecord> for SeatView {
             name: s.name,
             enabled: s.enabled,
             max_concurrency: s.max_concurrency,
+            requests_per_minute: s.requests_per_minute,
             weight: s.weight.canonical(),
             key_count: s.key_count,
             daily_limit_usd: s.budget.limits.daily_usd.canonical(),
@@ -561,6 +568,7 @@ where
         name: request.name,
         enabled: request.enabled,
         max_concurrency: request.max_concurrency,
+        requests_per_minute: request.requests_per_minute,
         weight: request
             .weight
             .parse()
@@ -598,6 +606,10 @@ struct SaveCarWeightsRequest {
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 struct CarQuotaStateView {
+    config_revision: u64,
+    account_id: Option<String>,
+    quota_policy: String,
+    allocation: String,
     group_id: String,
     total_weight: String,
     mode: String,
@@ -614,6 +626,10 @@ struct CarQuotaStateView {
 impl From<gateway_admin::model::account_groups::CarQuotaState> for CarQuotaStateView {
     fn from(state: gateway_admin::model::account_groups::CarQuotaState) -> Self {
         Self {
+            config_revision: state.config_revision,
+            account_id: state.account_id,
+            quota_policy: state.quota_policy,
+            allocation: state.allocation,
             group_id: state.group_id.to_string(),
             total_weight: state.total_weight.canonical(),
             mode: state.mode.as_str().to_owned(),
@@ -822,5 +838,25 @@ where
     Ok(AdminResponse::new(
         StatusCode::OK,
         AdminEnvelope::ok(serde_json::json!({"configRevision": revision.get()})),
+    ))
+}
+
+async fn save_car_management<S>(
+    auth: AdminAuth,
+    State(state): State<S>,
+    AdminJson(draft): AdminJson<gateway_admin::model::account_groups::CarManagementDraft>,
+) -> Result<impl IntoResponse, AdminError>
+where
+    S: SessionState + Send + Sync,
+{
+    let result = state
+        .admin_services()
+        .account_groups()
+        .save_car_management(&auth.context().mutation_context(), draft)
+        .await
+        .map_err(map_service_error)?;
+    Ok(AdminResponse::new(
+        StatusCode::OK,
+        AdminEnvelope::ok(result),
     ))
 }

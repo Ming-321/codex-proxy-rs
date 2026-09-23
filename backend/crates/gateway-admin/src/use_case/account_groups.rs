@@ -32,6 +32,14 @@ use super::{map_store_error, publish_committed};
 /// API-facing account group management service.
 #[async_trait]
 pub trait AccountGroupService: Send + Sync {
+    async fn save_car_management(
+        &self,
+        context: &MutationContext,
+        draft: crate::model::account_groups::CarManagementDraft,
+    ) -> Result<crate::model::account_groups::CarManagementResult, AdminError> {
+        let _ = (context, draft);
+        Err(AdminError::invalid("拼车管理不可用"))
+    }
     async fn car_quota_settings(
         &self,
     ) -> Result<crate::model::account_groups::CarQuotaSettings, AdminError> {
@@ -115,6 +123,7 @@ pub trait AccountGroupService: Send + Sync {
 }
 
 pub(crate) struct DefaultAccountGroupService {
+    providers: crate::ports::provider::ProviderAdminRegistry,
     store: Arc<dyn AccountGroupStore>,
     runtime: Arc<dyn AccountRuntimeStore>,
     snapshot: Arc<dyn SnapshotControl>,
@@ -126,8 +135,10 @@ impl DefaultAccountGroupService {
         store: Arc<dyn AccountGroupStore>,
         runtime: Arc<dyn AccountRuntimeStore>,
         snapshot: Arc<dyn SnapshotControl>,
+        providers: crate::ports::provider::ProviderAdminRegistry,
     ) -> Self {
         Self {
+            providers,
             store,
             runtime,
             snapshot,
@@ -187,11 +198,27 @@ fn valid_weight(value: gateway_core::metering::Decimal) -> bool {
             .is_some_and(|integer| integer.len() <= 10)
         && canonical
             .split_once('.')
-            .is_none_or(|(_, fraction)| fraction.len() <= 2)
+            .is_none_or(|(_, fraction)| fraction.len() <= 1)
 }
 
 #[async_trait]
 impl AccountGroupService for DefaultAccountGroupService {
+    async fn save_car_management(
+        &self,
+        context: &MutationContext,
+        draft: crate::model::account_groups::CarManagementDraft,
+    ) -> Result<crate::model::account_groups::CarManagementResult, AdminError> {
+        let command = super::car_management::prepare(draft, &self.providers)?;
+        let result = self
+            .store
+            .save_car_management(command, context)
+            .await
+            .map_err(|error| map_store_error(error, "car management"))?;
+        let revision = crate::model::Revision::new(result.config_revision)
+            .map_err(|_| AdminError::internal("配置版本无效"))?;
+        publish_committed(self.snapshot.as_ref(), revision).await?;
+        Ok(result)
+    }
     async fn car_quota_settings(
         &self,
     ) -> Result<crate::model::account_groups::CarQuotaSettings, AdminError> {
@@ -247,7 +274,7 @@ impl AccountGroupService for DefaultAccountGroupService {
         command: crate::model::account_groups::SaveCarWeights,
     ) -> Result<crate::model::Revision, AdminError> {
         if !valid_weight(command.total_weight) {
-            return Err(AdminError::invalid("car 总权重应为最多两位小数的正数"));
+            return Err(AdminError::invalid("总份额应为最多一位小数的正数"));
         }
         let revision = self
             .store
@@ -292,6 +319,7 @@ impl AccountGroupService for DefaultAccountGroupService {
             || command.name.chars().any(char::is_control)
             || command.max_concurrency == 0
             || command.max_concurrency > u64::from(u32::MAX)
+            || command.requests_per_minute > u64::from(u32::MAX)
             || !valid_weight(command.weight)
         {
             return Err(AdminError::invalid("seat 名称、并发上限或权重无效"));

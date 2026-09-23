@@ -3,7 +3,10 @@ use std::time::{Duration, SystemTime};
 use gateway_admin::{
     model::{
         MutationActor, MutationContext,
-        account_groups::{CarQuotaMode, CarQuotaObservation, JoinSeat, SaveCarWeights, SaveSeat},
+        account_groups::{
+            CarKeyDraft, CarManagementDraft, CarQuotaMode, CarQuotaObservation, CarSeatDraft,
+            JoinSeat, PreparedCarManagement, SaveCarWeights, SaveSeat,
+        },
         client_keys::DeleteClientKey,
     },
     ports::store::{AccountGroupStore, ClientKeyStore},
@@ -71,6 +74,7 @@ fn command(id: &str, capacity: u64) -> SaveSeat {
         name: id.to_owned(),
         enabled: true,
         max_concurrency: capacity,
+        requests_per_minute: 20,
         weight: "1".parse().unwrap(),
         limits: ClientBudgetLimits {
             daily_usd: "130".parse().unwrap(),
@@ -108,10 +112,254 @@ async fn setup_through(label: &str, version: i64) -> Option<TestDatabase> {
             .bind(id).bind(format!("sk_{id:a<43}"))
             .bind(serde_json::json!({"openai": {"testIdentity": id}})).execute(&db.pool).await.unwrap();
     }
-    let store = PgAccountGroupRepository::new(db.pool.clone());
-    store.convert_to_car(group(), &context()).await.unwrap();
-    store.save_seat(command(SEAT, 2), &context()).await.unwrap();
+    if version < 21 {
+        // 历史数据用当时的表结构构造，不把当前写入接口运行在旧 schema 上。
+        sqlx::raw_sql("update account_groups set is_car = true;
+            insert into car_quota_cycles (account_group_id, published_capacity_usd) select id, 130 from account_groups;
+            insert into seats (id, account_group_id, name, max_concurrency, daily_limit_usd, weekly_limit_usd)
+            values ('seat_00000000000000000000000000000001', 'grp_00000000000000000000000000000001', 'old seat', 2, 130, 260);")
+            .execute(&db.pool).await.unwrap();
+    } else {
+        let store = PgAccountGroupRepository::new(db.pool.clone());
+        store.convert_to_car(group(), &context()).await.unwrap();
+        store.save_seat(command(SEAT, 2), &context()).await.unwrap();
+    }
     Some(db)
+}
+
+async fn enable_automatic(db: &TestDatabase, capacity: &str) {
+    sqlx::query("update account_groups set car_quota_policy = 'automatic'")
+        .execute(&db.pool)
+        .await
+        .unwrap();
+    sqlx::query("update car_quota_cycles set published_capacity_usd = $1::text::numeric")
+        .bind(capacity)
+        .execute(&db.pool)
+        .await
+        .unwrap();
+}
+
+async fn management_draft(db: &TestDatabase) -> CarManagementDraft {
+    let store = PgAccountGroupRepository::new(db.pool.clone());
+    let state = store.load_car_quota_state(group()).await.unwrap();
+    let seats = store.list_seats(group()).await.unwrap();
+    CarManagementDraft {
+        request_id: uuid::Uuid::new_v4().to_string(),
+        expected_revision: state.config_revision,
+        quota_updated_at: Some(state.updated_at),
+        group_id: GROUP.to_owned(),
+        create: false,
+        name: "整车编辑".to_owned(),
+        description: None,
+        color: "#2563EBFF".to_owned(),
+        enabled: true,
+        disable_fast: false,
+        account_id: "acct_car".to_owned(),
+        quota_policy: state.quota_policy,
+        allocation: state.allocation,
+        total_weight: state.total_weight.canonical(),
+        initial_capacity_usd: None,
+        seats: seats
+            .into_iter()
+            .map(|s| CarSeatDraft {
+                id: s.id.as_str().to_owned(),
+                name: s.name,
+                enabled: s.enabled,
+                max_concurrency: s.max_concurrency,
+                requests_per_minute: s.requests_per_minute,
+                weight: s.weight.canonical(),
+                daily_limit_usd: s.budget.limits.daily_usd.canonical(),
+                weekly_limit_usd: s.budget.limits.weekly_usd.canonical(),
+                keys: Vec::new(),
+            })
+            .collect(),
+    }
+}
+
+fn prepared(draft: CarManagementDraft) -> PreparedCarManagement {
+    PreparedCarManagement {
+        fingerprint: serde_json::to_string(&draft).unwrap(),
+        draft,
+        new_keys: Vec::new(),
+    }
+}
+
+fn existing_key(id: &str) -> CarKeyDraft {
+    CarKeyDraft {
+        id: id.to_owned(),
+        create: false,
+        name: id.to_owned(),
+        label: None,
+        enabled: true,
+        revoke: false,
+        openai_client_profile_override: None,
+        xai_client_profile_override: None,
+    }
+}
+
+#[tokio::test]
+async fn management_is_atomic_retryable_and_carries_usage_without_reallocating_on_disable() {
+    let Some(db) = setup("car_management_atomic").await else {
+        return;
+    };
+    let store = PgAccountGroupRepository::new(db.pool.clone());
+    let budgets = PgClientBudgetStore::new(db.pool.clone());
+    budgets
+        .settle(charge("key_a", "req_management_before", "12.5", false))
+        .await
+        .unwrap();
+    let mut draft = management_draft(&db).await;
+    draft.total_weight = "20".to_owned();
+    draft.quota_policy = "automatic".to_owned();
+    draft.initial_capacity_usd = Some("100".to_owned());
+    draft.seats[0].weight = "5".to_owned();
+    draft.seats[0].keys.push(existing_key("key_a"));
+    let mut second = draft.seats[0].clone();
+    second.id = "seat_00000000000000000000000000000002".to_owned();
+    second.name = "空车位".to_owned();
+    second.keys.clear();
+    draft.seats.push(second);
+    // 最终总份额不合法：分组名、成员归属、费用以及版本都不能部分写入。
+    let mut invalid = draft.clone();
+    invalid.total_weight = "9".to_owned();
+    assert!(
+        store
+            .save_car_management(prepared(invalid), &context())
+            .await
+            .is_err()
+    );
+    assert_eq!(
+        management_draft(&db).await.expected_revision,
+        draft.expected_revision
+    );
+    let owner: Option<String> =
+        sqlx::query_scalar("select seat_id from client_api_keys where id = 'key_a'")
+            .fetch_one(&db.pool)
+            .await
+            .unwrap();
+    assert!(owner.is_none());
+    let result = store
+        .save_car_management(prepared(draft.clone()), &context())
+        .await
+        .unwrap();
+    let retry = store
+        .save_car_management(prepared(draft.clone()), &context())
+        .await
+        .unwrap();
+    assert_eq!(retry.config_revision, result.config_revision);
+    let seats = store.list_seats(group()).await.unwrap();
+    assert_eq!(seats.len(), 2);
+    assert!(
+        seats
+            .iter()
+            .all(|s| s.budget.limits.weekly_usd.canonical() == "25")
+    );
+    assert_eq!(seats[0].budget.weekly_used_usd.canonical(), "12.5");
+    let mut stale = draft.clone();
+    stale.request_id = uuid::Uuid::new_v4().to_string();
+    assert!(
+        store
+            .save_car_management(prepared(stale), &context())
+            .await
+            .is_err()
+    );
+    draft.name = "不同的重试内容".to_owned();
+    assert!(
+        store
+            .save_car_management(prepared(draft), &context())
+            .await
+            .is_err()
+    );
+    let mut updated = management_draft(&db).await;
+    updated.seats[0].enabled = false;
+    updated.seats[0].keys.push(existing_key("key_a"));
+    updated.seats[0].keys[0].revoke = true;
+    store
+        .save_car_management(prepared(updated), &context())
+        .await
+        .unwrap();
+    let seats = store.list_seats(group()).await.unwrap();
+    assert!(
+        seats
+            .iter()
+            .all(|s| s.budget.limits.weekly_usd.canonical() == "25")
+    );
+    assert_eq!(seats[0].budget.weekly_used_usd.canonical(), "12.5");
+    db.close().await;
+}
+
+#[tokio::test]
+async fn management_equal_thirds_and_policy_switch_preserve_amounts_and_ledger() {
+    let Some(db) = setup("car_management_equal").await else {
+        return;
+    };
+    let store = PgAccountGroupRepository::new(db.pool.clone());
+    let mut draft = management_draft(&db).await;
+    draft.allocation = "equal".to_owned();
+    draft.total_weight = "20".to_owned();
+    draft.quota_policy = "automatic".to_owned();
+    draft.initial_capacity_usd = Some("100".to_owned());
+    for number in [2, 3] {
+        let mut seat = draft.seats[0].clone();
+        seat.id = format!("seat_{number:032x}");
+        seat.name = format!("空车位{number}");
+        draft.seats.push(seat);
+    }
+    draft.seats[0].keys.push(existing_key("key_a"));
+    store
+        .save_car_management(prepared(draft), &context())
+        .await
+        .unwrap();
+    let seats = store.list_seats(group()).await.unwrap();
+    assert!(
+        seats
+            .iter()
+            .all(|s| s.budget.limits.weekly_usd.canonical() == "33.3333333333")
+    );
+    let now =
+        chrono::DateTime::from_timestamp_micros(chrono::Utc::now().timestamp_micros()).unwrap();
+    store
+        .reconcile_car_quota(observation(
+            now - chrono::Duration::days(1),
+            now + chrono::Duration::days(6),
+            now,
+            10_000,
+        ))
+        .await
+        .unwrap();
+    let budgets = PgClientBudgetStore::new(db.pool.clone());
+    budgets
+        .settle(charge("key_a", "req_equal_fee", "35", true))
+        .await
+        .unwrap();
+    assert!(budgets.admit(key("key_a"), Some(seat())).await.is_err());
+    let mut draft = management_draft(&db).await;
+    draft.quota_policy = "cycle".to_owned();
+    store
+        .save_car_management(prepared(draft), &context())
+        .await
+        .unwrap();
+    let seats = store.list_seats(group()).await.unwrap();
+    assert_eq!(seats[0].budget.weekly_used_usd.canonical(), "35");
+    assert!(
+        seats
+            .iter()
+            .all(|s| s.budget.limits.weekly_usd.canonical() == "33.3333333333")
+    );
+    let mut draft = management_draft(&db).await;
+    draft.quota_policy = "manual".to_owned();
+    store
+        .save_car_management(prepared(draft), &context())
+        .await
+        .unwrap();
+    assert_eq!(
+        store.list_seats(group()).await.unwrap()[0]
+            .budget
+            .weekly_used_usd
+            .canonical(),
+        "35"
+    );
+    db.close().await;
 }
 
 #[tokio::test]
@@ -308,6 +556,7 @@ async fn account_cycle_activates_weighted_limits_and_requires_two_early_reset_ob
         return;
     };
     let groups = PgAccountGroupRepository::new(db.pool.clone());
+    enable_automatic(&db, "650").await;
     let budgets = PgClientBudgetStore::new(db.pool.clone());
     budgets.admit(key("key_a"), None).await.unwrap();
     budgets
@@ -408,6 +657,7 @@ async fn expired_account_cycle_blocks_new_requests_but_settles_and_recovers_from
         return;
     };
     let groups = PgAccountGroupRepository::new(db.pool.clone());
+    enable_automatic(&db, "130").await;
     let budgets = PgClientBudgetStore::new(db.pool.clone());
     groups
         .join_seat(join(&["key_a", "key_b"]), &context())
@@ -553,8 +803,8 @@ async fn fork_upgrade_preserves_migration_history_and_shared_accounting() {
         .unwrap();
     let snapshot_sql = "select jsonb_build_object(
         'migrations', (select jsonb_agg(to_jsonb(m) order by version) from _sqlx_migrations m where version <= 18),
-        'groups', (select jsonb_agg(to_jsonb(g) order by id) from account_groups g),
-        'seats', (select jsonb_agg(to_jsonb(s) order by id) from seats s),
+        'groups', (select jsonb_agg(to_jsonb(g) - 'car_quota_policy' - 'car_allocation' order by id) from account_groups g),
+        'seats', (select jsonb_agg(to_jsonb(s) - 'requests_per_minute' order by id) from seats s),
         'keys', (select jsonb_agg(to_jsonb(k) order by id) from client_api_keys k),
         'events', (select jsonb_agg(to_jsonb(e) order by request_id) from client_key_charge_events e),
         'windows', (select jsonb_agg(to_jsonb(w) order by seat_id) from seat_budget_windows w),
@@ -590,6 +840,7 @@ async fn capacity_publication_blends_clamps_and_confirms_abnormal_samples() {
         return;
     };
     let groups = PgAccountGroupRepository::new(db.pool.clone());
+    enable_automatic(&db, "650").await;
     groups
         .save_car_weights(
             SaveCarWeights {
@@ -713,7 +964,8 @@ async fn publication_preserves_guards_but_accepts_partial_costs() {
         return;
     };
     let groups = PgAccountGroupRepository::new(db.pool.clone());
-    sqlx::query("update car_quota_settings set automatic_updates = false")
+    enable_automatic(&db, "130").await;
+    sqlx::query("update account_groups set car_quota_policy = 'cycle'")
         .execute(&db.pool)
         .await
         .unwrap();
@@ -733,9 +985,9 @@ async fn publication_preserves_guards_but_accepts_partial_costs() {
             .limits
             .weekly_usd
             .canonical(),
-        "130"
+        "260"
     );
-    sqlx::query("update car_quota_settings set automatic_updates = true")
+    sqlx::query("update account_groups set car_quota_policy = 'automatic'")
         .execute(&db.pool)
         .await
         .unwrap();

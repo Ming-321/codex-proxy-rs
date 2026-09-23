@@ -267,8 +267,8 @@ impl ClientAdmissionRepository for RedisClientAdmissionRepository {
         request: &ClientAdmissionRequest,
     ) -> StoreResult<ClientAdmissionDecision> {
         request.validate()?;
-        let mut keys = self.keys(&request.client_api_key_ref)?;
-        keys[0] = self.keys(&request.concurrency_ref)?[0].clone();
+        // 并发与 RPM 使用同一准入归属，成员 Key 不再各自获得一份速率。
+        let keys = self.keys(&request.concurrency_ref)?;
         let lease_ttl_ms = u64::try_from(request.lease_ttl.as_millis())
             .map_err(|_| invalid("lease TTL is too large"))?;
         let mut connection = self.connection.clone();
@@ -319,8 +319,7 @@ impl ClientAdmissionRepository for RedisClientAdmissionRepository {
         recovery: &ClientAdmissionRestore,
     ) -> StoreResult<ClientAdmissionRestoreResult> {
         recovery.validate()?;
-        let mut keys = self.keys(&recovery.client_api_key_ref)?;
-        keys[0] = self.keys(&recovery.concurrency_ref)?[0].clone();
+        let keys = self.keys(&recovery.concurrency_ref)?;
         let script = Script::new(RESTORE_SCRIPT);
         let mut invocation = script.prepare_invoke();
         invocation.key(&keys[0]).key(&keys[1]).arg(redis_len(

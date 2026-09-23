@@ -169,6 +169,7 @@ pub struct SeatRecord {
     pub name: String,
     pub enabled: bool,
     pub max_concurrency: u64,
+    pub requests_per_minute: u64,
     pub weight: Decimal,
     pub key_count: u64,
     pub budget: gateway_core::engine::budget::ClientBudgetStatus,
@@ -181,6 +182,7 @@ pub struct SaveSeat {
     pub name: String,
     pub enabled: bool,
     pub max_concurrency: u64,
+    pub requests_per_minute: u64,
     pub weight: Decimal,
     pub limits: gateway_core::engine::budget::ClientBudgetLimits,
 }
@@ -237,6 +239,10 @@ impl CarQuotaMode {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CarQuotaState {
+    pub config_revision: u64,
+    pub account_id: Option<String>,
+    pub quota_policy: String,
+    pub allocation: String,
     pub group_id: AccountGroupId,
     pub total_weight: Decimal,
     pub mode: CarQuotaMode,
@@ -279,4 +285,68 @@ pub struct CarQuotaObservation {
 pub struct SaveCarWeights {
     pub group_id: AccountGroupId,
     pub total_weight: Decimal,
+}
+
+/// 分组内完整拼车草稿，保存时验证最终配置并原子应用。
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct CarManagementDraft {
+    pub request_id: String,
+    pub expected_revision: u64,
+    pub quota_updated_at: Option<DateTime<Utc>>,
+    pub group_id: String,
+    pub create: bool,
+    pub name: String,
+    pub description: Option<String>,
+    pub color: String,
+    pub enabled: bool,
+    pub disable_fast: bool,
+    pub account_id: String,
+    pub quota_policy: String,
+    pub allocation: String,
+    pub total_weight: String,
+    pub initial_capacity_usd: Option<String>,
+    pub seats: Vec<CarSeatDraft>,
+}
+
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct CarSeatDraft {
+    pub id: String,
+    pub name: String,
+    pub enabled: bool,
+    pub max_concurrency: u64,
+    pub requests_per_minute: u64,
+    pub weight: String,
+    pub daily_limit_usd: String,
+    pub weekly_limit_usd: String,
+    pub keys: Vec<CarKeyDraft>,
+}
+
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct CarKeyDraft {
+    pub id: String,
+    pub create: bool,
+    pub name: String,
+    pub label: Option<String>,
+    pub enabled: bool,
+    pub revoke: bool,
+    pub openai_client_profile_override: Option<serde_json::Map<String, serde_json::Value>>,
+    pub xai_client_profile_override: Option<serde_json::Map<String, serde_json::Value>>,
+}
+
+#[derive(Debug, Clone)]
+pub struct PreparedCarManagement {
+    pub draft: CarManagementDraft,
+    pub fingerprint: String,
+    pub new_keys: Vec<super::client_keys::NewClientKey>,
+}
+
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CarManagementResult {
+    pub config_revision: u64,
+    pub group_id: String,
+    pub created_key_ids: Vec<String>,
 }

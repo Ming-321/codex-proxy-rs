@@ -242,6 +242,7 @@ async fn connect_and_migrate_should_apply_all_migrations_once_and_reopen_cleanly
             "admin_users",
             "backup_records",
             "backup_settings",
+            "car_management_receipts",
             "car_quota_cycles",
             "car_quota_settings",
             "client_api_key_groups",

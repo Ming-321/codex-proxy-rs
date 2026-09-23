@@ -19,7 +19,7 @@ const emit = defineEmits<{
 
 <template>
   <div class="flex items-center gap-1">
-    <BaseIconButton variant="ghost" size="sm" :label="group.isCar ? '管理 seat' : '转为 car'" @click.stop="emit('seats', group)">
+    <BaseIconButton variant="ghost" size="sm" :label="group.isCar ? '管理车位与 Key' : '配置为拼车'" @click.stop="emit('seats', group)">
       <Users class="size-3.5 text-cp-link" />
     </BaseIconButton>
     <BaseIconButton

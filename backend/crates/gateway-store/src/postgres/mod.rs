@@ -15,6 +15,7 @@ mod account_groups;
 mod admin_security_audit;
 mod admission_recovery;
 mod backup;
+mod car_management;
 mod client_budgets;
 mod client_keys;
 mod execution;

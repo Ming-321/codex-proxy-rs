@@ -11,7 +11,7 @@ use redis::aio::ConnectionManager;
 use uuid::Uuid;
 
 #[tokio::test]
-async fn seat_members_share_concurrency_but_keep_independent_rpm() {
+async fn seat_members_share_rpm_even_after_release_or_adding_a_key() {
     let Some((repository, mut connection, namespace)) = repository().await else {
         return;
     };
@@ -27,8 +27,22 @@ async fn seat_members_share_concurrency_but_keep_independent_rpm() {
         repository.admit_client_request(&a),
         repository.admit_client_request(&b)
     );
-    assert_eq!(a_result.unwrap(), ClientAdmissionDecision::Granted);
-    assert_eq!(b_result.unwrap(), ClientAdmissionDecision::Granted);
+    let decisions = [a_result.unwrap(), b_result.unwrap()];
+    assert_eq!(
+        decisions
+            .iter()
+            .filter(|result| **result == ClientAdmissionDecision::Granted)
+            .count(),
+        1
+    );
+    assert_eq!(
+        decisions
+            .iter()
+            .filter(|result| **result
+                == ClientAdmissionDecision::Rejected(ClientAdmissionRejection::RateLimited))
+            .count(),
+        1
+    );
     assert!(matches!(
         repository
             .admit_client_request(&request("request-c", "key-c"))
@@ -52,7 +66,7 @@ async fn seat_members_share_concurrency_but_keep_independent_rpm() {
             .admit_client_request(&request("request-c", "key-c"))
             .await
             .unwrap(),
-        ClientAdmissionDecision::Granted
+        ClientAdmissionDecision::Rejected(ClientAdmissionRejection::RateLimited)
     );
     delete_namespace_keys(&mut connection, &namespace).await;
 }
@@ -61,6 +75,64 @@ async fn seat_members_share_concurrency_but_keep_independent_rpm() {
 fn client_admission_rejects_zero_ttl() {
     let request = admission_request("request-1", "key-1", Duration::ZERO);
     assert!(request.validate().is_err());
+}
+
+#[tokio::test]
+async fn recovery_merges_member_rpm_and_keeps_other_seats_and_ordinary_keys_independent() {
+    let Some((repository, mut connection, namespace)) = repository().await else {
+        return;
+    };
+    let now = redis_now(&mut connection).await;
+    for key in ["member-a", "member-b"] {
+        let recovery = ClientAdmissionRestore {
+            concurrency_ref: "seat-recovered".to_owned(),
+            client_api_key_ref: key.to_owned(),
+            recent_requests: vec![recent_request(key, now - chrono::Duration::seconds(1))],
+            running_requests: Vec::new(),
+        };
+        assert_eq!(
+            repository
+                .restore_client_admission(&recovery)
+                .await
+                .unwrap()
+                .restored_recent_requests,
+            1
+        );
+        assert_eq!(
+            repository
+                .restore_client_admission(&recovery)
+                .await
+                .unwrap()
+                .restored_recent_requests,
+            0
+        );
+    }
+    let mut request =
+        admission_request("new-member-request", "new-member", Duration::from_secs(30));
+    request.concurrency_ref = "seat-recovered".to_owned();
+    request.limits.requests_per_minute = 2;
+    assert_eq!(
+        repository.admit_client_request(&request).await.unwrap(),
+        ClientAdmissionDecision::Rejected(ClientAdmissionRejection::RateLimited)
+    );
+    request.concurrency_ref = "other-seat".to_owned();
+    assert_eq!(
+        repository.admit_client_request(&request).await.unwrap(),
+        ClientAdmissionDecision::Granted
+    );
+    let mut ordinary =
+        admission_request("ordinary-request", "ordinary-key", Duration::from_secs(30));
+    ordinary.limits.requests_per_minute = 1;
+    assert_eq!(
+        repository.admit_client_request(&ordinary).await.unwrap(),
+        ClientAdmissionDecision::Granted
+    );
+    ordinary.model_request_id = "ordinary-next".to_owned();
+    assert_eq!(
+        repository.admit_client_request(&ordinary).await.unwrap(),
+        ClientAdmissionDecision::Rejected(ClientAdmissionRejection::RateLimited)
+    );
+    delete_namespace_keys(&mut connection, &namespace).await;
 }
 
 #[test]

@@ -106,7 +106,7 @@ const profileProviderOptions = [
         <BaseSelect v-model="form.seatId" :options="seatOptions" :disabled="saving" />
       </BaseFormItem>
       <p v-if="form.seatId" class="text-cp-sm text-cp-text-secondary">
-        {{ form.seatName || '所选 seat' }} 的费用与并发由成员共享，独立保留客户端身份和 RPM
+        {{ form.seatName || '所选车位' }} 统一管理额度、并发和 RPM，Key 可分别设置客户端身份
       </p>
       <BaseFormItem v-else label="分组">
         <AccountGroupCheckboxGrid
@@ -203,7 +203,7 @@ const profileProviderOptions = [
             :disabled="saving"
           />
         </BaseFormItem>
-        <BaseFormItem label="每分钟请求数（RPM）">
+        <BaseFormItem v-if="!form.seatId" label="每分钟请求数（RPM）">
           <BaseInput
             v-model="form.requestsPerMinute"
             type="number"

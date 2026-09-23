@@ -1,4 +1,5 @@
 import type { RequestOptions } from '../request'
+import type { ClientProfileSelection, XaiClientProfileSelection } from './client-profiles'
 import request from '../request'
 
 export interface AccountGroupRef {
@@ -44,6 +45,7 @@ export interface Seat {
   name: string
   enabled: boolean
   maxConcurrency: number
+  requestsPerMinute: number
   weight: string
   keyCount: number
   dailyLimitUsd: string
@@ -59,6 +61,10 @@ export function getSeats(groupId: string) {
 }
 
 export interface CarQuotaState {
+  configRevision: number
+  accountId: string | null
+  quotaPolicy: 'manual' | 'cycle' | 'automatic'
+  allocation: 'custom' | 'equal'
   groupId: string
   totalWeight: string
   mode: 'legacy' | 'waiting' | 'active'
@@ -70,6 +76,56 @@ export interface CarQuotaState {
   predictionReason: string | null
   publishedAt: string | null
   updatedAt: string
+}
+
+export interface CarKeyDraft {
+  id: string
+  create: boolean
+  name: string
+  label: string | null
+  enabled: boolean
+  revoke: boolean
+  openaiClientProfileOverride: ClientProfileSelection | null
+  xaiClientProfileOverride: XaiClientProfileSelection | null
+}
+
+export interface CarSeatDraft {
+  id: string
+  name: string
+  enabled: boolean
+  maxConcurrency: number
+  requestsPerMinute: number
+  weight: string
+  dailyLimitUsd: string
+  weeklyLimitUsd: string
+  keys: CarKeyDraft[]
+}
+
+export interface CarManagementDraft {
+  requestId: string
+  expectedRevision: number
+  quotaUpdatedAt: string | null
+  groupId: string
+  create: boolean
+  name: string
+  description: string | null
+  color: string
+  enabled: boolean
+  disableFast: boolean
+  accountId: string
+  quotaPolicy: CarQuotaState['quotaPolicy']
+  allocation: CarQuotaState['allocation']
+  totalWeight: string
+  initialCapacityUsd: string | null
+  seats: CarSeatDraft[]
+}
+
+export function saveCarManagement(data: CarManagementDraft) {
+  return request<{ configRevision: number, groupId: string, createdKeyIds: string[] }>({
+    url: '/api/admin/car-management/save',
+    method: 'POST',
+    data,
+  })
 }
 
 export interface CarQuotaSettings {
@@ -104,7 +160,7 @@ export function convertToCar(id: string) {
   return request({ url: '/api/admin/account-groups/convert-car', method: 'POST', data: { id } })
 }
 
-export function saveSeat(data: Pick<Seat, 'groupId' | 'name' | 'enabled' | 'maxConcurrency' | 'weight' | 'dailyLimitUsd' | 'weeklyLimitUsd'> & { id?: string }) {
+export function saveSeat(data: Pick<Seat, 'groupId' | 'name' | 'enabled' | 'maxConcurrency' | 'requestsPerMinute' | 'weight' | 'dailyLimitUsd' | 'weeklyLimitUsd'> & { id?: string }) {
   return request({ url: '/api/admin/seats/save', method: 'POST', data })
 }
 

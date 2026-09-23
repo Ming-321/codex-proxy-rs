@@ -335,7 +335,7 @@ async fn load_client_keys(
                 case when k.seat_id is not null then array[s.account_group_id] else
                   coalesce(array_agg(kg.account_group_id order by kg.account_group_id)
                   filter (where kg.account_group_id is not null), '{}') end as group_ids,
-                coalesce(s.max_concurrency, k.max_concurrency), k.requests_per_minute, k.provider_request_profiles_json, k.seat_id
+                coalesce(s.max_concurrency, k.max_concurrency), coalesce(s.requests_per_minute, k.requests_per_minute), k.provider_request_profiles_json, k.seat_id
          from client_api_keys k
          left join seats s on s.id = k.seat_id
          left join client_api_key_groups kg on kg.client_api_key_id = k.id

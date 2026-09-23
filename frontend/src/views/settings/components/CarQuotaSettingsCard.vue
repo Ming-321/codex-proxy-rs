@@ -14,7 +14,7 @@ import { useAsyncAction } from '@/composables/useAsyncAction'
 const action = useAsyncAction()
 const busy = action.loading
 const form = reactive({
-  automaticUpdates: true,
+  automaticUpdates: false,
   publishIntervalHours: '6',
   outsideUsageProtection: true,
   minimumSamplePercent: '10',
@@ -75,21 +75,21 @@ onMounted(load)
 </script>
 
 <template>
-  <BaseCard title="账号周期额度估算" description="控制 car 账号容量估算的发布频率与稳定策略，全局生效">
+  <BaseCard title="拼车自动额度策略" description="各车是否自动调整，在分组管理中分别选择，这里的稳定参数全局共用">
     <BaseForm class="max-w-6xl sm:grid-cols-2">
       <p class="col-span-full text-cp-xs text-cp-text-secondary">
-        关闭自动发布后，仍跟随账号周期，并按已发布容量和权重分配 seat 额度
+        新建时的默认选项不会改变已保存的拼车模式，自动管理需确认初始总额度后生效
       </p>
-      <BaseSwitch v-model="form.automaticUpdates" class="col-span-full justify-self-start" label="自动发布估算容量" show-label />
+      <BaseSwitch v-model="form.automaticUpdates" class="col-span-full justify-self-start" label="新建拼车默认选择自动管理" show-label />
       <BaseFormItem label="最短发布间隔" description="即使获得新样本，也不会比此间隔更频繁地调整 seat 周期额度">
-        <BaseInput v-model="form.publishIntervalHours" type="number" min="0.083333" max="720" step="any" aria-label="估算最短发布间隔" :disabled="busy || !form.automaticUpdates">
+        <BaseInput v-model="form.publishIntervalHours" type="number" min="0.083333" max="720" step="any" aria-label="估算最短发布间隔" :disabled="busy">
           <template #suffix>
             <span class="text-cp-sm">小时</span>
           </template>
         </BaseInput>
       </BaseFormItem>
       <div class="flex items-end pb-2">
-        <BaseSwitch v-model="form.outsideUsageProtection" label="减轻账号直登等外部用量影响" show-label :disabled="busy || !form.automaticUpdates" />
+        <BaseSwitch v-model="form.outsideUsageProtection" label="减轻账号直登等外部用量影响" show-label :disabled="busy" />
       </div>
 
       <details class="col-span-full rounded-cp bg-cp-fill-quaternary p-4">

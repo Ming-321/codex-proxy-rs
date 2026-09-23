@@ -12,7 +12,7 @@ import AccountGroupActions from './components/AccountGroupActions.vue'
 import AccountGroupFilters from './components/AccountGroupFilters.vue'
 import AccountGroupFormModal from './components/AccountGroupFormModal.vue'
 import AccountGroupMetricsCell from './components/AccountGroupMetricsCell.vue'
-import SeatManagerModal from './components/SeatManagerModal.vue'
+import CarManager from './components/CarManager.vue'
 import { useAccountGroups } from './composables/useAccountGroups'
 import { accountGroupColumns } from './constants'
 
@@ -52,7 +52,7 @@ const {
 
 const seatGroup = shallowRef<AccountGroup | null>(null)
 const showSeats = shallowRef(false)
-function manageSeats(group: AccountGroup) {
+function manageSeats(group: AccountGroup | null) {
   seatGroup.value = group
   showSeats.value = true
 }
@@ -62,11 +62,12 @@ const { allSelected, indeterminate, selectedRowKeys, toggleSelection, toggleAll 
 </script>
 
 <template>
-  <div class="flex h-full min-h-0 w-full flex-col overflow-hidden">
+  <CarManager v-if="showSeats" :group="seatGroup" @close="showSeats = false" @changed="reload" />
+  <div v-else class="flex h-full min-h-0 w-full flex-col overflow-hidden">
     <BasePageHeader
       class="h-17"
       title="分组管理"
-      description="将账号归类管理；car 可在这里创建和管理 seat"
+      description="管理账号分组，以及拼车中的车位和客户端 Key"
     />
 
     <BaseCard
@@ -79,6 +80,7 @@ const { allSelected, indeterminate, selectedRowKeys, toggleSelection, toggleAll 
           :batch-deleting="batchDeleting"
           :selected-count="selectedIds.size"
           @create="openCreate"
+          @create-car="manageSeats(null)"
           @delete-selected="showBatchDeleteModal = true"
         />
       </template>
@@ -170,7 +172,7 @@ const { allSelected, indeterminate, selectedRowKeys, toggleSelection, toggleAll 
                 :group="row"
                 :deleting="deleting"
                 :updating-status="updatingStatusGroupIds.has(row.id)"
-                @edit="openEdit"
+                @edit="row.isCar ? manageSeats(row) : openEdit(row)"
                 @seats="manageSeats"
                 @toggle="requestToggle"
                 @delete="requestDelete"
@@ -187,7 +189,6 @@ const { allSelected, indeterminate, selectedRowKeys, toggleSelection, toggleAll 
       </template>
     </BaseCard>
 
-    <SeatManagerModal v-model="showSeats" :group="seatGroup" @changed="reload" />
     <AccountGroupFormModal
       v-model="showFormModal"
       v-model:form="form"

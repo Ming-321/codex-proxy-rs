@@ -12,6 +12,7 @@ defineProps<{
 }>()
 const emit = defineEmits<{
   create: []
+  createCar: []
   deleteSelected: []
 }>()
 const search = defineModel<string>('search', { required: true })
@@ -47,6 +48,9 @@ const status = defineModel<string>('status', { required: true })
           <Trash2 class="size-4" />
         </template>
         删除选中 ({{ selectedCount }})
+      </BaseButton>
+      <BaseButton @click="emit('createCar')">
+        创建拼车
       </BaseButton>
       <BaseButton variant="primary" @click="emit('create')">
         <template #icon>
