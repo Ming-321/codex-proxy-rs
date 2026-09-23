@@ -59,6 +59,15 @@ pub struct QuotaForecastHistoryPoint {
     pub completed_at: DateTime<Utc>,
     pub usage: QuotaForecastUsage,
     pub provider_observation: ProviderDocument,
+    /// 抽样前相邻的原始观测；缺失或无法解析时不能确认孤立异常。
+    pub previous_observation: Option<QuotaForecastNeighbor>,
+    pub next_observation: Option<QuotaForecastNeighbor>,
+}
+
+#[derive(Debug, Clone)]
+pub struct QuotaForecastNeighbor {
+    pub completed_at: DateTime<Utc>,
+    pub provider_observation: ProviderDocument,
 }
 
 #[derive(Debug, Clone, Default)]

@@ -2108,6 +2108,8 @@ async fn quota_forecast_mid_cycle_sampling_accepts_small_reset_jitter_but_not_a_
         provider_observation: ProviderDocument::new(OpaqueProviderData::new(serde_json::json!({
             "percent": percent, "reset": (reset + TimeDelta::seconds(delta)).to_rfc3339(), "plan": "pro",
         }).as_object().unwrap().clone())),
+        previous_observation: None,
+        next_observation: None,
     }
     };
     *store.quota_forecast_history.lock().unwrap() = QuotaForecastHistory {
@@ -2132,6 +2134,53 @@ async fn quota_forecast_mid_cycle_sampling_accepts_small_reset_jitter_but_not_a_
     assert_eq!(result.forecasts[0].estimated_tokens, Some(5_000));
     assert_eq!(result.forecasts[0].remaining_tokens, Some(3_000));
     assert_eq!(store.quota_window_queries()[0].range.start, added);
+    // 原始邻居未必入选采样；确认孤立抖动后仍使用此前完整用量。
+    let neighbor = |point: QuotaForecastHistoryPoint| {
+        gateway_admin::model::quota_forecast_sampling::QuotaForecastNeighbor {
+            completed_at: point.completed_at,
+            provider_observation: point.provider_observation,
+        }
+    };
+    let mut jitter = make_point(1, 35.0, 1_700, 7);
+    jitter.previous_observation = Some(neighbor(make_point(2, 30.0, 1_500, 0)));
+    let mut next_raw = make_point(1, 36.0, 1_800, 0);
+    next_raw.completed_at = now - TimeDelta::minutes(20);
+    jitter.next_observation = Some(neighbor(next_raw));
+    for (next_delta, next_percent, has_next, available) in [
+        (0, 36.0, true, true),
+        (7, 36.0, true, false),
+        (0, 5.0, true, false),
+        (0, 36.0, false, false),
+    ] {
+        let mut candidate = jitter.clone();
+        if has_next {
+            let mut next = make_point(1, next_percent, 1_800, next_delta);
+            next.completed_at = now - TimeDelta::minutes(20);
+            candidate.next_observation = Some(neighbor(next));
+        } else {
+            candidate.next_observation = None;
+        }
+        store
+            .quota_forecast_history
+            .lock()
+            .unwrap()
+            .points
+            .push(candidate);
+        let result = services
+            .accounts()
+            .quota_forecast(&ProviderAccountId::new("acct_test").unwrap())
+            .await
+            .unwrap();
+        assert_eq!(result.forecasts[0].unavailable_reason.is_none(), available);
+        if available {
+            assert_eq!(result.forecasts[0].estimated_tokens, Some(5_000));
+            assert_eq!(
+                result.forecasts[0].source.as_ref().unwrap().tokens,
+                Some(2_000)
+            );
+        }
+        store.quota_forecast_history.lock().unwrap().points.pop();
+    }
     store
         .quota_forecast_history
         .lock()

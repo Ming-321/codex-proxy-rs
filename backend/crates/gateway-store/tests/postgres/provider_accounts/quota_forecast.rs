@@ -325,5 +325,16 @@ async fn quota_forecast_bounds_documents_without_sampling_away_token_totals() {
     assert_eq!(history.usage.tokens, 25_600);
     assert_eq!(history.points.len(), MAX_FORECAST_HISTORY_POINTS);
     assert_eq!(history.points.last().unwrap().usage.tokens, 25_600);
+    // 2分钟一桶，入选点之间仍返回真实的1分钟邻居，不能把抽样相邻误当原始相邻。
+    let middle = &history.points[64];
+    assert_eq!(
+        middle.completed_at - middle.previous_observation.as_ref().unwrap().completed_at,
+        TimeDelta::minutes(1)
+    );
+    assert_eq!(
+        middle.next_observation.as_ref().unwrap().completed_at - middle.completed_at,
+        TimeDelta::minutes(1)
+    );
+    assert!(history.points.last().unwrap().next_observation.is_none());
     database.close().await;
 }

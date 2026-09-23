@@ -750,6 +750,44 @@ impl AccountsService for DefaultAccountsService {
                 // 仅容纳已观测到的秒级量化抖动，不用宽时间容差合并实际重置。
                 // 不匹配的段截断基线；之后的有效观测可以重新积累。
                 if !same_plan || (fact.reset_at - reset_at).abs() > Duration::seconds(2) {
+                    // 仅跳过有原始前后观测证实的孤立时间异常，不用抽样邻居跨越真实断点。
+                    let isolated = same_plan
+                        && point
+                            .previous_observation
+                            .as_ref()
+                            .zip(point.next_observation.as_ref())
+                            .is_some_and(|(previous, next)| {
+                                if previous.completed_at >= point.completed_at
+                                    || point.completed_at >= next.completed_at
+                                    || next.completed_at > observed
+                                    || next.completed_at >= reset_at
+                                {
+                                    return false;
+                                }
+                                let previous = provider.quota_forecast_observation(
+                                    &previous.provider_observation,
+                                    window,
+                                );
+                                let next = provider
+                                    .quota_forecast_observation(&next.provider_observation, window);
+                                previous.zip(next).is_some_and(|(previous, next)| {
+                                    [&previous, &next].iter().all(|neighbor| {
+                                        quota
+                                            .plan_type
+                                            .as_deref()
+                                            .zip(neighbor.plan_type.as_deref())
+                                            .is_some_and(|(current, previous)| {
+                                                current.eq_ignore_ascii_case(previous)
+                                            })
+                                            && (neighbor.reset_at - reset_at).abs()
+                                                <= Duration::seconds(2)
+                                    }) && previous.used_percent <= fact.used_percent
+                                        && fact.used_percent <= next.used_percent
+                                })
+                            });
+                    if isolated {
+                        continue;
+                    }
                     points.clear();
                     interrupted = true;
                     continue;
