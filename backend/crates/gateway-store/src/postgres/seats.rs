@@ -127,6 +127,7 @@ pub(super) async fn save_seat(
 ) -> AdminStoreResult<Revision> {
     let (mut tx, revision) = begin(pool).await?;
     save_seat_in_transaction(&mut tx, &command).await?;
+    super::car_management::allocate(&mut tx, command.group_id.as_str()).await?;
     let id = command.id.as_ref().ok_or_else(|| invalid("seat ID 缺失"))?;
     commit(tx, revision, context, "save_seat", id.as_str()).await
 }
@@ -152,10 +153,6 @@ pub(super) async fn save_seat_in_transaction(
     if result.rows_affected() != 1 {
         return Err(invalid("seat 不允许跨 car 转移"));
     }
-    sqlx::query("update seats s set weekly_limit_usd = trunc(c.published_capacity_usd * (case when g.car_allocation = 'equal' then 1::numeric / (select count(*) from seats where account_group_id = g.id) else s.weight / g.car_total_weight end), 10)
-        from account_groups g, car_quota_cycles c where s.id = $1 and g.id = s.account_group_id
-          and c.account_group_id = g.id and g.car_quota_policy = 'automatic'")
-        .bind(id.as_str()).execute(&mut **tx).await.map_err(database)?;
     Ok(())
 }
 

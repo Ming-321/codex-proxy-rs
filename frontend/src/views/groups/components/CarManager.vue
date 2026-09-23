@@ -177,6 +177,9 @@ async function copy(value: string) {
                 <td>
                   <div v-for="key in seat.keys" :key="key.id">
                     {{ key.name }}{{ key.revoke ? '（撤销）' : key.create ? '（新增）' : key.enabled ? '' : '（停用）' }} · {{ key.openaiClientProfileOverride ? `${key.openaiClientProfileOverride.platform} / ${key.openaiClientProfileOverride.client}` : key.xaiClientProfileOverride ? '独立身份' : '继承默认身份' }}
+                    <p v-if="!key.create && !keysBelongToSeat(key.id, seat.id)" class="my-1 text-cp-xs text-cp-text-secondary">
+                      纳入已有 Key：当前日已用 ${{ money(keys.find(item => item.id === key.id)?.dailyUsedUsd ?? 0) }}，周已用 ${{ money(keys.find(item => item.id === key.id)?.weeklyUsedUsd ?? 0) }}，保存时承接费用；窗口不兼容则整次拒绝
+                    </p>
                   </div>
                   <span v-if="!seat.keys.length">空车位</span>
                 </td>

@@ -363,6 +363,53 @@ async fn management_equal_thirds_and_policy_switch_preserve_amounts_and_ledger()
 }
 
 #[tokio::test]
+async fn legacy_seat_save_reallocates_equal_shares_and_rejects_zero_after_rounding() {
+    let Some(db) = setup("car_equal_legacy_save").await else {
+        return;
+    };
+    let store = PgAccountGroupRepository::new(db.pool.clone());
+    let mut draft = management_draft(&db).await;
+    draft.allocation = "equal".to_owned();
+    draft.quota_policy = "automatic".to_owned();
+    draft.initial_capacity_usd = Some("0.0000000002".to_owned());
+    store
+        .save_car_management(prepared(draft), &context())
+        .await
+        .unwrap();
+    store
+        .save_seat(
+            command("seat_00000000000000000000000000000002", 1),
+            &context(),
+        )
+        .await
+        .unwrap();
+    let seats = store.list_seats(group()).await.unwrap();
+    assert_eq!(seats.len(), 2);
+    assert!(
+        seats
+            .iter()
+            .all(|s| s.budget.limits.weekly_usd.canonical() == "0.0000000001")
+    );
+    assert!(
+        store
+            .save_seat(
+                command("seat_00000000000000000000000000000003", 1),
+                &context()
+            )
+            .await
+            .is_err()
+    );
+    let seats = store.list_seats(group()).await.unwrap();
+    assert_eq!(seats.len(), 2);
+    assert!(
+        seats
+            .iter()
+            .all(|s| s.budget.limits.weekly_usd.canonical() == "0.0000000001")
+    );
+    db.close().await;
+}
+
+#[tokio::test]
 async fn shared_budget_carries_usage_once_and_preserves_client_settings_and_revoked_history() {
     let Some(db) = setup("seat_shared_budget").await else {
         return;
