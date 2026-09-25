@@ -1558,15 +1558,20 @@ Key 已删除或未关联时为 `null`，不影响记录返回，不包含密钥
 | 方法 | 路由 | 主要 query/body | 说明 |
 | --- | --- | --- | --- |
 | `GET` | `/api/admin/system/version` | 无 | 当前构建、部署模式和可用更新 |
-| `GET` | `/api/admin/system/update/detail` | `refresh=true|false` | 读取或强制刷新 Release 详情 |
+| `GET` | `/api/admin/system/update/detail` | `refresh=true|false`、`channel?` | 按临时通道读取或刷新 Release 详情 |
 | `GET` | `/api/admin/system/update/events` | 无 | SSE 更新事件流 |
-| `POST` | `/api/admin/system/update` | `{ targetVersion }` | 受理后台在线更新，返回 `202` |
+| `POST` | `/api/admin/system/update` | `{ targetVersion, channel? }` | 受理后台在线更新，返回 `202` |
 | `GET` | `/api/admin/system/update/status` | 无 | 查询当前更新或回滚状态 |
 | `POST` | `/api/admin/system/rollback` | 无 | 回滚到保留的上一版本 |
 | `POST` | `/api/admin/system/restart` | 无 | 请求进程重启 |
 
 在线更新遵循[版本命名与升级规则](../deploy/README.md#版本命名与升级规则)。版本接口的
 `updateChannel` 由当前版本推导，取值为 `stable`、`alpha`、`beta`、`rc`、`exp`，无法识别时为 `unknown`。
+详情接口的可选 `channel` 仅作用于本次查询，不保存实例偏好；省略时按当前运行版本推导。
+响应的 `policy` 包含本次 `channel` 与 `availableChannels`，普通实例可选 `stable`、`rc`、`beta`、`alpha`，
+实验实例仅允许 `exp`。不可用通道返回 `40901`，未知枚举值返回参数错误。
+执行时应同时发送页面确认的 `channel` 与 `targetVersion`，服务端冻结该通道并重新复核远端目标；
+旧客户端省略通道时按运行版本推导。版本摘要接口始终检查运行通道，不受临时查询影响。
 检查与执行使用同一规则，禁止的通道转换、跨实验线、跨大版本、降级或同版本重装均以 `40901` 拒绝。
 `hasUpdate=true` 仅表示当前构建支持在线更新，且存在允许的更高版本；`latestVersion`、`releaseUrl` 和
 `notes` 对应这个候选。没有可升级候选时，`hasUpdate=false`、`latestVersion` 为当前版本，
@@ -1574,7 +1579,7 @@ Key 已删除或未关联时为 `null`，不影响记录返回，不包含密钥
 当前构建不支持在线更新时不查询 Release，`hasUpdate=false`、`latestVersion` 为当前版本，
 `releaseUrl` 和 `notes` 为空，不支持原因通过 `updateSupported=false`、`unsupportedReason` 返回。
 强制检查失败时通过 `warning` 返回错误，`hasUpdate=false`，不以旧缓存或“没有更新”掩盖失败。
-普通查询可复用 20 分钟内的结果。下载时仍会校验目标资产、校验和及归档。
+普通查询可复用 20 分钟内的结果，缓存按通道隔离，较慢的旧检查不能覆盖新检查结果。下载时仍会校验目标资产、校验和及归档。
 
 更新 POST 在本地校验目标版本并持久化任务后返回 `202`，数据包含 `operationId`、`targetVersion`、
 `deploymentMode` 和 `message`，只表示已受理。Release 查询、远端目标复核、下载、校验及文件替换在后台
@@ -1587,7 +1592,10 @@ Key 已删除或未关联时为 `null`，不影响记录返回，不包含密钥
 版本或增加权限。
 
 状态响应的 `currentVersion` 表示已安装文件的版本，运行中的版本仍以 `/version` 为准。
-`needRestart=true` 表示成功安装的版本尚未在当前进程生效，此时应调用重启接口，不能重复发起更新。
+`needRestart=true` 表示已验证的安装文件尚未在当前进程生效，此时应调用重启接口，不能重复发起更新或切换通道。
+最近一次 `operation` 仅表示操作历史，成功记录不等于待重启，也不改变远端 `hasUpdate`。
+手动部署后按实际文件校准 `currentVersion`；无法核实的回滚备份不再返回 `previousVersion`。
+运行期间的外部文件变动或不完整安装返回错误，不伪装成安装成功。
 Host 关闭或任务取消会记录失败终态；状态查询会收敛无执行锁的遗留 `running`。
 异常退出留下的锁仍遵循 30 分钟过期规则，未过期前不会抢占其他进程的操作。
 实例升级和仓库发版见 [部署文档](../deploy/README.md#镜像升级与源码构建)。

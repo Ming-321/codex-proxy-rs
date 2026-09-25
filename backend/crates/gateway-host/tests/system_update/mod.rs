@@ -1,3 +1,6 @@
+mod channels;
+mod installation;
+
 use std::fs;
 use std::path::PathBuf;
 use std::sync::{
@@ -61,7 +64,8 @@ impl TestSystemUpdate for ProcessSystemOperations {
         &self,
         target: Option<String>,
     ) -> Result<SystemOperationAccepted, SystemOperationError> {
-        SystemOperations::perform_update(self, target, Arc::new(AllowingUpdatePreflight)).await
+        SystemOperations::perform_update(self, target, None, Arc::new(AllowingUpdatePreflight))
+            .await
     }
 }
 
@@ -349,6 +353,7 @@ async fn update_should_restore_all_files_when_plugin_revision_changes_during_swa
     SystemOperations::perform_update(
         &service,
         Some(TARGET_VERSION.to_owned()),
+        None,
         Arc::new(ChangingRevisionPreflight {
             confirmations: AtomicUsize::new(0),
         }),
@@ -496,9 +501,15 @@ async fn update_detail_should_report_refresh_failure_and_clear_previous_update()
     let fixture = Fixture::new();
     fixture.mount_release_once(&server, TARGET_VERSION).await;
     let service = fixture.service(&server);
-    service.update_detail(true).await.expect("prime cache");
+    service
+        .update_detail(true, None)
+        .await
+        .expect("prime cache");
 
-    let detail = service.update_detail(true).await.expect("failure detail");
+    let detail = service
+        .update_detail(true, None)
+        .await
+        .expect("failure detail");
     assert!(!detail.has_update);
     assert!(detail.warning.is_some());
     assert!(!detail.cached);
@@ -541,7 +552,7 @@ async fn update_detail_should_offer_latest_non_draft_release_in_current_channel(
     config.version = "1.1.0-beta.1".to_owned();
     let service = ProcessSystemOperations::new(CancellationToken::new(), config);
 
-    let detail = service.update_detail(true).await.expect("detail");
+    let detail = service.update_detail(true, None).await.expect("detail");
     assert_eq!(detail.latest_version, "1.1.0-beta.2");
     assert!(detail.has_update);
 }
@@ -554,7 +565,10 @@ async fn update_detail_should_reject_untrusted_github_api_base() {
         fixture.config("https://api.github.example/repos"),
     );
 
-    let detail = service.update_detail(true).await.expect("safe rejection");
+    let detail = service
+        .update_detail(true, None)
+        .await
+        .expect("safe rejection");
     assert!(!detail.update_supported);
     assert!(detail.warning.is_some() || detail.unsupported_reason.is_some());
 }
@@ -567,7 +581,7 @@ async fn update_detail_should_withhold_updates_for_source_builds() {
     config.build_type = "source".to_owned();
     let service = ProcessSystemOperations::new(CancellationToken::new(), config);
 
-    let detail = service.update_detail(true).await.expect("detail");
+    let detail = service.update_detail(true, None).await.expect("detail");
     assert_eq!(detail.latest_version, "1.0.0");
     assert!(!detail.update_supported);
     assert!(detail.unsupported_reason.is_some());
@@ -610,7 +624,7 @@ async fn experimental_build_should_ignore_newer_stable_and_other_experimental_re
     config.build_type = "experimental".to_owned();
     let service = ProcessSystemOperations::new(CancellationToken::new(), config);
 
-    let detail = service.update_detail(true).await.expect("detail");
+    let detail = service.update_detail(true, None).await.expect("detail");
     assert_eq!(detail.latest_version, "3.10.0-exp.2");
     assert!(!detail.has_update);
     assert!(detail.update_supported);
@@ -620,7 +634,10 @@ async fn experimental_build_should_ignore_newer_stable_and_other_experimental_re
     let version = service.version().await.expect("version");
     assert!(!version.has_update);
     assert_eq!(version.update_channel, "exp");
-    let cached = service.update_detail(false).await.expect("cached detail");
+    let cached = service
+        .update_detail(false, None)
+        .await
+        .expect("cached detail");
     assert!(cached.cached);
     assert!(!cached.has_update);
 }
@@ -657,7 +674,7 @@ async fn experimental_update_should_find_highest_same_channel_version_across_pag
     config.build_type = "experimental".to_owned();
     let service = ProcessSystemOperations::new(CancellationToken::new(), config);
 
-    let detail = service.update_detail(true).await.expect("detail");
+    let detail = service.update_detail(true, None).await.expect("detail");
     assert_eq!(detail.latest_version, "3.10.0-exp.10");
     assert_eq!(detail.notes.as_deref(), Some("exp.10 notes"));
     assert!(detail.has_update);
@@ -716,8 +733,6 @@ async fn update_should_reject_cross_channel_targets_before_fetching_or_replacing
         ("experimental", "3.10.0-exp.2", "3.10.1-exp.3"),
         ("experimental", "3.10.0-exp.2", "3.10.0-exp.1"),
         ("release", "3.10.0-beta.2", "3.10.0-alpha.3"),
-        ("release", "3.10.0-rc.2", "3.11.0-rc.3"),
-        ("release", "3.10.0-rc.2", "3.11.0"),
         ("release", "3.10.0", "3.10.0+new"),
         ("release", "3.10.0", "3.9.0"),
         ("experimental", "3.10.0-exp.2", "3.11.0-beta.1"),
@@ -737,7 +752,7 @@ async fn update_should_reject_cross_channel_targets_before_fetching_or_replacing
             .await
             .expect_err("cross-channel update");
         assert_eq!(error.kind(), SystemOperationErrorKind::Conflict);
-        assert!(error.to_string().contains("跨通道"));
+        assert!(error.to_string().contains("所选通道"));
         assert!(
             server
                 .received_requests()
@@ -784,7 +799,7 @@ async fn update_checks_should_follow_stage_promotion_and_experimental_isolation(
             config.version = current.to_owned();
             let service = ProcessSystemOperations::new(CancellationToken::new(), config);
 
-            let detail = service.update_detail(true).await.expect("detail");
+            let detail = service.update_detail(true, None).await.expect("detail");
             assert_eq!(detail.has_update, allowed, "{current} -> {target}");
             assert_eq!(
                 detail.latest_version,
@@ -833,7 +848,10 @@ async fn update_detail_should_keep_current_release_notes_without_allowing_reinst
         }
         let service = ProcessSystemOperations::new(CancellationToken::new(), config);
 
-        let detail = service.update_detail(true).await.expect("current release");
+        let detail = service
+            .update_detail(true, None)
+            .await
+            .expect("current release");
         assert_eq!(detail.latest_version, current);
         assert!(!detail.has_update);
         assert!(detail.update_supported);
@@ -842,7 +860,10 @@ async fn update_detail_should_keep_current_release_notes_without_allowing_reinst
             Some("## 当前版本\n\n- 修复更新状态")
         );
         assert_eq!(detail.release_url.as_deref(), Some(release_url.as_str()));
-        let cached = service.update_detail(false).await.expect("cached release");
+        let cached = service
+            .update_detail(false, None)
+            .await
+            .expect("cached release");
         assert!(cached.cached);
         assert_eq!(cached.notes, detail.notes);
         assert_eq!(cached.release_url, detail.release_url);
@@ -886,7 +907,7 @@ async fn update_detail_should_prefer_available_update_notes_over_current_release
 
         let detail = fixture
             .service(&server)
-            .update_detail(true)
+            .update_detail(true, None)
             .await
             .expect("detail");
         assert!(detail.has_update);
@@ -923,7 +944,7 @@ async fn update_detail_should_find_current_release_notes_across_pages() {
 
     let detail = fixture
         .service(&server)
-        .update_detail(true)
+        .update_detail(true, None)
         .await
         .expect("detail");
     assert!(!detail.has_update);
@@ -950,7 +971,7 @@ async fn update_detail_should_not_use_draft_or_mislabeled_current_release_notes(
         config.version = current.to_owned();
         let service = ProcessSystemOperations::new(CancellationToken::new(), config);
 
-        let detail = service.update_detail(true).await.expect("detail");
+        let detail = service.update_detail(true, None).await.expect("detail");
         assert!(!detail.has_update);
         assert_eq!(detail.latest_version, current);
         assert!(detail.notes.is_none());
@@ -959,11 +980,8 @@ async fn update_detail_should_not_use_draft_or_mislabeled_current_release_notes(
 }
 
 #[tokio::test]
-async fn update_checks_should_ignore_other_cycles_downgrades_and_build_metadata() {
+async fn update_checks_should_ignore_downgrades_unknown_stages_and_build_metadata() {
     for (current, target) in [
-        ("3.12.0-alpha.1", "3.13.0-alpha.2"),
-        ("3.12.0-beta.1", "3.12.1-rc.1"),
-        ("3.12.0-rc.1", "3.13.0"),
         ("3.12.0-beta.2", "3.12.0-beta.1"),
         ("3.12.0", "3.12.0+new-build"),
         ("3.12.0-beta.1+aaa", "3.12.0-beta.1+zzz"),
@@ -979,7 +997,7 @@ async fn update_checks_should_ignore_other_cycles_downgrades_and_build_metadata(
         let mut config = fixture.config(&format!("{}/repos", server.uri()));
         config.version = current.to_owned();
         let service = ProcessSystemOperations::new(CancellationToken::new(), config);
-        let detail = service.update_detail(true).await.expect("detail");
+        let detail = service.update_detail(true, None).await.expect("detail");
         assert!(!detail.has_update, "{current} -> {target}");
         assert_eq!(detail.latest_version, current);
         assert!(detail.notes.is_none());
@@ -1003,7 +1021,7 @@ async fn update_checks_should_fail_closed_for_unknown_current_channels() {
         config.version = current.to_owned();
         config.build_type = build_type.to_owned();
         let service = ProcessSystemOperations::new(CancellationToken::new(), config);
-        let detail = service.update_detail(true).await.expect("detail");
+        let detail = service.update_detail(true, None).await.expect("detail");
         assert!(!detail.has_update);
         assert!(!detail.update_supported);
         assert!(detail.unsupported_reason.is_some());
@@ -1036,7 +1054,7 @@ async fn stable_update_should_select_allowed_version_below_newer_major_releases(
     let mut config = fixture.config(&format!("{}/repos", server.uri()));
     config.version = "3.11.0".to_owned();
     let service = ProcessSystemOperations::new(CancellationToken::new(), config);
-    let detail = service.update_detail(true).await.expect("detail");
+    let detail = service.update_detail(true, None).await.expect("detail");
     assert!(detail.has_update);
     assert_eq!(detail.latest_version, "3.11.10");
     assert_eq!(detail.notes.as_deref(), Some("stable notes"));
@@ -1060,7 +1078,7 @@ async fn prerelease_updates_should_install_later_stages_and_stable_release() {
         let service = ProcessSystemOperations::new(CancellationToken::new(), config);
         assert!(
             service
-                .update_detail(true)
+                .update_detail(true, None)
                 .await
                 .expect("detail")
                 .has_update
@@ -1095,9 +1113,12 @@ async fn update_detail_should_use_cached_release_when_not_refreshed() {
     let fixture = Fixture::new();
     fixture.mount_release_once(&server, TARGET_VERSION).await;
     let service = fixture.service(&server);
-    service.update_detail(true).await.expect("prime cache");
+    service
+        .update_detail(true, None)
+        .await
+        .expect("prime cache");
 
-    assert!(service.update_detail(false).await.is_ok());
+    assert!(service.update_detail(false, None).await.is_ok());
 }
 
 #[tokio::test]
@@ -1110,7 +1131,7 @@ async fn update_detail_should_withhold_cross_major_release() {
 
     let detail = fixture
         .service(&server)
-        .update_detail(true)
+        .update_detail(true, None)
         .await
         .expect("detail");
     assert_eq!(detail.latest_version, "1.0.0");
@@ -1569,27 +1590,19 @@ async fn update_should_restore_web_assets_when_binary_backup_fails() {
 }
 
 #[tokio::test]
-async fn update_status_should_read_local_update_state() {
+async fn update_status_should_reconcile_manual_deployment_without_reusing_legacy_success() {
     let fixture = Fixture::new();
-    fs::write(
-        fixture.state(),
-        r#"{"previousVersion":"1.0.0","currentVersion":"2.0.0","operation":{"operationId":"x","kind":"update","status":"succeeded","targetVersion":"2.0.0","message":"done","error":null,"startedAt":"2026-07-19T00:00:00Z","finishedAt":"2026-07-19T00:01:00Z"}}"#,
-    )
-    .expect("state");
-    let service = ProcessSystemOperations::new(
-        CancellationToken::new(),
-        fixture.config("https://api.github.com/repos"),
-    );
-
-    assert_eq!(
-        service
-            .update_status()
-            .await
-            .expect("status")
-            .previous_version
-            .as_deref(),
-        Some("1.0.0")
-    );
+    fs::write(fixture.state(), r#"{"previousVersion":"3.14.0","currentVersion":"3.14.1","operation":{"operationId":"legacy","kind":"update","status":"succeeded","targetVersion":"3.14.1"}}"#).expect("legacy state");
+    let mut config = fixture.config("https://api.github.com/repos");
+    config.version = "3.15.0".to_owned();
+    config.deployment_mode = "docker".to_owned();
+    let service = ProcessSystemOperations::new(CancellationToken::new(), config);
+    let status = service.update_status().await.expect("status");
+    assert!(!status.need_restart);
+    assert_eq!(status.current_version.as_deref(), Some("3.15.0"));
+    assert!(status.previous_version.is_none());
+    assert_eq!(status.operation.target_version.as_deref(), Some("3.14.1"));
+    assert_eq!(status.operation.status, SystemOperationStatus::Succeeded);
 }
 
 #[tokio::test]

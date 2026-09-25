@@ -2,6 +2,7 @@
 
 mod archive;
 mod download;
+mod installation;
 mod process;
 mod release;
 mod state;
@@ -17,8 +18,9 @@ use std::time::Duration;
 use async_trait::async_trait;
 use chrono::Utc;
 use gateway_admin::model::system::{
-    SystemOperationAccepted, SystemOperationKind, SystemUpdateDetail, SystemUpdateEvent,
-    SystemUpdateEventLevel, SystemUpdateStatus, SystemVersion,
+    SystemOperationAccepted, SystemOperationKind, SystemUpdateChannel as UpdateChannel,
+    SystemUpdateDetail, SystemUpdateEvent, SystemUpdateEventLevel, SystemUpdatePolicy,
+    SystemUpdateStatus, SystemVersion,
 };
 use gateway_admin::ports::system::{
     SystemOperationError, SystemOperationErrorKind, SystemOperations, SystemUpdateCandidate,
@@ -32,14 +34,15 @@ use crate::config::ConfigError;
 
 use self::archive::extract_release;
 use self::download::{MAX_CHECKSUM_SIZE, MAX_DOWNLOAD_SIZE, download_file, verify_checksum};
+use self::installation::ReleaseFiles;
 use self::process::{environment_value, spawn_replacement};
 use self::release::{
-    ReleaseCache, UpdateChannel, confirmed_target, detail_from_release, fetch_latest,
-    select_archive, validate_update_target, version_channel,
+    ReleaseCache, confirmed_target, detail_from_release, fetch_latest, select_archive,
+    validate_update_target, version_channel,
 };
 use self::state::{
     OperationFileLock, UpdateOperation, UpdateTempDir, finish, operation_id, read_status,
-    recover_interrupted, set_running,
+    reconcile_installation, recover_interrupted, set_running,
 };
 use self::swap::{replace_release_files, rollback_official_plugins_dir, rollback_release};
 
@@ -233,23 +236,28 @@ pub struct ProcessSystemOperations {
     config: Arc<SystemUpdateConfig>,
     operation_lock: Arc<AsyncMutex<()>>,
     release_cache: Arc<ReleaseCache>,
+    running_files: Arc<Result<ReleaseFiles, OperationError>>,
 }
 
 impl ProcessSystemOperations {
     #[must_use]
     pub fn new(cancellation: CancellationToken, config: SystemUpdateConfig) -> Self {
+        // 组合根在接收请求前创建服务，记录本次启动的发行文件，后续替换不能改写这份事实。
+        let running_files = Arc::new(ReleaseFiles::installed(&config));
         Self {
             cancellation,
             events: Arc::new(UpdateEvents::default()),
             config: Arc::new(config),
             operation_lock: Arc::new(AsyncMutex::new(())),
             release_cache: Arc::new(ReleaseCache::default()),
+            running_files,
         }
     }
 
     fn start_update(
         &self,
         target_version: Option<String>,
+        channel: Option<UpdateChannel>,
         preflight: Arc<dyn SystemUpdatePreflight>,
     ) -> Result<SystemOperationAccepted, OperationError> {
         let operation_lock = Arc::clone(&self.operation_lock)
@@ -264,13 +272,14 @@ impl ProcessSystemOperations {
             return Err(conflict(reason));
         }
         let target = confirmed_target(target_version)?;
-        if let Err(error) = validate_update_target(&self.config.version, &target) {
+        let file_lock = OperationFileLock::acquire(&self.config.update_lock_file)?;
+        let selected = self.resolve_channel(channel)?;
+        if let Err(error) = validate_update_target(&self.config.version, &target, selected) {
             self.events
                 .error_terminal(None, Some("preflight"), error.to_string());
             return Err(error);
         }
-        let file_lock = OperationFileLock::acquire(&self.config.update_lock_file)?;
-        let status = read_status(&self.config.update_state_file, &self.config.version)?;
+        let status = self.reconcile_installation()?;
         if status.need_restart {
             return Err(conflict("更新已完成，请先重启服务"));
         }
@@ -295,14 +304,14 @@ impl ProcessSystemOperations {
             let result = tokio::select! {
                 biased;
                 () = service.cancellation.cancelled() => Err(conflict("服务关闭，更新已中断")),
-                result = service.perform_update_inner(&target, &operation_id, preflight.as_ref()) => result,
+                result = service.perform_update_inner(&target, selected, &operation_id, preflight.as_ref()) => result,
             };
             if let Err(error) = operation.complete(&result) {
                 tracing::warn!(error = %error, "系统更新终态落盘失败");
                 return;
             }
             match result {
-                Ok(()) => service.events.success_terminal(
+                Ok(_) => service.events.success_terminal(
                     Some(&operation_id),
                     Some("done"),
                     "更新文件已替换，等待服务重启生效",
@@ -320,9 +329,10 @@ impl ProcessSystemOperations {
     async fn perform_update_inner(
         &self,
         target: &str,
+        channel: UpdateChannel,
         operation_id: &str,
         preflight: &dyn SystemUpdatePreflight,
-    ) -> Result<(), OperationError> {
+    ) -> Result<ReleaseFiles, OperationError> {
         let repository = self
             .config
             .update_repository
@@ -337,10 +347,11 @@ impl ProcessSystemOperations {
             &self.config.github_api_base,
             repository,
             &self.config.version,
+            channel,
         )
         .await?
         .ok_or_else(|| conflict("当前发行通道没有可用更新"))?;
-        let detail = detail_from_release(&self.config, &release);
+        let detail = detail_from_release(&self.config, &release, channel);
         if detail.latest_version != target {
             return Err(conflict("远端最新版本已变化，请重新确认"));
         }
@@ -362,7 +373,7 @@ impl ProcessSystemOperations {
         version: &str,
         operation_id: &str,
         preflight: &dyn SystemUpdatePreflight,
-    ) -> Result<(), OperationError> {
+    ) -> Result<ReleaseFiles, OperationError> {
         self.events.info(
             Some(operation_id),
             Some("asset"),
@@ -461,24 +472,46 @@ impl ProcessSystemOperations {
         if let Err(error) = preflight.confirm_revision(plugin_revision).await {
             return Err(applied.rollback(error));
         }
+        let files = ReleaseFiles::installed(&self.config)?;
         applied.commit();
         self.events
             .success(Some(operation_id), Some("replace"), "应用文件替换完成");
-        Ok(())
+        Ok(files)
+    }
+
+    fn resolve_channel(
+        &self,
+        requested: Option<UpdateChannel>,
+    ) -> Result<UpdateChannel, OperationError> {
+        let channel = requested.unwrap_or_else(|| {
+            version_channel(&self.config.version).unwrap_or(UpdateChannel::Stable)
+        });
+        if !update_policy(&self.config, channel)
+            .available_channels
+            .contains(&channel)
+        {
+            return Err(conflict("当前发行版本不支持此更新通道"));
+        }
+        Ok(channel)
+    }
+
+    fn reconcile_installation(&self) -> Result<SystemUpdateStatus, OperationError> {
+        let running_files = self.running_files.as_ref().as_ref().map_err(Clone::clone)?;
+        reconcile_installation(&self.config, running_files)
     }
 }
 
 #[async_trait]
 impl SystemOperations for ProcessSystemOperations {
     async fn version(&self) -> Result<SystemVersion, OperationError> {
-        let detail = self.update_detail(false).await?;
+        let detail = self.update_detail(false, None).await?;
         Ok(SystemVersion {
             version: self.config.version.clone(),
             git_sha: self.config.git_sha.clone(),
             build_time: self.config.build_time.clone(),
             deployment_mode: self.config.deployment_mode.clone(),
             update_channel: version_channel(&self.config.version)
-                .map(|channel| channel.label().to_owned())
+                .map(|channel| channel.as_str().to_owned())
                 .unwrap_or_else(|| "unknown".to_owned()),
             latest_version: detail.latest_version,
             has_update: detail.has_update,
@@ -487,11 +520,21 @@ impl SystemOperations for ProcessSystemOperations {
         })
     }
 
-    async fn update_detail(&self, refresh: bool) -> Result<SystemUpdateDetail, OperationError> {
-        match self.release_cache.detail(&self.config, refresh).await {
+    async fn update_detail(
+        &self,
+        refresh: bool,
+        channel: Option<UpdateChannel>,
+    ) -> Result<SystemUpdateDetail, OperationError> {
+        let channel = self.resolve_channel(channel)?;
+        match self
+            .release_cache
+            .detail(&self.config, refresh, channel)
+            .await
+        {
             Ok(detail) => Ok(detail),
             Err(error) => Ok(base_update_detail(
                 &self.config,
+                channel,
                 self.config.update_support_error(),
                 Some(error.to_string()),
             )),
@@ -520,9 +563,10 @@ impl SystemOperations for ProcessSystemOperations {
     async fn perform_update(
         &self,
         target_version: Option<String>,
+        channel: Option<UpdateChannel>,
         preflight: Arc<dyn SystemUpdatePreflight>,
     ) -> Result<SystemOperationAccepted, OperationError> {
-        self.start_update(target_version, preflight)
+        self.start_update(target_version, channel, preflight)
     }
 
     async fn update_status(&self) -> Result<SystemUpdateStatus, OperationError> {
@@ -531,8 +575,15 @@ impl SystemOperations for ProcessSystemOperations {
                 &self.config.update_state_file,
                 &self.config.update_lock_file,
             )?;
+            if self.config.update_support_error().is_none() {
+                match OperationFileLock::acquire(&self.config.update_lock_file) {
+                    Ok(_lock) => return self.reconcile_installation(),
+                    Err(error) if error.kind() == SystemOperationErrorKind::Conflict => {}
+                    Err(error) => return Err(error),
+                }
+            }
         }
-        read_status(&self.config.update_state_file, &self.config.version)
+        read_status(&self.config.update_state_file, false)
     }
 
     async fn rollback(
@@ -548,7 +599,8 @@ impl SystemOperations for ProcessSystemOperations {
         }
         let operation_id = operation_id("rollback");
         let file_lock = OperationFileLock::acquire(&self.config.update_lock_file)?;
-        let target_version = read_status(&self.config.update_state_file, &self.config.version)?
+        let target_version = self
+            .reconcile_installation()?
             .previous_version
             .ok_or_else(|| conflict("没有可用于回滚的上一版本"))?;
         let release_manifest =
@@ -591,6 +643,7 @@ impl SystemOperations for ProcessSystemOperations {
             &self.config.update_state_file,
             &operation_id,
             SystemOperationKind::Rollback,
+            None,
             None,
             result.as_ref().err().map(ToString::to_string),
         )?;
@@ -700,12 +753,26 @@ impl Drop for AppliedReleaseGuard<'_> {
     }
 }
 
+fn update_policy(config: &SystemUpdateConfig, channel: UpdateChannel) -> SystemUpdatePolicy {
+    use UpdateChannel::{Alpha, Beta, Experimental, Rc, Stable};
+    SystemUpdatePolicy {
+        channel,
+        available_channels: if version_channel(&config.version) == Some(Experimental) {
+            vec![Experimental]
+        } else {
+            vec![Stable, Rc, Beta, Alpha]
+        },
+    }
+}
+
 fn base_update_detail(
     config: &SystemUpdateConfig,
+    channel: UpdateChannel,
     unsupported_reason: Option<String>,
     warning: Option<String>,
 ) -> SystemUpdateDetail {
     SystemUpdateDetail {
+        policy: update_policy(config, channel),
         current_version: config.version.clone(),
         latest_version: config.version.clone(),
         has_update: false,

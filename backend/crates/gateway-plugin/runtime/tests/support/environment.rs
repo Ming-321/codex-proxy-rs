@@ -732,7 +732,11 @@ impl SystemOperations for UnusedAdminRuntime {
         Err(unused_system())
     }
 
-    async fn update_detail(&self, _: bool) -> Result<SystemUpdateDetail, SystemOperationError> {
+    async fn update_detail(
+        &self,
+        _: bool,
+        _: Option<gateway_admin::model::system::SystemUpdateChannel>,
+    ) -> Result<SystemUpdateDetail, SystemOperationError> {
         Err(unused_system())
     }
 
@@ -743,6 +747,7 @@ impl SystemOperations for UnusedAdminRuntime {
     async fn perform_update(
         &self,
         _: Option<String>,
+        _: Option<gateway_admin::model::system::SystemUpdateChannel>,
         _: Arc<dyn gateway_admin::ports::system::SystemUpdatePreflight>,
     ) -> Result<SystemOperationAccepted, SystemOperationError> {
         Err(unused_system())

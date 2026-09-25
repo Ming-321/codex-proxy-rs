@@ -7,7 +7,10 @@ use async_trait::async_trait;
 use crate::{
     model::{
         AdminError, AdminErrorKind,
-        system::{SystemOperationAccepted, SystemUpdateDetail, SystemUpdateStatus, SystemVersion},
+        system::{
+            SystemOperationAccepted, SystemUpdateChannel, SystemUpdateDetail, SystemUpdateStatus,
+            SystemVersion,
+        },
     },
     ports::system::{
         SystemOperationError, SystemOperationErrorKind, SystemOperations, SystemUpdateEventStream,
@@ -19,11 +22,16 @@ use crate::{
 #[async_trait]
 pub trait SystemService: Send + Sync {
     async fn version(&self) -> Result<SystemVersion, AdminError>;
-    async fn update_detail(&self, refresh: bool) -> Result<SystemUpdateDetail, AdminError>;
+    async fn update_detail(
+        &self,
+        refresh: bool,
+        channel: Option<SystemUpdateChannel>,
+    ) -> Result<SystemUpdateDetail, AdminError>;
     fn update_events(&self) -> SystemUpdateEventStream;
     async fn perform_update(
         &self,
         target_version: Option<String>,
+        channel: Option<SystemUpdateChannel>,
     ) -> Result<SystemOperationAccepted, AdminError>;
     async fn update_status(&self) -> Result<SystemUpdateStatus, AdminError>;
     async fn rollback(&self) -> Result<SystemOperationAccepted, AdminError>;
@@ -55,9 +63,13 @@ impl SystemService for DefaultSystemService {
         self.operations.version().await.map_err(map_system_error)
     }
 
-    async fn update_detail(&self, refresh: bool) -> Result<SystemUpdateDetail, AdminError> {
+    async fn update_detail(
+        &self,
+        refresh: bool,
+        channel: Option<SystemUpdateChannel>,
+    ) -> Result<SystemUpdateDetail, AdminError> {
         self.operations
-            .update_detail(refresh)
+            .update_detail(refresh, channel)
             .await
             .map_err(map_system_error)
     }
@@ -69,12 +81,13 @@ impl SystemService for DefaultSystemService {
     async fn perform_update(
         &self,
         target_version: Option<String>,
+        channel: Option<SystemUpdateChannel>,
     ) -> Result<SystemOperationAccepted, AdminError> {
         let target_version = target_version
             .map(|version| version.trim().to_owned())
             .filter(|version| !version.is_empty());
         self.operations
-            .perform_update(target_version, Arc::clone(&self.preflight))
+            .perform_update(target_version, channel, Arc::clone(&self.preflight))
             .await
             .map_err(map_system_error)
     }

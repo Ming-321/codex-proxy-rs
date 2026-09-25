@@ -393,7 +393,7 @@ fn copy_dir_all(from: &Path, to: &Path) -> io::Result<()> {
     Ok(())
 }
 
-fn backup_path_for(path: &Path) -> PathBuf {
+pub(crate) fn backup_path_for(path: &Path) -> PathBuf {
     let mut backup = path.as_os_str().to_os_string();
     backup.push(".backup");
     PathBuf::from(backup)

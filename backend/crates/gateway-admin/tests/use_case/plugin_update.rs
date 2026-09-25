@@ -225,7 +225,11 @@ impl SystemOperations for PreflightingSystem {
         unreachable!()
     }
 
-    async fn update_detail(&self, _: bool) -> Result<SystemUpdateDetail, SystemOperationError> {
+    async fn update_detail(
+        &self,
+        _: bool,
+        _: Option<gateway_admin::model::system::SystemUpdateChannel>,
+    ) -> Result<SystemUpdateDetail, SystemOperationError> {
         unreachable!()
     }
 
@@ -236,6 +240,7 @@ impl SystemOperations for PreflightingSystem {
     async fn perform_update(
         &self,
         _: Option<String>,
+        _: Option<gateway_admin::model::system::SystemUpdateChannel>,
         preflight: Arc<dyn SystemUpdatePreflight>,
     ) -> Result<SystemOperationAccepted, SystemOperationError> {
         let revision = preflight.validate(self.candidate.clone()).await?;
@@ -291,7 +296,7 @@ async fn system_update_accepts_compatible_enabled_plugins_at_the_same_revision()
 
     services
         .system()
-        .perform_update(Some("1.2.0".into()))
+        .perform_update(Some("1.2.0".into()), None)
         .await
         .expect("compatible update");
 }
@@ -309,7 +314,7 @@ async fn system_update_rejects_missing_target_capability_and_revision_changes() 
     assert!(
         services
             .system()
-            .perform_update(Some("1.2.0".into()))
+            .perform_update(Some("1.2.0".into()), None)
             .await
             .is_err()
     );
@@ -325,7 +330,7 @@ async fn system_update_rejects_missing_target_capability_and_revision_changes() 
     assert!(
         services
             .system()
-            .perform_update(Some("1.2.0".into()))
+            .perform_update(Some("1.2.0".into()), None)
             .await
             .is_err()
     );

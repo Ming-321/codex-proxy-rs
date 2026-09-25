@@ -7,8 +7,8 @@ use futures::Stream;
 
 use crate::model::Revision;
 use crate::model::system::{
-    SystemOperationAccepted, SystemUpdateDetail, SystemUpdateEvent, SystemUpdateStatus,
-    SystemVersion,
+    SystemOperationAccepted, SystemUpdateChannel, SystemUpdateDetail, SystemUpdateEvent,
+    SystemUpdateStatus, SystemVersion,
 };
 
 /// Host 已校验并解包的同一更新候选；字节只含发行清单，不含运行配置或凭据。
@@ -89,6 +89,7 @@ pub trait SystemOperations: Send + Sync {
     async fn update_detail(
         &self,
         refresh: bool,
+        channel: Option<SystemUpdateChannel>,
     ) -> Result<SystemUpdateDetail, SystemOperationError>;
 
     fn update_events(&self) -> SystemUpdateEventStream;
@@ -96,6 +97,7 @@ pub trait SystemOperations: Send + Sync {
     async fn perform_update(
         &self,
         target_version: Option<String>,
+        channel: Option<SystemUpdateChannel>,
         preflight: Arc<dyn SystemUpdatePreflight>,
     ) -> Result<SystemOperationAccepted, SystemOperationError>;
 
