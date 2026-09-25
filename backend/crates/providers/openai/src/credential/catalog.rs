@@ -277,7 +277,7 @@ impl CodexCredentialCatalogService {
             .map_err(|_| CodexCredentialCatalogError::InvalidCredentialData)?;
         let request_profile = match scope.request_profile(&provider) {
             Some(configuration) => {
-                crate::transport::profile::selection::ClientProfileSelection::parse(configuration)
+                crate::transport::profile::identity::RequestProfileSelection::parse(configuration)
                     .and_then(|selection| selection.resolve(&self.profile))
                     .map_err(|_| CodexCredentialCatalogError::InvalidCredentialData)?
             }

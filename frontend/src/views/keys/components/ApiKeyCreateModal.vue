@@ -49,29 +49,31 @@ const title = computed(() => props.editing ? '编辑密钥' : '创建 API Key')
         />
       </BaseFormItem>
 
-      <BaseFormItem label="标签（可选）">
-        <BaseInput
-          v-model="form.label"
-          aria-label="标签（可选）"
-          placeholder="例如：后端服务"
-          :disabled="saving"
-        />
-      </BaseFormItem>
+      <div class="grid gap-6" :class="{ 'sm:grid-cols-2': !editing }">
+        <BaseFormItem label="标签（可选）">
+          <BaseInput
+            v-model="form.label"
+            aria-label="标签（可选）"
+            placeholder="例如：后端服务"
+            :disabled="saving"
+          />
+        </BaseFormItem>
 
-      <BaseFormItem
-        v-if="!editing"
-        label="自定义 Key（可选）"
-      >
-        <BaseInput
-          v-model="form.customKey"
-          type="password"
-          autocomplete="new-password"
-          :spellcheck="false"
-          aria-label="自定义 Key（可选）"
-          placeholder="留空自动生成"
-          :disabled="saving"
-        />
-      </BaseFormItem>
+        <BaseFormItem
+          v-if="!editing"
+          label="自定义 Key（可选）"
+        >
+          <BaseInput
+            v-model="form.customKey"
+            type="password"
+            autocomplete="new-password"
+            :spellcheck="false"
+            aria-label="自定义 Key（可选）"
+            placeholder="留空自动生成"
+            :disabled="saving"
+          />
+        </BaseFormItem>
+      </div>
 
       <BaseFormItem label="分组">
         <AccountGroupCheckboxGrid

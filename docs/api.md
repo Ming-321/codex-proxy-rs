@@ -1261,20 +1261,31 @@ models.dev 同步只导入可表示为当前文本 Token 计价的 OpenAI/xAI �
 该配置作用于 Client Key 的 OpenAI 模型请求与原生模型目录，适用于 HTTP/SSE、WebSocket、Images 和 Search。
 不改变 xAI、入站客户端版本门禁、账号认证或后台 Desktop 专属操作。
 
-身份对象字段如下，可选字段省略或 `null` 时使用所选预设参数：
+自定义配置使用 `{ "mode": "custom", "userAgent": "完整 UA" }`。
+已识别的 `Codex Desktop`、`codex-tui`、`codex_exec`、`codex_cli_rs` 前缀由后端解析 `originator` 和 Core `version`，
+显式提供的配套字段必须与识别结果一致。未知前缀须另填 `originator` 和 `codexVersion`，这两个字段与 UA 一起发送。
+UA 须为 1 至 4096 字节的单行可见 ASCII 文本，首尾不能含空白；`originator` 最多 128 字节，
+`codexVersion` 最多 64 字节并须符合 SemVer。自定义配置不要求 Desktop 构建号，也不自动更新。
+
+没有 `mode` 字段的预设配置按以下合同解析，可选字段省略或 `null` 时使用所选预设参数：
 
 | 字段 | 取值与语义 |
 | --- | --- |
 | `client` | 必填，`desktop` 或 `cli` |
 | `platform` | 必填，`macos`、`linux` 或 `windows` |
 | `versionMode` | 必填，`latest` 或 `fixed` |
-| `originator`、`osVersion`、`arch`、`terminal` | 可选自定义参数，非空、最多 128 字节；只接受可见 ASCII，不能包含括号、分号、反斜杠及首尾空白 |
+| `cliEntry` | CLI 可选 `tui` 或 `exec`，省略或 `null` 保留 Core 默认身份；Desktop 不接受此字段 |
+| `originator`、`osType`、`osVersion`、`arch`、`terminal` | 可选自定义参数，非空、最多 128 字节；只接受可见 ASCII，不能包含括号、分号、反斜杠及首尾空白 |
 | `codexVersion` | `fixed` 必填的 Core SemVer；`latest` 必须省略或为 `null` |
 | `desktopVersion`、`desktopBuild` | 仅 Desktop 的 `fixed` 模式必填，分别为数字点分版本和数字构建号；CLI 不接受这些字段 |
 
 ```json
-{ "client": "cli", "platform": "linux", "versionMode": "latest" }
+{ "client": "cli", "platform": "linux", "versionMode": "latest", "cliEntry": "tui", "osType": "Alpine Linux", "osVersion": "3.24.1", "terminal": "xterm-256color" }
 ```
+
+TUI 默认标识为 `codex-tui`，Exec 为 `codex_exec`，入口后缀使用同一次解析的 Core 版本。
+`originator` 覆盖只更改产品名前缀和配套头，后缀仍表示所选入口。省略 `osType` 使用平台名称；
+自定义运行环境在自动更新时保持不变。旧配置未指定 `cliEntry` 时继续使用 `codex_cli_rs` 默认值且不添加入口后缀。
 
 六套预设均支持自动更新：macOS Desktop 支持 arm64，Windows/Linux Desktop 及三套 CLI 支持 arm64、x86_64。
 预设接口的 `automaticAvailable`、`reason` 表示当前组合的可用性；自定义架构可能使自动解析不可用。
@@ -1284,7 +1295,9 @@ Windows/Linux 通过 ETag 检查更新，未变化时复用已核验版本；CLI
 
 预览返回 `configuration`、`source`（`global` / `override`）、`userAgent`、解析后的环境和版本字段，
 以及 `versionSource`（`official` / `custom`）、`verifiedAt`、`checkedAt`、`error`。
+自定义预览中的 `recognized` 表示是否识别出配套请求头。
 `verifiedAt` 只表示版本资料核验，不能代表自定义运行环境或 TLS 已核验；固定版本返回 `null`。
+完整自定义配置不携带官方制品核验时间。
 客户端画像配置控制应用层请求字段，不切换操作系统的 TLS 实现。默认 HTTP 使用 native TLS，
 WebSocket 使用 rustls；配置自定义 CA 时 HTTP 也使用 rustls。TLS 指纹需按实际部署平台与传输路径核验。
 未完成本次启动检查时 `checkedAt` 为 `null`。非法或当前不可用的选择返回 `400`，保存失败不提交其他修改。

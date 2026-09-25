@@ -42,7 +42,7 @@ async function logout() {
     </template>
     <template #actions>
       <div class="flex max-w-[calc(100vw-32px)] flex-wrap items-center justify-end gap-2">
-        <BaseIconButton label="关于" variant="filled" @click="$emit('openAbout')">
+        <BaseIconButton label="关于" variant="secondary" @click="$emit('openAbout')">
           <Info class="size-4" />
         </BaseIconButton>
         <BaseButton variant="secondary" :loading="configuring" @click="$emit('configure')">
@@ -51,7 +51,7 @@ async function logout() {
         </BaseButton>
         <BaseSelect v-model="period" aria-label="统计时间范围" class="w-29" :options="[{ label: '今天', value: 'today' }, { label: '近 7 天', value: '7d' }, { label: '近 30 天', value: '30d' }]" />
         <BaseSelect v-model="refreshInterval" aria-label="自动刷新频率" class="w-30" :options="[{ label: '30 秒刷新', value: '30' }, { label: '60 秒刷新', value: '60' }, { label: '暂停刷新', value: '0' }]" />
-        <BaseIconButton label="刷新用量" variant="filled" :loading="refreshing" @click="$emit('refresh')">
+        <BaseIconButton label="刷新用量" variant="secondary" :loading="refreshing" @click="$emit('refresh')">
           <RefreshCw class="size-4" />
         </BaseIconButton>
         <BaseIconButton label="切换主题" @click="theme.toggleTheme($event)">

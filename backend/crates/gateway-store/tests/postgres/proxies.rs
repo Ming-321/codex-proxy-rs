@@ -518,6 +518,80 @@ async fn rejected_import_reservations_release_proxy_lock_before_returning() {
 }
 
 #[tokio::test]
+async fn stale_proxy_test_releases_lock_before_next_update() {
+    let Some(database) = TestDatabase::create("stale_proxy_test_lock").await else {
+        return;
+    };
+    let store = PgProxyRepository::new(database.pool.clone());
+    let context = context();
+    let mut saved = store
+        .create(
+            NewProxy {
+                name: "过期检测结果".to_owned(),
+                proxy: OutboundProxy::parse("http://127.0.0.1:19090").unwrap(),
+                auto_location: true,
+                location: None,
+                test: None,
+            },
+            &context,
+        )
+        .await
+        .unwrap()
+        .record;
+    let stale_revision = saved.revision;
+    saved = store
+        .record_test(&saved.id, saved.revision, success(), &context)
+        .await
+        .unwrap()
+        .record;
+
+    // 暂停连接归还时的后台清理，确保锁由返回错误前的显式回滚释放。
+    let release_gate = std::sync::Arc::new(tokio::sync::Semaphore::new(0));
+    let rejected_pool = database
+        .pool
+        .options()
+        .clone()
+        .max_connections(1)
+        .after_release({
+            let release_gate = release_gate.clone();
+            move |_, _| {
+                let release_gate = release_gate.clone();
+                Box::pin(async move {
+                    let _permit = release_gate.acquire().await.unwrap();
+                    Ok(true)
+                })
+            }
+        })
+        .connect_with((*database.pool.connect_options()).clone())
+        .await
+        .unwrap();
+    let stale_writer = PgProxyRepository::new(rejected_pool.clone());
+    let error = stale_writer
+        .record_test(&saved.id, stale_revision, success(), &context)
+        .await
+        .unwrap_err();
+    let update = store
+        .update(
+            UpdateProxy {
+                id: saved.id.clone(),
+                revision: saved.revision,
+                name: saved.name.clone(),
+                proxy: None,
+                auto_location: None,
+                location: None,
+                test: None,
+            },
+            &context,
+        )
+        .await;
+    release_gate.add_permits(1);
+    rejected_pool.close().await;
+    database.close().await;
+    assert_eq!(error.kind(), AdminStoreErrorKind::Conflict);
+    assert!(update.is_ok(), "过期检测结果不应阻挡后续编辑: {update:?}");
+}
+
+#[tokio::test]
 async fn import_reservation_blocks_proxy_mutations_until_rotated_credentials_are_committed() {
     use gateway_store::postgres::{
         ImportProviderAccounts, ProviderAccountAdminRepository, ProviderAccountAdminScope,

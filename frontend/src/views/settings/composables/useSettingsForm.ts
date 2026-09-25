@@ -67,7 +67,7 @@ export function useSettingsForm() {
 
   const saved = shallowRef<ReturnType<typeof snapshot>>()
   const loaded = computed(() => saved.value !== undefined)
-  const hasChanges = computed(() => loaded.value && JSON.stringify(snapshot()) !== JSON.stringify(saved.value))
+  const hasChanges = computed(() => loaded.value && !isEqual(snapshot(), saved.value))
 
   function resetSettings() {
     if (!saved.value || saving.value)

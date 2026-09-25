@@ -651,14 +651,19 @@ fn websocket_connection_profile(
     headers: &HeaderMap,
     middleware_headers: &[gateway_core::engine::middleware::MiddlewareHeader],
 ) -> String {
-    let mut profile = ["originator", "user-agent", X_OPENAI_MEMGEN_REQUEST_HEADER]
-        .map(|name| {
-            headers
-                .get(name)
-                .and_then(|value| value.to_str().ok())
-                .unwrap_or_default()
-        })
-        .join("\0");
+    let mut profile = [
+        "originator",
+        "user-agent",
+        "version",
+        X_OPENAI_MEMGEN_REQUEST_HEADER,
+    ]
+    .map(|name| {
+        headers
+            .get(name)
+            .and_then(|value| value.to_str().ok())
+            .unwrap_or_default()
+    })
+    .join("\0");
     if !middleware_headers.is_empty() {
         use sha2::{Digest, Sha256};
 

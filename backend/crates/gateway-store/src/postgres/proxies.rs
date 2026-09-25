@@ -815,6 +815,11 @@ impl ProxyStore for PgProxyRepository {
             .await
             .map_err(store_error)?;
         if current.revision != revision {
+            // Drop 只排队回滚，返回冲突前需释放事务锁，避免误挡紧接着的编辑。
+            transaction
+                .rollback()
+                .await
+                .map_err(|_| store_error(unavailable()))?;
             return Err(store_error(conflict(id)));
         }
         save_test(&mut transaction, &current, result)

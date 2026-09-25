@@ -69,7 +69,7 @@ pub async fn initialize(
         .initialize_request_profile(&provider_kind, initial_profile)
         .await
         .map_err(|_| OpenAiInitializeError::RuntimePolicy)?;
-    transport::profile::selection::ClientProfileSelection::parse(&configured_profile)
+    transport::profile::identity::RequestProfileSelection::parse(&configured_profile)
         .map_err(|_| OpenAiInitializeError::RuntimePolicy)?;
     let credential_state = ports.credential_state();
     let profile =

@@ -984,6 +984,7 @@ fn wire_profile() -> CodexWireProfileState {
         os_version: "6.8".to_owned(),
         arch: "x86_64".to_owned(),
         terminal: "provider-contract".to_owned(),
+        exact_user_agent: None,
         residency: None,
         verified_at: Utc::now(),
     })

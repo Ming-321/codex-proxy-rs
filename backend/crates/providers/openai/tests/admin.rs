@@ -88,6 +88,35 @@ async fn account_capabilities_distinguish_oauth_from_api_key_and_unknown_credent
 }
 
 #[tokio::test]
+async fn custom_identity_preview_and_dashboard_share_the_exact_request_profile() {
+    let config = valid_config();
+    let bundle = provider_openai::initialize(config.config.clone(), provider_ports())
+        .await
+        .unwrap();
+    let provider = bundle.admin_provider();
+    let user_agent =
+        "codex_exec/0.156.1 (Ubuntu 24.4.0; x86_64) xterm-256color (codex_exec; 0.156.1)";
+    let configuration = OpaqueProviderData::new(
+        json!({"mode":"custom", "userAgent":user_agent})
+            .as_object()
+            .unwrap()
+            .clone(),
+    );
+    let preview = provider.preview_client_profile(&configuration).unwrap();
+    let dashboard = provider.configured_wire_profile(&configuration).unwrap();
+    assert_eq!(preview.expose_to_provider()["userAgent"], user_agent);
+    assert_eq!(dashboard.user_agent, user_agent);
+    assert_eq!(dashboard.product, "codex_exec");
+    assert_eq!(dashboard.version, "0.156.1");
+    assert!(dashboard.verified_at.is_none());
+    assert!(dashboard.release.is_none());
+    assert_ne!(
+        provider.dashboard_wire_profile().unwrap().user_agent,
+        user_agent
+    );
+}
+
+#[tokio::test]
 async fn openai_bundle_exposes_one_core_provider_and_drains_worker_contributions_once() {
     let config = valid_config();
     let mut bundle = provider_openai::initialize(config.config.clone(), provider_ports())

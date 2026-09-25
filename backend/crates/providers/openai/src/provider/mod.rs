@@ -297,7 +297,7 @@ impl Provider for CodexProvider {
         configuration: &gateway_core::account::OpaqueProviderData,
     ) -> Result<gateway_core::account::OpaqueProviderData, ProviderError> {
         let selection =
-            crate::transport::profile::selection::ClientProfileSelection::parse(configuration)
+            crate::transport::profile::identity::RequestProfileSelection::parse(configuration)
                 .map_err(|_| {
                     provider_error(
                         ProviderErrorKind::InvalidRequest,

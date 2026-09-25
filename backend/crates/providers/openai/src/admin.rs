@@ -287,47 +287,48 @@ impl ProviderAdmin for OpenAiAdminProvider {
         &self,
         configuration: &OpaqueProviderData,
     ) -> Option<DashboardWireProfile> {
-        use crate::transport::profile::selection::{
-            ClientKind, ClientPlatform, ClientProfileSelection, VersionMode,
-        };
-        let selection = ClientProfileSelection::parse(configuration).ok()?;
+        use crate::transport::profile::identity::RequestProfileSelection;
+        use crate::transport::profile::selection::{ClientKind, ClientPlatform, VersionMode};
+        let selection = RequestProfileSelection::parse(configuration).ok()?;
         let profile = selection.resolve(&self.profile).ok()?;
-        let custom = selection.version_mode == VersionMode::Fixed;
-        let (checked_at, error) = self.profile.client_release_status(
-            selection.client,
-            selection.platform,
-            selection.architecture(),
-        );
-        let release = if custom {
-            None
-        } else if selection.client == ClientKind::Desktop
-            && selection.platform == ClientPlatform::Macos
-        {
-            Some(dashboard_desktop_release(
-                &profile,
-                self.desktop_release.snapshot(),
-            ))
-        } else {
-            Some(DashboardDesktopRelease {
-                status: if error.is_some() {
-                    DesktopReleaseStatus::Failed
-                } else if checked_at.is_some() {
-                    DesktopReleaseStatus::Current
-                } else {
-                    DesktopReleaseStatus::Unchecked
-                },
-                checked_at,
-                latest_version: Some(profile.codex_version.clone()),
-                latest_build: None,
-                published_at: None,
-                minimum_system_version: None,
-                hardware_requirements: None,
-                download_url: None,
-                download_size: None,
-                signature_present: None,
-                error,
-            })
-        };
+        let custom = selection.version_mode() == VersionMode::Fixed;
+        let release = selection.preset().and_then(|selection| {
+            let (checked_at, error) = self.profile.client_release_status(
+                selection.client,
+                selection.platform,
+                selection.architecture(),
+            );
+            if custom {
+                None
+            } else if selection.client == ClientKind::Desktop
+                && selection.platform == ClientPlatform::Macos
+            {
+                Some(dashboard_desktop_release(
+                    &profile,
+                    self.desktop_release.snapshot(),
+                ))
+            } else {
+                Some(DashboardDesktopRelease {
+                    status: if error.is_some() {
+                        DesktopReleaseStatus::Failed
+                    } else if checked_at.is_some() {
+                        DesktopReleaseStatus::Current
+                    } else {
+                        DesktopReleaseStatus::Unchecked
+                    },
+                    checked_at,
+                    latest_version: Some(profile.codex_version.clone()),
+                    latest_build: None,
+                    published_at: None,
+                    minimum_system_version: None,
+                    hardware_requirements: None,
+                    download_url: None,
+                    download_size: None,
+                    signature_present: None,
+                    error,
+                })
+            }
+        });
         Some(DashboardWireProfile {
             provider: self.provider_kind.as_str().to_owned(),
             product: profile.originator.clone(),
@@ -343,7 +344,7 @@ impl ProviderAdmin for OpenAiAdminProvider {
             attributes: vec![
                 DashboardWireAttribute {
                     label: "客户端标识".to_owned(),
-                    value: if selection.client == ClientKind::Desktop {
+                    value: if profile.client_kind == ClientKind::Desktop {
                         format!("{}; {}", profile.originator, profile.desktop_version)
                     } else {
                         profile.originator
@@ -352,14 +353,15 @@ impl ProviderAdmin for OpenAiAdminProvider {
                 DashboardWireAttribute {
                     label: "版本策略".to_owned(),
                     value: if custom {
-                        "固定自定义"
+                        "固定身份"
                     } else {
                         "自动最新"
                     }
                     .to_owned(),
                 },
             ],
-            verified_at: (!custom).then_some(profile.verified_at),
+            verified_at: (!custom && profile.verified_at != chrono::DateTime::UNIX_EPOCH)
+                .then_some(profile.verified_at),
             release,
         })
     }
@@ -1934,6 +1936,15 @@ fn map_client_profile_error(
     use crate::transport::profile::selection::ClientProfileError;
     let message = match error {
         ClientProfileError::Invalid => "客户端身份字段或版本组合不合法",
+        ClientProfileError::InvalidUserAgent => {
+            "User-Agent 必须是 1 至 4096 字节的单行 ASCII 文本，且首尾不能含空白"
+        }
+        ClientProfileError::CompanionHeadersRequired => {
+            "无法识别 User-Agent，请补充 originator 和有效的 Core version"
+        }
+        ClientProfileError::CompanionHeadersConflict => {
+            "originator 或 Core version 与 User-Agent 不一致"
+        }
         ClientProfileError::ReleaseUnavailable => {
             "此客户端、平台与架构尚无已核验发布版本，请选择固定版本或稍后重试"
         }
