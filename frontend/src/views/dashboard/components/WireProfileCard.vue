@@ -248,8 +248,8 @@ watch(
             </div>
           </div>
 
-          <dl class="m-0 grid min-w-0 grid-cols-[repeat(auto-fit,minmax(min(100%,12rem),1fr))] gap-x-7 gap-y-5">
-            <div v-if="profile.provider === 'xai'" class="min-w-0">
+          <dl class="m-0 flex min-w-0 flex-wrap gap-x-7 gap-y-5">
+            <div v-if="profile.provider === 'xai'" class="min-w-0 flex-auto">
               <dt class="flex items-center gap-1.5 text-[10px] leading-none font-bold text-cp-text-quaternary">
                 <ShieldCheck class="size-3.25 text-cp-text-tertiary" />
                 认证协议
@@ -262,7 +262,7 @@ watch(
               </dd>
             </div>
 
-            <div class="min-w-0">
+            <div class="min-w-0 flex-auto">
               <dt class="flex items-center gap-1.5 text-[10px] leading-none font-bold text-cp-text-quaternary">
                 <Monitor class="size-3.25 text-cp-text-tertiary" />
                 {{ profile.provider === 'openai' ? '模拟运行环境' : '运行环境' }}
@@ -278,7 +278,7 @@ watch(
               </dd>
             </div>
 
-            <div v-for="(attribute, index) in identityAttributes" :key="index" class="min-w-0">
+            <div v-for="(attribute, index) in identityAttributes" :key="index" class="min-w-0 max-w-full">
               <dt class="flex items-center gap-1.5 text-[10px] leading-none font-bold text-cp-text-quaternary">
                 <Terminal class="size-3.25 text-cp-text-tertiary" />
                 {{ attribute.label }}
