@@ -15,7 +15,7 @@ SDK 仍处于实验阶段；能力是否可用取决于宿主支持、清单声�
 打包 → [安装、配置与启用](../../../../docs/plugins.md)。完整可运行示例位于独立仓库
 `codex-proxy-plugins` 的 `examples/workbench`。
 
-使用 AI 协作开发时，可调用仓库技能 [`$plugin-dev`](../../../../.agents/skills/plugin-dev/SKILL.md)，按任务定位合同、示例和验证入口。
+使用 AI 协作开发时，可调用仓库技能 [`$cpr-plugin-dev`](../../../../.agents/skills/cpr-plugin-dev/SKILL.md)，按任务定位合同、示例和验证入口。
 
 ## 模块与依赖
 

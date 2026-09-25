@@ -1,6 +1,6 @@
 ---
-name: release
-description: 准备或执行当前仓库的正式版、alpha/beta/rc 预发行版和 exp 实验版发版，维护中文发布说明。用于“发版”“发布 beta/rc/实验版”“准备 vX.Y.Z”“推荐版本号”“整理发布说明”“更新 release/notes.md”“打版本 tag”等发行任务。Use for version planning, release notes, and publishing stable, prerelease, or experimental releases; not for deploying/restarting an instance or authoring a release skill.
+name: cpr-release
+description: 准备、执行和排查 Codex Proxy RS 发版。用户说“发个版本／正式发版”“准备 vX.Y.Z”“推荐版本号”“整理更新日志／发布说明”“更新 release/notes.md”“发布 alpha／beta／rc／exp／实验版”“打发行 tag”“重试失败发版”时主动使用；已有发版上下文中的“发布吧”“继续发布”也适用。Use for release planning, notes, publishing and recovery; deployment/restarts and ordinary Git tag cleanup are not release requests.
 ---
 
 # 发版
@@ -19,6 +19,7 @@ description: 准备或执行当前仓库的正式版、alpha/beta/rc 预发行�
 沿用当前会话明确的版本、范围与授权；用户已授权发布目标版本且条件满足时直接执行，不重复确认。
 “准备好了”“可以发版吗”属于准备或检查，不能解释成正式发布；创建本技能也不触发发版。
 发行版发布与运行实例升级分开判断，“上线”需结合上下文确定用户指哪一种。
+需要修复本仓库代码、工作流或文档时先执行 [cpr-dev-guide](../cpr-dev-guide/SKILL.md)，准备或更新相关 PR 时执行 [cpr-github-pr](../cpr-github-pr/SKILL.md)，不以发版步骤替代开发自审。
 
 稳定版以及面向下一正式版本的 alpha、beta、rc 从 `main` 发布，预发行 tag 使用 `vX.Y.Z-<阶段>.N`。
 发版前读取[版本命名与升级规则](../../../deploy/README.md#版本命名与升级规则)，作为命名、阶段晋级和更新边界的权威约定。

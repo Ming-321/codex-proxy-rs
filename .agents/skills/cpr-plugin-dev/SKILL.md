@@ -1,12 +1,13 @@
 ---
-name: plugin-dev
-description: 开发 Codex Proxy RS 网关插件，包括选择扩展能力、编写 plugin.json、实现公开 SDK 处理器、管理页面、打包与本地验证。用于新建插件、修改插件或排查插件接入；不用于 OpenAI Codex 的 .codex-plugin 插件、Vue 插件或仅修改宿主插件管理功能。
+name: cpr-plugin-dev
+description: 开发、排查和打包 Codex Proxy RS 网关插件。用户说“写／做一个网关插件”“给插件加能力或页面”“改 plugin.json”“接入公开 SDK”“插件不生效／接入报错”“打包插件”时主动使用，覆盖能力选择、SDK 处理器、管理页面和安装包验证。Use for gateway plugin authoring and debugging; host Runtime/installer changes use cpr-dev-guide, not this workflow, and OpenAI .codex-plugin or Vue plugins are outside its scope.
 ---
 
-# plugin-dev
+# cpr-plugin-dev
 
 面向插件作者。插件在独立项目中实现，通过公开 SDK 与宿主通信，不向宿主业务模块添加分支。
 仅修改宿主安装器、Runtime 或管理端时，使用仓库开发指南，不按本技能创建插件工程。
+本仓库开发与排查同时执行 [cpr-dev-guide](../cpr-dev-guide/SKILL.md)，准备、提交或审查插件 PR 时执行 [cpr-github-pr](../cpr-github-pr/SKILL.md)。
 
 ## 先建立正确的模型
 
@@ -70,6 +71,7 @@ description: 开发 Codex Proxy RS 网关插件，包括选择扩展能力、编
 
 ### 只有需要页面时才创建前端
 
+- 沿用已有插件页面与 [管理端主题](../../../docs/theme.md#界面文案与信息层级) 的设计和文案层级，详细帮助使用现有 Popover；页面 PR 按 [界面验证](../../../CONTRIBUTING.md#界面验证) 提供实际截图
 - 优先参考独立示例仓库的 `examples/workbench/frontend/src/api/`：业务路由放在 `modules/`，`request.ts` 封装公开宿主桥；按需使用 `@codex-proxy/ui` 包出口，不跨仓导入宿主或 UI 的内部源码
 - Vue 页面保留 SFC，逻辑、脚本和配置使用 TypeScript；只实现业务内容，标题和副标题由 `ManagementPage` 交给宿主显示
 - 隔离页面通过 `window.codexProxyPlugin.request` 调用已注册管理路由；`models.responses` 通过普通请求链交付 JSON/SSE，支持取消且不暴露 Key 明文。不直接 `fetch` 宿主、不读取管理 Cookie 或借用宿主 Vue 实例

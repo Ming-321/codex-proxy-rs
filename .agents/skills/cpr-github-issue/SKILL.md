@@ -1,6 +1,6 @@
 ---
-name: github-issue
-description: 整理与提交 GitHub Issue（问题反馈 / 功能建议）。用于“提个 Issue”“把这个问题反馈到仓库”“帮我报个 bug”“整理成 Issue”，以及通过 Issue 提议功能或协作规则的场景；区分草拟正文和实际提交。Use for drafting or filing bug reports and feature requests; not for debugging-only, editing Issue Forms/templates, or skill-authoring requests.
+name: cpr-github-issue
+description: 整理、创建和补充 GitHub Issue。用户说“提／开／提交一个 Issue”“报个 bug 到仓库”“反馈给上游”“把问题或功能建议整理成 Issue”“补充这个 Issue”时主动使用；已有 Issue 反馈上下文中的“提交吧”“补上复现”也适用。处理缺陷、功能与协作规则反馈，区分草拟和发布。Use for drafting, filing and updating issues; standalone “审查问题／看下报错／修一下” belongs to cpr-dev-guide, not automatic Issue submission.
 ---
 
 # 整理与提交 Issue
@@ -16,6 +16,7 @@ description: 整理与提交 GitHub Issue（问题反馈 / 功能建议）。用
 - “写一份、整理内容、草拟 Issue”只准备正文；明确要求“提交、创建 Issue”才发布。
   已经授权提交且信息足够时直接完成，不重复索要确认；仅自动选中技能不能授权发布。
 - “有个 bug”“这个报错怎么修”本身是排障语境，不能推断要发 Issue；结合已有反馈任务识别省略的目标和动作。
+- “补充这个 Issue”先读取原帖与已有讨论，按授权更新正文或追加证据，不重复新建；需要排查或修改本仓库时先执行 [cpr-dev-guide](../cpr-dev-guide/SKILL.md)。
 - 缺少无法推断的目标或关键复现事实时，只问必要信息，并先整理其余已有证据。
 - 使用可用的 GitHub 连接器或 `gh`。不要为提交 Issue 安装新工具、修改仓库配置或启用额外服务。
 
@@ -54,6 +55,7 @@ description: 整理与提交 GitHub Issue（问题反馈 / 功能建议）。用
 gh issue create --repo "$issue_repo" --title "$issue_title" --body-file "$issue_body_file"
 ```
 
-发布前快速复核目标、必填内容、脱敏及重复记录。网络超时或返回不明确时先查询远端是否已经创建，避免重复提交。
-发布后读取新 Issue 确认仓库、标题和正文，返回链接及必要的信息缺口。
+发布前快速复核目标、必填内容、脱敏及重复记录；更新已有 Issue 时保留与本次无关的内容，核对目标编号和当前正文。
+网络超时或返回不明确时先查询远端是否已经创建或更新，避免重复提交。
+发布后读取目标 Issue 确认仓库、标题和正文，返回链接及必要的信息缺口。
 只准备草稿或发布失败时提供可直接使用的标题与正文，明确尚未提交。
