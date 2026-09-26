@@ -1,9 +1,10 @@
 //! GitHub Release 发现、缓存、版本比较与下载信任边界。
 
 use std::env;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{Duration, Instant};
 
-use gateway_admin::model::system::SystemUpdateDetail;
+use gateway_admin::model::system::{SystemUpdateChannel as UpdateChannel, SystemUpdateDetail};
 use serde::Deserialize;
 use tokio::sync::Mutex;
 
@@ -11,27 +12,6 @@ use super::{OperationError, SystemUpdateConfig, conflict, invalid, upstream};
 
 const APP_BINARY_NAME: &str = "codex-proxy-rs";
 const CACHE_TTL: Duration = Duration::from_secs(20 * 60);
-
-#[derive(Clone, Copy, PartialEq, Eq)]
-pub(crate) enum UpdateChannel {
-    Stable,
-    Alpha,
-    Beta,
-    Rc,
-    Experimental,
-}
-
-impl UpdateChannel {
-    pub(crate) fn label(&self) -> &str {
-        match self {
-            Self::Stable => "stable",
-            Self::Alpha => "alpha",
-            Self::Beta => "beta",
-            Self::Rc => "rc",
-            Self::Experimental => "exp",
-        }
-    }
-}
 
 #[derive(Debug, Clone, Deserialize)]
 pub(crate) struct GitHubRelease {
@@ -62,6 +42,7 @@ struct CachedRelease {
 #[derive(Default)]
 pub(crate) struct ReleaseCache {
     entry: Mutex<Option<CachedRelease>>,
+    request_sequence: AtomicU64,
 }
 
 impl ReleaseCache {
@@ -69,9 +50,15 @@ impl ReleaseCache {
         &self,
         config: &SystemUpdateConfig,
         refresh: bool,
+        channel: UpdateChannel,
     ) -> Result<SystemUpdateDetail, OperationError> {
         if let Some(reason) = config.update_support_error() {
-            return Ok(super::base_update_detail(config, Some(reason), None));
+            return Ok(super::base_update_detail(
+                config,
+                channel,
+                Some(reason),
+                None,
+            ));
         }
         let repository = config
             .update_repository
@@ -79,26 +66,50 @@ impl ReleaseCache {
             .ok_or_else(|| conflict("update repository is not configured"))?;
         validate_repository(repository)?;
         validate_api_base(&config.github_api_base).map_err(conflict)?;
-        let key = config.release_cache_key();
+        let key = format!("{}|{}", config.release_cache_key(), channel.as_str());
         if !refresh && let Some(detail) = self.cached(&key).await {
             return Ok(detail);
         }
-        match fetch_latest(&config.github_api_base, repository, &config.version).await {
+        let sequence = self.request_sequence.fetch_add(1, Ordering::Relaxed) + 1;
+        match fetch_latest(
+            &config.github_api_base,
+            repository,
+            &config.version,
+            channel,
+        )
+        .await
+        {
             Ok(release) => {
                 let detail = release.as_ref().map_or_else(
-                    || super::base_update_detail(config, config.update_support_error(), None),
-                    |release| detail_from_release(config, release),
+                    || {
+                        super::base_update_detail(
+                            config,
+                            channel,
+                            config.update_support_error(),
+                            None,
+                        )
+                    },
+                    |release| detail_from_release(config, release, channel),
                 );
-                *self.entry.lock().await = Some(CachedRelease {
-                    key,
-                    detail: detail.clone(),
-                    cached_at: Instant::now(),
-                });
+                let mut entry = self.entry.lock().await;
+                // 较慢的旧请求不能覆盖或清除新检查的结果，包括切走再切回同一通道。
+                if self.request_sequence.load(Ordering::Relaxed) == sequence {
+                    *entry = Some(CachedRelease {
+                        key,
+                        detail: detail.clone(),
+                        cached_at: Instant::now(),
+                    });
+                }
                 Ok(detail)
             }
             Err(error) => {
                 // 强制检查失败后清掉旧结果，避免后续版本查询再次显示旧的更新标记。
-                *self.entry.lock().await = None;
+                let mut entry = self.entry.lock().await;
+                if self.request_sequence.load(Ordering::Relaxed) == sequence
+                    && entry.as_ref().is_some_and(|cached| cached.key == key)
+                {
+                    *entry = None;
+                }
                 Err(error)
             }
         }
@@ -120,6 +131,7 @@ pub(crate) async fn fetch_latest(
     api_base: &str,
     repository: &str,
     current_version: &str,
+    channel: UpdateChannel,
 ) -> Result<Option<GitHubRelease>, OperationError> {
     validate_api_base(api_base).map_err(conflict)?;
     validate_repository(repository)?;
@@ -143,7 +155,7 @@ pub(crate) async fn fetch_latest(
         .await?;
         let last_page = releases.len() < 100;
         for release in releases {
-            let Some(version) = eligible_release_version(&release, &current) else {
+            let Some(version) = eligible_release_version(&release, &current, channel) else {
                 continue;
             };
             if latest
@@ -163,11 +175,12 @@ pub(crate) async fn fetch_latest(
 fn eligible_release_version(
     release: &GitHubRelease,
     current: &semver::Version,
+    channel: UpdateChannel,
 ) -> Option<semver::Version> {
     let version = semver::Version::parse(&normalize_version(&release.tag_name)).ok()?;
     (!release.draft
         && release.prerelease != version.pre.is_empty()
-        && (version == *current || update_target_allowed(current, &version)))
+        && (version == *current || update_target_allowed(current, &version, channel)))
     .then_some(version)
 }
 
@@ -197,16 +210,18 @@ async fn fetch_release_json<T: serde::de::DeserializeOwned>(
 pub(crate) fn detail_from_release(
     config: &SystemUpdateConfig,
     release: &GitHubRelease,
+    channel: UpdateChannel,
 ) -> SystemUpdateDetail {
     let unsupported_reason = config.update_support_error();
     let latest_version = normalize_version(&release.tag_name);
-    let has_update = validate_update_target(&config.version, &latest_version).is_ok();
+    let has_update = validate_update_target(&config.version, &latest_version, channel).is_ok();
     if unsupported_reason.is_some()
         || (!has_update && latest_version != normalize_version(&config.version))
     {
-        return super::base_update_detail(config, unsupported_reason, None);
+        return super::base_update_detail(config, channel, unsupported_reason, None);
     }
     SystemUpdateDetail {
+        policy: super::update_policy(config, channel),
         current_version: config.version.clone(),
         latest_version,
         has_update,
@@ -366,9 +381,12 @@ pub(crate) fn version_channel(version: &str) -> Option<UpdateChannel> {
 }
 
 /// 检查更新与执行更新共用同一规则；构建元数据不构成更新。
-fn update_target_allowed(current: &semver::Version, target: &semver::Version) -> bool {
+fn update_target_allowed(
+    current: &semver::Version,
+    target: &semver::Version,
+    selected: UpdateChannel,
+) -> bool {
     use UpdateChannel::{Alpha, Beta, Experimental, Rc, Stable};
-
     if current.major != target.major || !target.cmp_precedence(current).is_gt() {
         return false;
     }
@@ -377,30 +395,34 @@ fn update_target_allowed(current: &semver::Version, target: &semver::Version) ->
     else {
         return false;
     };
-    if current_channel == Stable {
-        return target_channel == Stable;
-    }
-    // 预发行只承接本轮目标版本；exp 的相同基线也只代表同一轮实验。
-    if (current.minor, current.patch) != (target.minor, target.patch) {
-        return false;
+    if current_channel == Experimental || selected == Experimental || target_channel == Experimental
+    {
+        return current_channel == Experimental
+            && selected == Experimental
+            && target_channel == Experimental
+            && (current.minor, current.patch) == (target.minor, target.patch);
     }
     matches!(
-        (current_channel, target_channel),
-        (Alpha, Alpha | Beta | Rc | Stable)
-            | (Beta, Beta | Rc | Stable)
+        (selected, target_channel),
+        (Stable, Stable)
             | (Rc, Rc | Stable)
-            | (Experimental, Experimental)
+            | (Beta, Beta | Rc | Stable)
+            | (Alpha, Alpha | Beta | Rc | Stable)
     )
 }
 
-pub(crate) fn validate_update_target(current: &str, target: &str) -> Result<(), OperationError> {
+pub(crate) fn validate_update_target(
+    current: &str,
+    target: &str,
+    channel: UpdateChannel,
+) -> Result<(), OperationError> {
     let current = semver::Version::parse(&normalize_version(current))
         .map_err(|_| conflict("当前版本格式无效"))?;
     let target = semver::Version::parse(&normalize_version(target))
         .map_err(|_| invalid("target version is invalid"))?;
-    if !update_target_allowed(&current, &target) {
+    if !update_target_allowed(&current, &target, channel) {
         return Err(conflict(
-            "当前版本不允许更新到此目标：不支持跨通道、跨发行线、跨大版本或降级",
+            "所选通道不允许此目标，或目标涉及跨实验线、跨大版本、降级",
         ));
     }
     Ok(())

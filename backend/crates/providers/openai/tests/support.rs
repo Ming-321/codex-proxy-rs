@@ -72,11 +72,26 @@ impl MemoryAccountStore {
             .expect("seed test OAuth credential");
     }
 
+    pub(crate) fn set_oauth_transport(
+        &self,
+        id: &str,
+        transport: provider_openai::credential::ResponsesTransport,
+    ) {
+        use provider_openai::credential::CodexCredentialCodec;
+        let mut accounts = self.accounts.lock().unwrap();
+        let stored = accounts
+            .get_mut(&ProviderAccountId::new(id).unwrap())
+            .unwrap();
+        let mut data = CodexCredentialCodec::decode_complete(&stored.credential).unwrap();
+        data.oauth_mut().unwrap().transport = transport;
+        stored.credential = CodexCredentialCodec::encode_complete(data).unwrap();
+    }
+
     pub(crate) async fn seed_api_key(
         &self,
         id: &str,
         base_url: String,
-        transport: provider_openai::credential::ApiKeyTransport,
+        transport: provider_openai::credential::ResponsesTransport,
     ) {
         let credential = provider_openai::credential::CodexCredentialCodec::encode_complete(
             provider_openai::credential::CodexCredentialData::ApiKey(

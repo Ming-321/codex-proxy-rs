@@ -1,15 +1,12 @@
 <script setup lang="ts">
+import { BaseButton, BaseIconButton, BasePageHeader, BaseSegmented, BaseSelect } from '@codex-proxy/ui'
+
 import { Save, Undo2 } from '@lucide/vue'
 import { computed, reactive, shallowRef, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 
-import BaseButton from '@/components/base/BaseButton.vue'
-import BaseIconButton from '@/components/base/BaseIconButton.vue'
-import BasePageHeader from '@/components/base/BasePageHeader.vue'
-import BaseSegmented from '@/components/base/BaseSegmented.vue'
-import BaseSelect from '@/components/base/BaseSelect.vue'
-
 import AccountAutoFreezeCard from './components/AccountAutoFreezeCard.vue'
+import AccountWarmupCard from './components/AccountWarmupCard.vue'
 import SettingsBackupSection from './components/backup/SettingsBackupSection.vue'
 import CarQuotaSettingsCard from './components/CarQuotaSettingsCard.vue'
 import ClientProfileCard from './components/ClientProfileCard.vue'
@@ -111,7 +108,7 @@ watch(section, (value) => {
       />
       <div v-if="isBasicSection || hasChanges" class="ml-auto flex items-center justify-end gap-2">
         <span v-if="hasChanges" class="mr-1 size-1.5 shrink-0 rounded-full bg-cp-warning" aria-hidden="true" />
-        <BaseIconButton v-if="hasChanges" label="撤销全部基础设置更改" variant="filled" :disabled="saving || loading" @click="resetSettings">
+        <BaseIconButton v-if="hasChanges" label="撤销全部基础设置更改" variant="secondary" :disabled="saving || loading" @click="resetSettings">
           <Undo2 class="size-4" />
         </BaseIconButton>
         <BaseButton variant="primary" :loading="saving" :disabled="loading || !hasChanges || !!error" @click="saveSettings">
@@ -167,13 +164,17 @@ watch(section, (value) => {
             v-model:adaptive-concurrency="form.accountAutoFreezeAdaptiveConcurrency"
           />
           <CarQuotaSettingsCard />
+          <AccountWarmupCard
+            v-model:enabled="form.accountWarmupEnabled"
+            v-model:schedule-time="form.accountWarmupScheduleTime"
+            v-model:model="form.accountWarmupModel"
+          />
         </template>
 
         <div v-if="visited.has('upstream')" v-show="section === 'upstream'" class="grid min-w-0 gap-5">
           <TokenRefreshCard v-model:refresh-margin-seconds="refreshMarginSecondsValue" v-model:refresh-concurrency="refreshConcurrencyValue" />
           <ClientProfileCard
-            v-model:openai="form.openaiClientProfile"
-            v-model:xai="form.xaiClientProfile"
+            v-model="form.providerRequestProfiles"
             :active="section === 'upstream'"
             :disabled="disabled"
           />

@@ -245,7 +245,10 @@ async fn concurrent_pricing_syncs_merge_selected_changes_and_remove_only_selecte
     let (first, second) = tokio::join!(
         settings.sync_pricing(patch(json!({"openai": {"model-a": price}})), &context),
         settings.sync_pricing(
-            patch(json!({"openai": {"model-b": price}, "xai": {"model-a": price}})),
+            patch(json!({
+                "openai": {"model-b": price},
+                "xai": {"model-a": price},
+            })),
             &context
         ),
     );
@@ -254,9 +257,15 @@ async fn concurrent_pricing_syncs_merge_selected_changes_and_remove_only_selecte
     assert_eq!(
         serde_json::to_value(&stored.synced).unwrap(),
         json!({
-            "openai": {"model-a": price, "model-b": price}, "xai": {"model-a": price}
+            "openai": {"model-a": price, "model-b": price},
+            "xai": {"model-a": price}
         })
     );
+    let snapshot = PgRuntimeSnapshotRepository::new(database.pool.clone())
+        .load_runtime_snapshot()
+        .await
+        .unwrap();
+    assert!(snapshot.settings.pricing["xai"].contains_key("model-a"));
     settings
         .sync_pricing(patch(json!({"openai": {"model-a": null}})), &context)
         .await
@@ -265,7 +274,8 @@ async fn concurrent_pricing_syncs_merge_selected_changes_and_remove_only_selecte
     assert_eq!(
         serde_json::to_value(&stored.synced).unwrap(),
         json!({
-            "openai": {"model-b": price}, "xai": {"model-a": price}
+            "openai": {"model-b": price},
+            "xai": {"model-a": price}
         })
     );
     let before = stored;
@@ -273,7 +283,7 @@ async fn concurrent_pricing_syncs_merge_selected_changes_and_remove_only_selecte
         settings
             .sync_pricing(
                 patch(json!({
-                    "openai": {"model-b": null}, "invalid": {"model-c": price}
+                    "openai": {"model-b": null}, "__invalid": {"model-c": price}
                 })),
                 &context
             )

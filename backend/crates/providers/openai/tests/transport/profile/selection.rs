@@ -1,6 +1,6 @@
 use gateway_core::account::OpaqueProviderData;
 use provider_openai::transport::profile::selection::{
-    ClientKind, ClientPlatform, ClientProfileSelection, VersionMode,
+    CliEntry, ClientKind, ClientPlatform, ClientProfileSelection, VersionMode,
 };
 use provider_openai::transport::profile::{CodexBundledReleaseProfile, CodexWireProfileState};
 use serde_json::json;
@@ -92,6 +92,9 @@ fn invalid_headers_and_mixed_version_modes_are_rejected() {
     for patch in [
         json!({"originator":"client\r\nx-injected: yes"}),
         json!({"terminal":"term; forged"}),
+        json!({"osType":"Linux; forged"}),
+        json!({"cliEntry":"unknown"}),
+        json!({"client":"desktop", "cliEntry":"tui"}),
         json!({"arch":""}),
         json!({"codexVersion":"0.155.0"}),
         json!({"desktopVersion":"26.1.0"}),
@@ -105,4 +108,26 @@ fn invalid_headers_and_mixed_version_modes_are_rejected() {
         fields.extend(patch.as_object().unwrap().clone());
         assert!(ClientProfileSelection::parse(&OpaqueProviderData::new(fields)).is_err());
     }
+}
+
+#[test]
+fn cli_entry_suffix_keeps_its_name_when_originator_is_overridden() {
+    let state = CodexWireProfileState::new(super::wire_profile());
+    let selection = ClientProfileSelection {
+        client: ClientKind::Cli,
+        platform: ClientPlatform::Linux,
+        cli_entry: Some(CliEntry::Exec),
+        originator: Some("my-agent".into()),
+        os_type: Some("Alpine Linux".into()),
+        os_version: Some("3.24.1".into()),
+        version_mode: VersionMode::Fixed,
+        codex_version: Some("0.157.0".into()),
+        ..Default::default()
+    };
+    let profile = selection.resolve(&state).unwrap();
+    assert_eq!(
+        profile.user_agent(),
+        "my-agent/0.157.0 (Alpine Linux 3.24.1; x86_64) unknown (codex_exec; 0.157.0)"
+    );
+    assert_eq!(profile.originator, "my-agent");
 }

@@ -14,7 +14,7 @@ use crate::account::{
 };
 use crate::identity::ProviderKind;
 use crate::policy::ClientApiKeyId;
-use crate::routing::UpstreamModelId;
+use crate::routing::{ConfigRevision, UpstreamModelId};
 use crate::validation::{IdentifierError, validate_text};
 
 const MAX_PENDING_FLOW_TTL: Duration = Duration::from_secs(30 * 60);
@@ -945,6 +945,18 @@ pub trait ProviderRuntimePolicyPort: Send + Sync {
         Box::pin(async move { Ok(initial) })
     }
 
+    /// 读取候选配置版本实际引用的全局与 Client Key 画像配置。
+    ///
+    /// 实现必须在同一数据库快照内核对 revision，且只返回画像投影，不能读取 Key
+    /// 明文。Provider 代次据此在发布前拒绝已失效的选择。
+    fn load_request_profile_configurations<'a>(
+        &'a self,
+        _revision: ConfigRevision,
+        _provider: &'a ProviderKind,
+    ) -> BoxFuture<'a, Result<Vec<OpaqueProviderData>, ProviderStoreError>> {
+        Box::pin(async move { Ok(Vec::new()) })
+    }
+
     fn load_refresh_policy(
         &self,
     ) -> BoxFuture<'_, Result<ProviderRefreshPolicy, ProviderStoreError>>;
@@ -954,6 +966,13 @@ pub trait ProviderRuntimePolicyPort: Send + Sync {
         &self,
     ) -> BoxFuture<'_, Result<ProviderFreezePolicy, ProviderStoreError>> {
         Box::pin(async move { Ok(ProviderFreezePolicy::disabled()) })
+    }
+
+    /// 读取账号模型预激活策略；默认关闭，只有实现运行时设置的存储需要覆盖。
+    fn load_warmup_policy(
+        &self,
+    ) -> BoxFuture<'_, Result<ProviderWarmupPolicy, ProviderStoreError>> {
+        Box::pin(async move { Ok(ProviderWarmupPolicy::disabled()) })
     }
 }
 
@@ -1059,6 +1078,109 @@ impl ProviderFreezePolicy {
     #[must_use]
     pub const fn adaptive_concurrency(&self) -> bool {
         self.adaptive_concurrency
+    }
+}
+
+/// 校验每日预激活时间格式，如 "08:00" 或 "08:00,13:00"。
+#[must_use]
+pub fn valid_warmup_schedule_time(value: &str) -> bool {
+    if value.is_empty()
+        || value.len() > 255
+        || value != value.trim()
+        || value.chars().any(char::is_control)
+    {
+        return false;
+    }
+    for part in value.split(',') {
+        let bytes = part.as_bytes();
+        if bytes.len() != 5 || bytes[2] != b':' {
+            return false;
+        }
+        let Ok(hour) = part[0..2].parse::<u32>() else {
+            return false;
+        };
+        let Ok(minute) = part[3..5].parse::<u32>() else {
+            return false;
+        };
+        if hour > 23 || minute > 59 {
+            return false;
+        }
+    }
+    true
+}
+
+/// 账号模型预激活（预热）策略；来源于 `runtime_settings`。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ProviderWarmupPolicy {
+    enabled: bool,
+    schedule_time: String,
+    model: Option<String>,
+}
+
+impl ProviderWarmupPolicy {
+    pub fn try_new(
+        enabled: bool,
+        schedule_time: String,
+        model: Option<String>,
+    ) -> Result<Self, ProviderStoreError> {
+        if !valid_warmup_schedule_time(&schedule_time)
+            || (enabled && model.is_none())
+            || model.as_deref().is_some_and(|m| {
+                m.is_empty()
+                    || m.len() > 128
+                    || m != m.trim()
+                    || m.bytes().any(|byte| byte.is_ascii_control())
+            })
+        {
+            return Err(ProviderStoreError::new(
+                ProviderStoreErrorKind::InvalidData,
+                "validate warmup policy",
+            ));
+        }
+        Ok(Self {
+            enabled,
+            schedule_time,
+            model,
+        })
+    }
+
+    #[must_use]
+    pub const fn disabled() -> Self {
+        Self {
+            enabled: false,
+            schedule_time: String::new(),
+            model: None,
+        }
+    }
+
+    #[must_use]
+    pub const fn enabled(&self) -> bool {
+        self.enabled
+    }
+
+    #[must_use]
+    pub fn schedule_time(&self) -> &str {
+        &self.schedule_time
+    }
+
+    #[must_use]
+    pub fn model(&self) -> Option<&str> {
+        self.model.as_deref()
+    }
+
+    /// 解析每日时间列表，返回如 `vec![(8, 0)]`。
+    #[must_use]
+    pub fn scheduled_times(&self) -> Vec<(u32, u32)> {
+        self.schedule_time
+            .split(',')
+            .filter_map(|part| {
+                let part = part.trim();
+                let mut iter = part.split(':');
+                let hour = iter.next()?.parse::<u32>().ok()?;
+                let minute = iter.next()?.parse::<u32>().ok()?;
+                Some((hour, minute))
+            })
+            .collect()
     }
 }
 

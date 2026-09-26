@@ -1,6 +1,6 @@
 //! 完整拼车草稿的输入约束、身份校验及新凭据准备。
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 
 use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD};
 use gateway_core::{
@@ -107,6 +107,7 @@ pub(super) fn prepare(
             if !ids.insert(key.id.clone()) || !valid_name(&key.name) || (key.create && key.revoke) {
                 return Err(invalid());
             }
+            let mut request_profile_overrides = BTreeMap::new();
             for (provider, profile) in [
                 ("openai", &key.openai_client_profile_override),
                 ("xai", &key.xai_client_profile_override),
@@ -120,6 +121,8 @@ pub(super) fn prepare(
                                 .preview_client_profile(&OpaqueProviderData::new(profile.clone()))
                         })
                         .map_err(|error| super::map_provider_error(error, "client profile"))?;
+                    request_profile_overrides
+                        .insert(kind, OpaqueProviderData::new(profile.clone()));
                 }
             }
             if key.create {
@@ -134,14 +137,7 @@ pub(super) fn prepare(
                     limits: RateLimits::default(),
                     budget: ClientBudgetLimits::default(),
                     plaintext: format!("sk_{}", URL_SAFE_NO_PAD.encode(bytes)),
-                    openai_client_profile_override: key
-                        .openai_client_profile_override
-                        .clone()
-                        .map(OpaqueProviderData::new),
-                    xai_client_profile_override: key
-                        .xai_client_profile_override
-                        .clone()
-                        .map(OpaqueProviderData::new),
+                    request_profile_overrides,
                 });
             }
         }

@@ -22,6 +22,7 @@ use self::desktop_artifact::{CodexDesktopArtifactError, fetch_codex_core_version
 
 pub mod cli_release;
 pub mod desktop_artifact;
+pub mod identity;
 pub mod platform_release;
 pub mod selection;
 
@@ -48,16 +49,16 @@ pub enum CodexResidency {
 /// 保留已有配置类型入口；位置规则由出口领域统一维护。
 pub use gateway_core::account::RequestLocation as CodexRequestLocation;
 
-/// Codex Desktop 上游请求身份。
+/// Codex 上游请求身份快照。
 ///
-/// 内置基线提供经源码审计的 Core、运行环境和 Desktop 版本。运行时只会使用
-/// 同一个官方 Desktop ZIP 中核验出的 Core、Desktop 版本及构建号原子替换版本字段。
+/// 预设按官方配套版本生成 UA；自定义身份保留完整 UA 及其配套请求头。
+/// 官方制品核验只更新独立的基线与预设资料，不改写已冻结的请求身份。
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct CodexWireProfile {
     pub client_kind: ClientKind,
     /// `originator` 请求头及 User-Agent 产品名。
     pub originator: String,
-    /// Desktop ZIP 内嵌 Core 版本；用于模型请求的 version、client_version 与 UA。
+    /// Core 版本，用于模型请求的 version 和 client_version。
     pub codex_version: String,
     /// Desktop 应用版本，用于 app-server `clientInfo.version` 对应的 UA 后缀。
     pub desktop_version: String,
@@ -71,6 +72,9 @@ pub struct CodexWireProfile {
     pub arch: String,
     /// Codex Core UA 中的终端标记。
     pub terminal: String,
+    /// 入口专属或自定义的完整值；存在时不得用默认预设重新拼接。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub exact_user_agent: Option<String>,
     /// 未配置时不发送 residency 头；不随制品版本更新而改变。
     pub residency: Option<CodexResidency>,
     /// 版本元组最后一次经制品核验的时间；不表示 TLS 传输已重新核验。
@@ -89,6 +93,7 @@ impl Default for CodexWireProfile {
             os_version: "15.7.1".to_owned(),
             arch: "arm64".to_owned(),
             terminal: "unknown".to_owned(),
+            exact_user_agent: None,
             residency: None,
             // 制品核验于 2026-09-06T03:26:12.084Z；进程启动不构成重新核验。
             verified_at: DateTime::UNIX_EPOCH + chrono::Duration::milliseconds(1_788_665_172_084),
@@ -97,8 +102,11 @@ impl Default for CodexWireProfile {
 }
 
 impl CodexWireProfile {
-    /// 按 bundled Core app-server 的官方格式生成最终 User-Agent。
+    /// 原样返回已解析的完整 UA；默认预设按 bundled Core app-server 格式生成。
     pub fn user_agent(&self) -> String {
+        if let Some(user_agent) = &self.exact_user_agent {
+            return user_agent.clone();
+        }
         if self.client_kind == ClientKind::Cli {
             return format!(
                 "{}/{} ({} {}; {}) {}",

@@ -41,6 +41,9 @@ const DOWNSTREAM_CLIENT_HEADERS: &[(&str, &str)] = &[
     ("sec-fetch-future", "future"),
     ("sec-ch-ua-future", "future"),
     ("x-grok-turn-idx", "7"),
+    ("X-Grok-Model-Override", "synthetic-model"),
+    ("x-grok-session-id", "synthetic-grok-session"),
+    ("X-XAI-Token-Auth", "synthetic-token-auth"),
     ("x-xai-future-field", "future"),
 ];
 

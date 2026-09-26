@@ -808,8 +808,7 @@ impl SettingsStore for FixtureSettingsStore {
     }
     async fn load_runtime_settings(&self) -> AdminStoreResult<RuntimeSettings> {
         Ok(RuntimeSettings {
-            openai_client_profile: None,
-            xai_client_profile: None,
+            request_profiles: Default::default(),
             request_location_enabled: false,
             request_location: Default::default(),
             config_revision: Revision::new(1).expect("revision"),
@@ -836,6 +835,9 @@ impl SettingsStore for FixtureSettingsStore {
             account_auto_freeze_probe_enabled: true,
             account_auto_freeze_probe_model: None,
             account_auto_freeze_adaptive_concurrency: true,
+            account_warmup_enabled: false,
+            account_warmup_schedule_time: "08:00".to_owned(),
+            account_warmup_model: None,
         })
     }
 

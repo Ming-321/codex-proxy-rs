@@ -1,6 +1,13 @@
 import type { RequestOptions } from '../request'
 import request from '../request'
 
+export type SystemUpdateChannel = 'stable' | 'rc' | 'beta' | 'alpha' | 'exp'
+
+export interface SystemUpdatePolicy {
+  channel: SystemUpdateChannel
+  availableChannels: SystemUpdateChannel[]
+}
+
 export interface SystemVersion {
   version: string
   gitSha: string
@@ -15,6 +22,7 @@ export interface SystemVersion {
 }
 
 export interface SystemUpdateDetail {
+  policy: SystemUpdatePolicy
   currentVersion: string
   latestVersion: string
   hasUpdate: boolean
@@ -68,10 +76,12 @@ export function getSystemVersion(options: RequestOptions = {}) {
 
 interface SystemUpdateDetailQuery {
   refresh?: boolean
+  channel?: SystemUpdateChannel
 }
 
 interface SystemUpdateTarget {
-  targetVersion?: string
+  targetVersion: string
+  channel: SystemUpdateChannel
 }
 
 export function getSystemUpdateDetail(data: SystemUpdateDetailQuery) {

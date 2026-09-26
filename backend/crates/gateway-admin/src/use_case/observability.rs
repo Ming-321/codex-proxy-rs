@@ -192,20 +192,9 @@ impl DefaultObservabilityService {
             average(first_token_latency_sum_ms, first_token_latency_count);
         let trend = trend(TrendKind::Usage, observation.trend.clone())?;
         let health_timeline = health_timeline_at(&observation.trend, Utc::now());
-        let mut configurations = std::collections::BTreeMap::new();
-        if let Some(configuration) = &settings.openai_client_profile {
-            configurations.insert(
-                gateway_core::routing::ProviderKind::new("openai").expect("static provider kind"),
-                configuration.clone(),
-            );
-        }
-        if let Some(configuration) = &settings.xai_client_profile {
-            configurations.insert(
-                gateway_core::routing::ProviderKind::new("xai").expect("static provider kind"),
-                configuration.clone(),
-            );
-        }
-        let wire_profiles = self.providers.dashboard_wire_profiles(&configurations);
+        let wire_profiles = self
+            .providers
+            .dashboard_wire_profiles(&settings.request_profiles);
         let max_concurrent_per_account = u64::from(settings.max_concurrent_per_account);
         let (inherited_accounts, overridden_slots) = runtime_slots
             .as_ref()

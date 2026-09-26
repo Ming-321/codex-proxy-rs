@@ -18,6 +18,18 @@ pub use gateway_core::account::{
     QuotaState, resolve_account_status,
 };
 
+/// 账号可用的管理操作。
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+pub struct ProviderAccountCapabilities {
+    pub quota: bool,
+    pub quota_refresh: bool,
+    pub profile: bool,
+    pub subscription: bool,
+    pub avatar: bool,
+    pub reset_credits: bool,
+    pub consume_reset_credit: bool,
+}
+
 /// 导入时统一应用的账号备注、调度与分组设置；缺省时保留原有导入语义。
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct AccountImportSettings {

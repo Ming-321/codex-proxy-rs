@@ -1,11 +1,12 @@
 import type { rotationOptions } from '../constants'
 import type { RequestLocation } from '@/api'
-import type { ClientProfileSelection, XaiClientProfileSelection } from '@/api/modules/client-profiles'
-import { computed, reactive, ref, shallowRef } from 'vue'
+import type { ProviderRequestProfiles, ProviderRequestProfileUpdates } from '@/api/modules/client-profiles'
+import { toast } from '@codex-proxy/ui'
+import { isEqual } from 'es-toolkit'
 
+import { computed, reactive, ref, shallowRef } from 'vue'
 import { getSettings, updateSettings } from '@/api'
 import { ApiError } from '@/api/request'
-import { toast } from '@/components/base/BaseToast'
 import { useAsyncAction } from '@/composables/useAsyncAction'
 import { errorMessage } from '@/utils/async'
 import { normalizeRequestLocation, requestLocationError } from '@/utils/request-location'
@@ -22,8 +23,7 @@ export function useSettingsForm() {
   const mappings = ref<Array<{ requestedModel: string, upstreamModel: string }>>([])
   const savedRequestLocation = shallowRef<RequestLocation>()
   const form = reactive({
-    openaiClientProfile: null as ClientProfileSelection | null,
-    xaiClientProfile: null as XaiClientProfileSelection | null,
+    providerRequestProfiles: {} as ProviderRequestProfiles,
     requestLocationEnabled: false,
     requestLocation: { country: '', region: '', city: '', timezone: '' },
     refreshMarginSeconds: null as number | null,
@@ -49,23 +49,33 @@ export function useSettingsForm() {
     accountAutoFreezeProbeEnabled: true,
     accountAutoFreezeProbeModel: '',
     accountAutoFreezeAdaptiveConcurrency: true,
+    accountWarmupEnabled: false,
+    accountWarmupScheduleTime: '08:00',
+    accountWarmupModel: '',
   })
 
   function snapshot() {
     return {
-      form: { ...form, requestLocation: { ...form.requestLocation } },
+      form: {
+        ...form,
+        providerRequestProfiles: cloneProfiles(form.providerRequestProfiles),
+        requestLocation: { ...form.requestLocation },
+      },
       mappings: mappings.value.map(row => ({ ...row })),
     }
   }
 
   const saved = shallowRef<ReturnType<typeof snapshot>>()
   const loaded = computed(() => saved.value !== undefined)
-  const hasChanges = computed(() => loaded.value && JSON.stringify(snapshot()) !== JSON.stringify(saved.value))
+  const hasChanges = computed(() => loaded.value && !isEqual(snapshot(), saved.value))
 
   function resetSettings() {
     if (!saved.value || saving.value)
       return
-    Object.assign(form, saved.value.form, { requestLocation: { ...saved.value.form.requestLocation } })
+    Object.assign(form, saved.value.form, {
+      providerRequestProfiles: cloneProfiles(saved.value.form.providerRequestProfiles),
+      requestLocation: { ...saved.value.form.requestLocation },
+    })
     mappings.value = saved.value.mappings.map(row => ({ ...row }))
   }
 
@@ -118,8 +128,7 @@ export function useSettingsForm() {
 
     form.rotationStrategy = data.rotationStrategy
     form.minCodexDesktopVersion = data.minCodexDesktopVersion ?? ''
-    form.openaiClientProfile = data.openaiClientProfile
-    form.xaiClientProfile = data.xaiClientProfile
+    form.providerRequestProfiles = cloneProfiles(data.providerRequestProfiles)
     form.minCodexCliVersion = data.minCodexCliVersion ?? ''
     form.usageRetentionDays = data.usageRetentionDays
     form.opsEventRetentionDays = data.opsEventRetentionDays
@@ -131,6 +140,9 @@ export function useSettingsForm() {
     form.accountAutoFreezeProbeEnabled = data.accountAutoFreezeProbeEnabled
     form.accountAutoFreezeProbeModel = data.accountAutoFreezeProbeModel ?? ''
     form.accountAutoFreezeAdaptiveConcurrency = data.accountAutoFreezeAdaptiveConcurrency
+    form.accountWarmupEnabled = data.accountWarmupEnabled
+    form.accountWarmupScheduleTime = data.accountWarmupScheduleTime ?? '08:00'
+    form.accountWarmupModel = data.accountWarmupModel ?? ''
     mappings.value = Object.entries(data.modelMappings || {}).map(([requestedModel, upstreamModel]) => ({
       requestedModel,
       upstreamModel: String(upstreamModel),
@@ -185,7 +197,8 @@ export function useSettingsForm() {
   }
 
   async function saveSettings() {
-    if (saving.value || loading.value || !savedRequestLocation.value || !form.openaiClientProfile || !form.xaiClientProfile)
+    const savedSettings = saved.value
+    if (saving.value || loading.value || !savedRequestLocation.value || !savedSettings)
       return
     const { refreshMarginSeconds, refreshConcurrency, maxConcurrentPerAccount, requestIntervalMs, rotationStrategy, maxWaitingPerKey, maxWaitingPerAccount, concurrencyWaitTimeoutSeconds, responsesMaxDecompressedBodyMiB, accountAutoFreezeThreshold, accountAutoFreezeWindowSeconds, accountAutoFreezeDurationSeconds } = form
     if (refreshMarginSeconds === null || refreshConcurrency === null || maxConcurrentPerAccount === null || requestIntervalMs === null || !rotationStrategy || maxWaitingPerKey === null || maxWaitingPerAccount === null || concurrencyWaitTimeoutSeconds === null) {
@@ -234,12 +247,27 @@ export function useSettingsForm() {
       toast.warning('探测模型名称不能超过 128 个字符')
       return
     }
-    const xaiClientProfile = form.xaiClientProfile
-    const openaiClientProfile = form.openaiClientProfile
+    const scheduleTime = form.accountWarmupScheduleTime.trim()
+    const timeRegex = /^(?:[01]\d|2[0-3]):[0-5]\d(?:,(?:[01]\d|2[0-3]):[0-5]\d)*$/
+    if (!scheduleTime || !timeRegex.test(scheduleTime)) {
+      toast.warning('预激活时间格式无效，请输入 HH:MM 格式（如 08:00 或 08:00,13:00）')
+      return
+    }
+    const warmupModel = form.accountWarmupModel.trim()
+    if (form.accountWarmupEnabled && !warmupModel) {
+      toast.warning('启用预激活时请选择模型')
+      return
+    }
+    if (warmupModel.length > 128) {
+      toast.warning('预激活模型名称不能超过 128 个字符')
+      return
+    }
     await saveAction.run(async () => {
       const result = await updateSettings({
-        openaiClientProfile,
-        xaiClientProfile,
+        providerRequestProfiles: requestProfileUpdates(
+          savedSettings.form.providerRequestProfiles,
+          form.providerRequestProfiles,
+        ),
         requestLocationEnabled: form.requestLocationEnabled,
         requestLocation,
         modelMappings: mappingPayload(),
@@ -264,6 +292,9 @@ export function useSettingsForm() {
         accountAutoFreezeProbeEnabled: form.accountAutoFreezeProbeEnabled,
         accountAutoFreezeProbeModel: probeModel || null,
         accountAutoFreezeAdaptiveConcurrency: form.accountAutoFreezeAdaptiveConcurrency,
+        accountWarmupEnabled: form.accountWarmupEnabled,
+        accountWarmupScheduleTime: scheduleTime,
+        accountWarmupModel: warmupModel || null,
       })
       applySettings(result)
       toast.success('设置已保存')
@@ -302,6 +333,24 @@ export function useSettingsForm() {
     saveSettings,
     loadSettings,
   }
+}
+
+function cloneProfiles(value: ProviderRequestProfiles): ProviderRequestProfiles {
+  return JSON.parse(JSON.stringify(value)) as ProviderRequestProfiles
+}
+
+function requestProfileUpdates(
+  previous: ProviderRequestProfiles,
+  current: ProviderRequestProfiles,
+): ProviderRequestProfileUpdates {
+  const updates: ProviderRequestProfileUpdates = {}
+  const clonedCurrent = cloneProfiles(current)
+  for (const provider of new Set([...Object.keys(previous), ...Object.keys(current)])) {
+    if (isEqual(previous[provider], current[provider]))
+      continue
+    updates[provider] = clonedCurrent[provider] ?? null
+  }
+  return updates
 }
 
 function isSemver(value: string): boolean {

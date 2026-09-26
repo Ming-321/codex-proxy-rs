@@ -24,7 +24,7 @@ use serde::Serialize;
 use serde_json::Value;
 use thiserror::Error;
 
-use super::api_key::{ApiKeyCredentialData, ApiKeyTransport, CODEX_AUTHENTICATION_KIND_API_KEY};
+use super::api_key::{ApiKeyCredentialData, CODEX_AUTHENTICATION_KIND_API_KEY};
 use super::recovery_log::{CodexOAuthRecoveryOperation, record_oauth_recovery};
 use super::security::CodexCredentialCodec;
 use super::token_client::{
@@ -32,8 +32,8 @@ use super::token_client::{
 };
 use super::types::{
     CODEX_AUTHENTICATION_KIND_OAUTH, CodexAccountProfile, CodexCredentialData,
-    CodexCredentialPrincipal, CodexOAuthMetadata, CodexOAuthSecret, parse_access_token_expiration,
-    parse_chatgpt_jwt_claims,
+    CodexCredentialPrincipal, CodexOAuthMetadata, CodexOAuthSecret, ResponsesTransport,
+    parse_access_token_expiration, parse_chatgpt_jwt_claims,
 };
 
 const PROVIDER_NAME: &str = "openai";
@@ -257,7 +257,7 @@ struct CodexCprApiKeyExportAccount {
     authentication_kind: &'static str,
     base_url: String,
     api_key: String,
-    transport: ApiKeyTransport,
+    transport: ResponsesTransport,
 }
 
 #[derive(Serialize)]
@@ -453,7 +453,7 @@ impl CodexCredentialAdmin {
         #[serde(deny_unknown_fields)]
         struct Rotation {
             base_url: String,
-            transport: ApiKeyTransport,
+            transport: ResponsesTransport,
             api_key: Option<String>,
         }
         let rotation: Rotation = serde_json::from_value(material)
@@ -488,6 +488,50 @@ impl CodexCredentialAdmin {
         )
         .map_err(|_| CodexCredentialAdminError::InvalidCredential)?
         .with_account_state(CredentialState::Ready, SystemTime::now(), None, None);
+        Ok(PreparedCodexCredentialRotation {
+            profile,
+            credential,
+            replacement_identity: None,
+            refresh_guards: None,
+        })
+    }
+
+    pub(crate) fn prepare_transport_update(
+        &self,
+        current: LoadedCredential,
+        material: Value,
+    ) -> Result<PreparedCodexCredentialRotation, CodexCredentialAdminError> {
+        #[derive(serde::Deserialize)]
+        #[serde(deny_unknown_fields)]
+        struct Connection {
+            transport: ResponsesTransport,
+        }
+        let connection: Connection = serde_json::from_value(material)
+            .map_err(|_| CodexCredentialAdminError::InvalidInput)?;
+        let mut data = CodexCredentialCodec::decode_complete(&current.credential)
+            .map_err(|_| CodexCredentialAdminError::InvalidCredential)?;
+        data.oauth_mut()
+            .ok_or(CodexCredentialAdminError::InvalidCredential)?
+            .transport = connection.transport;
+        let credential = CodexCredentialCodec::encode_complete(data)
+            .map_err(|_| CodexCredentialAdminError::InvalidCredential)?;
+        let profile = ProviderAccountUpdate {
+            account_id: current.account.id().clone(),
+            name: current.account.name().to_owned(),
+            email: current.account.email().map(str::to_owned),
+            plan_type: current.account.plan_type().map(str::to_owned),
+        };
+        let credential = CredentialCasUpdate::new(
+            current.account.id().clone(),
+            current.account.revision(),
+            profile.clone(),
+            credential,
+            current.account.has_refresh_token(),
+            current.account.access_token_expires_at(),
+            current.account.next_refresh_at(),
+        )
+        .map_err(|_| CodexCredentialAdminError::InvalidCredential)?
+        .preserving_profile();
         Ok(PreparedCodexCredentialRotation {
             profile,
             credential,

@@ -7,10 +7,14 @@ use async_trait::async_trait;
 use crate::{
     model::{
         AdminError, AdminErrorKind,
-        system::{SystemOperationAccepted, SystemUpdateDetail, SystemUpdateStatus, SystemVersion},
+        system::{
+            SystemOperationAccepted, SystemUpdateChannel, SystemUpdateDetail, SystemUpdateStatus,
+            SystemVersion,
+        },
     },
     ports::system::{
         SystemOperationError, SystemOperationErrorKind, SystemOperations, SystemUpdateEventStream,
+        SystemUpdatePreflight,
     },
 };
 
@@ -18,11 +22,16 @@ use crate::{
 #[async_trait]
 pub trait SystemService: Send + Sync {
     async fn version(&self) -> Result<SystemVersion, AdminError>;
-    async fn update_detail(&self, refresh: bool) -> Result<SystemUpdateDetail, AdminError>;
+    async fn update_detail(
+        &self,
+        refresh: bool,
+        channel: Option<SystemUpdateChannel>,
+    ) -> Result<SystemUpdateDetail, AdminError>;
     fn update_events(&self) -> SystemUpdateEventStream;
     async fn perform_update(
         &self,
         target_version: Option<String>,
+        channel: Option<SystemUpdateChannel>,
     ) -> Result<SystemOperationAccepted, AdminError>;
     async fn update_status(&self) -> Result<SystemUpdateStatus, AdminError>;
     async fn rollback(&self) -> Result<SystemOperationAccepted, AdminError>;
@@ -32,12 +41,19 @@ pub trait SystemService: Send + Sync {
 /// 保持 Host 能力窄边界的默认系统用例。
 pub(crate) struct DefaultSystemService {
     operations: Arc<dyn SystemOperations>,
+    preflight: Arc<dyn SystemUpdatePreflight>,
 }
 
 impl DefaultSystemService {
     #[must_use]
-    pub(crate) const fn new(operations: Arc<dyn SystemOperations>) -> Self {
-        Self { operations }
+    pub(crate) fn new(
+        operations: Arc<dyn SystemOperations>,
+        preflight: Arc<dyn SystemUpdatePreflight>,
+    ) -> Self {
+        Self {
+            operations,
+            preflight,
+        }
     }
 }
 
@@ -47,9 +63,13 @@ impl SystemService for DefaultSystemService {
         self.operations.version().await.map_err(map_system_error)
     }
 
-    async fn update_detail(&self, refresh: bool) -> Result<SystemUpdateDetail, AdminError> {
+    async fn update_detail(
+        &self,
+        refresh: bool,
+        channel: Option<SystemUpdateChannel>,
+    ) -> Result<SystemUpdateDetail, AdminError> {
         self.operations
-            .update_detail(refresh)
+            .update_detail(refresh, channel)
             .await
             .map_err(map_system_error)
     }
@@ -61,12 +81,13 @@ impl SystemService for DefaultSystemService {
     async fn perform_update(
         &self,
         target_version: Option<String>,
+        channel: Option<SystemUpdateChannel>,
     ) -> Result<SystemOperationAccepted, AdminError> {
         let target_version = target_version
             .map(|version| version.trim().to_owned())
             .filter(|version| !version.is_empty());
         self.operations
-            .perform_update(target_version)
+            .perform_update(target_version, channel, Arc::clone(&self.preflight))
             .await
             .map_err(map_system_error)
     }
@@ -79,7 +100,10 @@ impl SystemService for DefaultSystemService {
     }
 
     async fn rollback(&self) -> Result<SystemOperationAccepted, AdminError> {
-        self.operations.rollback().await.map_err(map_system_error)
+        self.operations
+            .rollback(Arc::clone(&self.preflight))
+            .await
+            .map_err(map_system_error)
     }
 
     async fn restart(&self) -> Result<SystemOperationAccepted, AdminError> {

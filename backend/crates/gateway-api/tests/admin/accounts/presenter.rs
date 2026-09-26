@@ -1,8 +1,12 @@
+use bytes::Bytes;
 use gateway_admin::model::{
-    provider_credentials::AccountUsagePeriod,
+    provider_credentials::{AccountUsagePeriod, ProviderModelCatalogDocument},
     quota_forecast::{AccountQuotaForecast, AccountQuotaForecastReport, QuotaForecastSource},
 };
-use gateway_api::admin::accounts::AccountQuotaForecastData;
+use gateway_api::admin::accounts::{
+    AccountModelCatalogData, AccountQuotaForecastData, UnsupportedModelCatalogDocument,
+};
+use gateway_core::operation::RawJsonPayload;
 
 #[test]
 fn quota_forecast_projection_only_exposes_capacity_and_preserves_null_zero() {
@@ -70,4 +74,42 @@ fn quota_forecast_projection_only_exposes_capacity_and_preserves_null_zero() {
     assert_eq!(value["forecasts"][1]["targetDays"], 30.0);
     assert_eq!(value["forecasts"][1]["extrapolated"], true);
     assert!(value.get("account").is_none());
+}
+
+#[test]
+fn model_catalog_projection_keeps_upstream_document_and_rejects_non_codex_wire() {
+    let observed_at = "2026-09-12T08:00:00Z".parse().unwrap();
+    // 上游原生对象里的元数据必须原样到达客户端文件，否则 Codex 读不到推理强度和上下文窗口。
+    let body = serde_json::json!({
+        "models": [{
+            "slug": "gpt-5.6-luna",
+            "display_name": "Luna",
+            "context_window": 272_000,
+            "supported_reasoning_levels": [{ "effort": "high" }],
+        }],
+    });
+    let document = RawJsonPayload::new("codex", Bytes::from(serde_json::to_vec(&body).unwrap()))
+        .expect("codex payload");
+    let data = AccountModelCatalogData::try_from(ProviderModelCatalogDocument {
+        document,
+        model_count: 1,
+        observed_at,
+    })
+    .expect("codex catalog is projectable");
+    assert_eq!(data.model_count, 1);
+    assert_eq!(data.catalog, body);
+    assert_eq!(data.observed_at, "2026-09-12T16:00:00+08:00");
+
+    // 只有模型 ID 的 API 目录拼不出合法的 model_catalog_json，不能降格返回给客户端。
+    let adapted = RawJsonPayload::new("openai", Bytes::from_static(br#"{"models":[]}"#))
+        .expect("openai payload");
+    assert_eq!(
+        AccountModelCatalogData::try_from(ProviderModelCatalogDocument {
+            document: adapted,
+            model_count: 0,
+            observed_at,
+        })
+        .err(),
+        Some(UnsupportedModelCatalogDocument)
+    );
 }

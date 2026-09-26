@@ -12,7 +12,7 @@ use gateway_core::{
     account::OpaqueProviderData,
     engine::budget::ClientBudgetLimits,
     policy::{ClientApiKeyId, SeatId},
-    routing::AccountGroupId,
+    routing::{AccountGroupId, ProviderKind},
 };
 use sqlx::{PgPool, Postgres, Row as _, Transaction};
 
@@ -265,10 +265,7 @@ pub(super) async fn save(
                         max_concurrency: 0,
                         requests_per_minute: 0,
                         budget: ClientBudgetLimits::default(),
-                        openai_client_profile_override: prepared
-                            .openai_client_profile_override
-                            .clone(),
-                        xai_client_profile_override: prepared.xai_client_profile_override.clone(),
+                        request_profile_overrides: prepared.request_profile_overrides.clone(),
                     },
                 )
                 .await
@@ -285,16 +282,22 @@ pub(super) async fn save(
                         requests_per_minute: 0,
                         daily_limit_usd: None,
                         weekly_limit_usd: None,
-                        openai_client_profile_override: Some(
-                            key.openai_client_profile_override
-                                .clone()
-                                .map(OpaqueProviderData::new),
-                        ),
-                        xai_client_profile_override: Some(
-                            key.xai_client_profile_override
-                                .clone()
-                                .map(OpaqueProviderData::new),
-                        ),
+                        request_profile_override_updates: [
+                            (
+                                ProviderKind::new("openai").expect("valid provider kind"),
+                                key.openai_client_profile_override
+                                    .clone()
+                                    .map(OpaqueProviderData::new),
+                            ),
+                            (
+                                ProviderKind::new("xai").expect("valid provider kind"),
+                                key.xai_client_profile_override
+                                    .clone()
+                                    .map(OpaqueProviderData::new),
+                            ),
+                        ]
+                        .into_iter()
+                        .collect(),
                     },
                 )
                 .await

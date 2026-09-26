@@ -1,16 +1,9 @@
 <script setup lang="ts">
+import { BaseCard, BaseCheckbox, BaseConfirmModal, BasePageHeader, BaseTable, BaseTableColumnSettings, BaseTablePagination, useTableColumns } from '@codex-proxy/ui'
+
 import { ChevronDown } from '@lucide/vue'
 import { ref } from 'vue'
-
 import AccountGroupMarks from '@/components/AccountGroupMarks.vue'
-import BaseCard from '@/components/base/BaseCard.vue'
-import BaseCheckbox from '@/components/base/BaseCheckbox.vue'
-import BaseConfirmModal from '@/components/base/BaseConfirmModal.vue'
-import BasePageHeader from '@/components/base/BasePageHeader.vue'
-import BaseTableColumnSettings from '@/components/base/BaseTable/BaseTableColumnSettings.vue'
-import BaseTablePagination from '@/components/base/BaseTable/BaseTablePagination.vue'
-import BaseTable from '@/components/base/BaseTable/index.vue'
-import { useTableColumns } from '@/components/base/BaseTable/useTableColumns'
 import LastUsedAtCell from '@/components/LastUsedAtCell.vue'
 import ProviderIconGroup from '@/components/ProviderIconGroup.vue'
 import { useAccountGroupCatalog } from '@/composables/useAccountGroupCatalog'
@@ -85,11 +78,17 @@ const {
   recoveringAccountIds,
   refreshingAccountIds,
   refreshingQuotaAccountIds,
+  downloadingCatalogAccountIds,
+  togglingSchedulingAccountIds,
   deletingAccount,
   creatingAccount,
   authorizingOAuth,
+  authorization,
+  authorizationCallback,
+  resetAuthorization,
   batchDeleting,
   exportingAccounts,
+  exportDisabledReason,
   reauthorizingAccount,
   createForm,
   handleCreate,
@@ -100,10 +99,12 @@ const {
   handleDelete,
   handleBatchDelete,
   handleExportAccounts,
+  handleDownloadModelCatalog,
   handleRecover,
   handleRefresh,
   handleRefreshQuota,
   handleQuotaReset,
+  handleToggleScheduling,
 } = useAccountMutations({
   onImportTaskCreated: importTasks.created,
   accounts,
@@ -167,6 +168,7 @@ const {
 
 const {
   apiKey: editingApiKey,
+  oauthTransport: editingOAuthTransport,
   configurationLoading,
   configurationReady,
   showEditModal,
@@ -213,6 +215,7 @@ const {
           :selected-count="selectedIds.size"
           :batch-deleting="batchDeleting"
           :exporting-accounts="exportingAccounts"
+          :export-disabled-reason="exportDisabledReason"
           :has-import-tasks="recentImportTasks.length > 0"
           :active-import-count="activeImportCount"
           @import-tasks="showImportTasks = true"
@@ -321,15 +324,19 @@ const {
               <AccountTableActions
                 :account="row"
                 :deleting="deletingAccount"
+                :downloading-catalog="downloadingCatalogAccountIds.has(row.id)"
                 :recovering="recoveringAccountIds.has(row.id)"
                 :refreshing="refreshingAccountIds.has(row.id)"
                 :testing="testingConnectionIds.has(row.id)"
+                :toggling-scheduling="togglingSchedulingAccountIds.has(row.id)"
                 @edit="openAccountEdit"
                 @delete="requestDeleteAccount"
+                @download-model-catalog="handleDownloadModelCatalog"
                 @recover="handleRecover"
                 @refresh="handleRefresh"
                 @reauthorize="openReauthorizeAccount"
                 @test="openConnectionTest"
+                @toggle-scheduling="handleToggleScheduling"
               />
             </template>
 
@@ -394,6 +401,8 @@ const {
     <AccountCreateModal
       v-model="showCreateModal"
       v-model:form="createForm"
+      v-model:callback="authorizationCallback"
+      :authorization="authorization"
       :account="reauthorizingAccount"
       :groups="groups"
       :groups-loading="groupsLoading"
@@ -402,11 +411,13 @@ const {
       :saving="creatingAccount"
       @create="handleCreate"
       @generate-oauth="handleAuthorizeOAuth"
+      @reset-authorization="resetAuthorization"
     />
 
     <AccountEditModal
       v-model="showEditModal"
       v-model:api-key="editingApiKey"
+      v-model:oauth-transport="editingOAuthTransport"
       v-model:notes="editingNotes"
       v-model:enabled="schedulingEnabled"
       v-model:concurrency-limit="editingConcurrencyLimit"

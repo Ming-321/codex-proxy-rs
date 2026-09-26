@@ -28,6 +28,8 @@ pub enum ProviderErrorKind {
     Unauthorized,
     /// Credential 没有权限。
     PermissionDenied,
+    /// 冻结的请求策略在 Provider 发送前明确拒绝本次请求。
+    RequestPolicyDenied,
     /// Provider 限流。
     RateLimited,
     /// Credential 配额耗尽。
@@ -46,6 +48,9 @@ pub enum ProviderErrorKind {
     Transport,
     /// 上游协议不合法。
     Protocol,
+    /// 上游以 message too big 拒收当前请求（如 WebSocket close 1009）。
+    /// 这是请求自身的问题：换账号或暂停 Provider 都无法让它成功。
+    MessageTooBig,
     /// Provider 暂不可用。
     Unavailable,
     /// 上游明确拒绝当前请求的模型容量；不证明整个 Provider 的基础设施故障。
@@ -66,6 +71,7 @@ impl ProviderErrorKind {
             Self::Unsupported => "unsupported",
             Self::Unauthorized => "unauthorized",
             Self::PermissionDenied => "permission_denied",
+            Self::RequestPolicyDenied => "request_policy_denied",
             Self::RateLimited => "rate_limited",
             Self::QuotaExhausted => "quota_exhausted",
             Self::AccountCapacityUnavailable => "account_capacity_unavailable",
@@ -76,6 +82,7 @@ impl ProviderErrorKind {
             Self::Timeout => "timeout",
             Self::Transport => "transport",
             Self::Protocol => "protocol",
+            Self::MessageTooBig => "message_too_big",
             Self::Unavailable => "unavailable",
             Self::UpstreamCapacityUnavailable => "upstream_capacity_unavailable",
             Self::Cancelled => "cancelled",
@@ -127,6 +134,11 @@ pub enum PreDeliveryRetry {
         retry_index: NonZeroU32,
         /// 发起下一次传输尝试前的退避时长。
         delay: Duration,
+    },
+    /// 可靠 NotSent 的建连恢复；次数与时间由 Core 的请求级预算裁决。
+    SameAccountConnectionRetry {
+        /// Provider 明确指定实际失败的传输，避免 HTTP 恢复重新进入 WS。
+        transport: crate::engine::AttemptTransport,
     },
     /// 固定本次账号，并要求 Provider 使用备用传输。
     SameAccountTransportFallback,
@@ -618,6 +630,14 @@ impl ProviderError {
         }));
     }
 
+    #[must_use]
+    pub fn with_connection_retry(mut self, transport: crate::engine::AttemptTransport) -> Self {
+        self.pre_delivery_retry = Some(Box::new(PreDeliveryRetry::SameAccountConnectionRetry {
+            transport,
+        }));
+        self
+    }
+
     /// 要求 Core 在账号凭据已恢复后仅对原账号重放一次。
     #[must_use]
     pub const fn with_same_account_retry(mut self) -> Self {
@@ -975,6 +995,9 @@ pub enum GatewayErrorKind {
     RateLimited,
     /// 上游暂不可用。
     UpstreamUnavailable,
+    /// 上游拒收当前请求：消息过大（如 WebSocket close 1009）。
+    /// 客户端必须缩小或重建请求；重试或换账号都无法成功。
+    MessageTooBig,
     /// 请求超时。
     Timeout,
     /// 请求取消。
@@ -1000,6 +1023,7 @@ impl GatewayErrorKind {
             Self::ProviderInfrastructureUnavailable => "provider_infrastructure_unavailable",
             Self::RateLimited => "rate_limited",
             Self::UpstreamUnavailable => "upstream_unavailable",
+            Self::MessageTooBig => "message_too_big",
             Self::Timeout => "timeout",
             Self::Cancelled => "cancelled",
             Self::Internal => "internal_error",
@@ -1079,6 +1103,10 @@ impl GatewayError {
                 GatewayErrorKind::UpstreamUnavailable,
                 "upstream authentication resource is unavailable",
             ),
+            ProviderErrorKind::RequestPolicyDenied => Self::new(
+                GatewayErrorKind::PolicyDenied,
+                "request policy rejected the request",
+            ),
             ProviderErrorKind::RateLimited | ProviderErrorKind::QuotaExhausted => Self::new(
                 GatewayErrorKind::RateLimited,
                 "upstream capacity is temporarily unavailable",
@@ -1106,6 +1134,10 @@ impl GatewayError {
             ProviderErrorKind::Timeout => {
                 Self::new(GatewayErrorKind::Timeout, "upstream request timed out")
             }
+            ProviderErrorKind::MessageTooBig => Self::new(
+                GatewayErrorKind::MessageTooBig,
+                "upstream rejected the request because the message is too large",
+            ),
             ProviderErrorKind::Cancelled => {
                 Self::new(GatewayErrorKind::Cancelled, "request was cancelled")
             }

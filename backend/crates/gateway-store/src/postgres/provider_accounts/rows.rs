@@ -247,6 +247,8 @@ pub struct ImportProviderAccounts {
 pub struct ProviderAccountAdminImport {
     pub config_revision: Revision,
     pub account_ids: Vec<String>,
+    /// 与导入同一事务返回的最终凭据版本，避免提交后再查到另一轮写入。
+    pub credential_revisions: std::collections::BTreeMap<String, Revision>,
 }
 
 impl fmt::Debug for ImportProviderAccounts {
@@ -359,6 +361,7 @@ pub struct ProviderCredentialUpdate {
     pub access_token_expires_at: Option<DateTime<Utc>>,
     pub next_refresh_at: Option<DateTime<Utc>>,
     pub preserve_profile: bool,
+    pub preserve_credential_state: bool,
 }
 
 impl fmt::Debug for ProviderCredentialUpdate {
@@ -389,37 +392,37 @@ impl ProviderAccountStateUpdate {
     }
 }
 
-pub(crate) const ACCOUNT_SELECT: &str = "select location_country, location_region, location_city, location_timezone, outbound_proxy_url, id, provider_kind, name, notes, email, upstream_user_id,
+pub(crate) const ACCOUNT_SELECT: &str = "select auto_location, detected_location_json, location_country, location_region, location_city, location_timezone, outbound_proxy_url, id, provider_kind, name, notes, email, upstream_user_id,
             upstream_account_id, plan_type, authentication_kind, provider_credentials_json, credential_revision,
             has_refresh_token, access_token_expires_at, next_refresh_at, enabled, concurrency_limit, weight, model_access_json, credential_state,
             provider_quota_json, quota_access_state, quota_evidence, quota_access_observed_at, quota_reset_at,
             last_error_reason, last_error_message,
             credential_observed_at, quota_observed_at, created_at, updated_at
      from provider_accounts
-     left join (select id as location_proxy_id, location_country, location_region, location_city, location_timezone from outbound_proxies) proxy_location
+     left join (select id as location_proxy_id, auto_location, detected_location_json, location_country, location_region, location_city, location_timezone from outbound_proxies) proxy_location
        on outbound_proxy_id = location_proxy_id
      where id = $1";
 
-pub(crate) const ACCOUNT_SELECT_BY_IDS: &str = "select location_country, location_region, location_city, location_timezone, outbound_proxy_url, id, provider_kind, name, notes, email, upstream_user_id,
+pub(crate) const ACCOUNT_SELECT_BY_IDS: &str = "select auto_location, detected_location_json, location_country, location_region, location_city, location_timezone, outbound_proxy_url, id, provider_kind, name, notes, email, upstream_user_id,
             upstream_account_id, plan_type, authentication_kind, provider_credentials_json, credential_revision,
             has_refresh_token, access_token_expires_at, next_refresh_at, enabled, concurrency_limit, weight, model_access_json, credential_state,
             provider_quota_json, quota_access_state, quota_evidence, quota_access_observed_at, quota_reset_at,
             last_error_reason, last_error_message,
             credential_observed_at, quota_observed_at, created_at, updated_at
      from provider_accounts
-     left join (select id as location_proxy_id, location_country, location_region, location_city, location_timezone from outbound_proxies) proxy_location
+     left join (select id as location_proxy_id, auto_location, detected_location_json, location_country, location_region, location_city, location_timezone from outbound_proxies) proxy_location
        on outbound_proxy_id = location_proxy_id
      where id = any($1::text[]) and provider_kind = $2
      order by id";
 
-pub(crate) const REFRESH_CANDIDATES_SELECT: &str = "select location_country, location_region, location_city, location_timezone, outbound_proxy_url, id, provider_kind, name, notes, email, upstream_user_id,
+pub(crate) const REFRESH_CANDIDATES_SELECT: &str = "select auto_location, detected_location_json, location_country, location_region, location_city, location_timezone, outbound_proxy_url, id, provider_kind, name, notes, email, upstream_user_id,
             upstream_account_id, plan_type, authentication_kind, provider_credentials_json, credential_revision,
             has_refresh_token, access_token_expires_at, next_refresh_at, enabled, concurrency_limit, weight, model_access_json, credential_state,
             provider_quota_json, quota_access_state, quota_evidence, quota_access_observed_at, quota_reset_at,
             last_error_reason, last_error_message,
             credential_observed_at, quota_observed_at, created_at, updated_at
      from provider_accounts
-     left join (select id as location_proxy_id, location_country, location_region, location_city, location_timezone from outbound_proxies) proxy_location
+     left join (select id as location_proxy_id, auto_location, detected_location_json, location_country, location_region, location_city, location_timezone from outbound_proxies) proxy_location
        on outbound_proxy_id = location_proxy_id
      where provider_kind = $1
        and enabled
@@ -550,7 +553,7 @@ pub(crate) fn account_summary_from_row(
         .and_then(AccountWeight::new)
         .ok_or_else(|| invalid("invalid weight"))?;
     Ok(ProviderAccountSummary {
-        request_location: super::super::proxies::location_from_row(&row)?,
+        request_location: super::super::proxies::effective_location_from_row(&row)?,
         outbound_proxy: get::<Option<String>>(&row, "outbound_proxy_url")?
             .map(|url| {
                 gateway_core::account::OutboundProxy::parse(&url)

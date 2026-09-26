@@ -1,14 +1,14 @@
 import type { Ref } from 'vue'
 import type { AccountModelAccess, ApiKeyConfiguration, getAccounts } from '@/api'
 
+import { toast } from '@codex-proxy/ui'
 import { computed, ref, shallowRef, watch } from 'vue'
-import { getAccountDetail, updateAccount, updateAccountApiKey } from '@/api'
-import { toast } from '@/components/base/BaseToast'
+import { getAccountDetail, updateAccount } from '@/api'
 import { useAsyncAction } from '@/composables/useAsyncAction'
 import { useRequestState } from '@/composables/useRequestState'
 import { accountModelAccessError } from '../utils/modelAccess'
 import { concurrencyLimitInput, parseAccountSchedulingForm } from '../utils/schedulingForm'
-import { apiKeyAccountError, emptyApiKeyAccountForm } from '../utils/upstreamApiKey'
+import { apiKeyAccountError, emptyApiKeyAccountForm, isOpenAiApiKeyAccount, isOpenAiOAuthAccount, parseApiKeyConfiguration } from '../utils/upstreamApiKey'
 
 type AccountRow = Awaited<ReturnType<typeof getAccounts>>['items'][number]
 
@@ -34,6 +34,8 @@ export function useAccountEditor(options: {
   const configurationLoading = configurationRequest.loading
   const configurationReady = shallowRef(false)
   const savedConfiguration = shallowRef<ApiKeyConfiguration>()
+  const oauthTransport = shallowRef<ApiKeyConfiguration['transport']>('prefer_websocket')
+  const savedOAuthTransport = shallowRef<ApiKeyConfiguration['transport']>('prefer_websocket')
 
   async function loadConfiguration(accountId: string) {
     const requestId = configurationRequest.start()
@@ -41,10 +43,20 @@ export function useAccountEditor(options: {
       const detail = await getAccountDetail({ accountId }, { signal: configurationRequest.signal })
       if (!configurationRequest.isCurrent(requestId))
         return
-      if (!detail.credentialConfiguration)
+      if (isOpenAiOAuthAccount(detail.account)) {
+        const transport = detail.credentialConfiguration?.transport
+        if (transport !== 'http' && transport !== 'prefer_websocket')
+          throw new Error('该账号没有 OAuth 上游设置')
+        oauthTransport.value = transport
+        savedOAuthTransport.value = transport
+        configurationReady.value = true
+        return
+      }
+      const configuration = parseApiKeyConfiguration(detail.credentialConfiguration)
+      if (!configuration)
         throw new Error('该账号没有 API Key 上游设置')
-      apiKey.value = { ...emptyApiKeyAccountForm(), ...detail.credentialConfiguration }
-      savedConfiguration.value = detail.credentialConfiguration
+      apiKey.value = { ...emptyApiKeyAccountForm(), ...configuration }
+      savedConfiguration.value = configuration
       configurationReady.value = true
     }
     catch (error) {
@@ -74,10 +86,12 @@ export function useAccountEditor(options: {
     modelAccess.value = { ...account.modelAccess, models: [...account.modelAccess.models] }
     selectedGroupIds.value = account.groups.map(group => group.id)
     apiKey.value = emptyApiKeyAccountForm()
+    oauthTransport.value = 'prefer_websocket'
+    savedOAuthTransport.value = 'prefer_websocket'
     savedConfiguration.value = undefined
     configurationReady.value = false
     showEditModal.value = true
-    if (account.authenticationKind === 'api_key')
+    if (isOpenAiApiKeyAccount(account) || isOpenAiOAuthAccount(account))
       void loadConfiguration(account.id)
   }
 
@@ -85,10 +99,11 @@ export function useAccountEditor(options: {
     const accountId = editingAccountId.value
     if (!accountId || saving.value)
       return
-    const isApiKey = editingAccount.value?.authenticationKind === 'api_key'
+    const isApiKey = isOpenAiApiKeyAccount(editingAccount.value)
+    const isOAuth = isOpenAiOAuthAccount(editingAccount.value)
+    if (isApiKey && !configurationReady.value)
+      return
     if (isApiKey) {
-      if (!configurationReady.value)
-        return
       const error = apiKeyAccountError(apiKey.value, true)
       if (error) {
         toast.warning(error)
@@ -126,15 +141,17 @@ export function useAccountEditor(options: {
         || apiKey.value.base_url.trim() !== savedConfiguration.value?.base_url
         || apiKey.value.transport !== savedConfiguration.value?.transport
       )
-      if (connectionChanged) {
-        await updateAccountApiKey({ accountId, baseUrl: apiKey.value.base_url.trim(), transport: apiKey.value.transport, apiKey: apiKey.value.apiKey || undefined, settings })
-      }
-      else {
-        await updateAccount(settings)
-      }
+      await updateAccount({
+        ...settings,
+        connection: connectionChanged
+          ? { baseUrl: apiKey.value.base_url.trim(), transport: apiKey.value.transport, apiKey: apiKey.value.apiKey || undefined }
+          : isOAuth && configurationReady.value && oauthTransport.value !== savedOAuthTransport.value
+            ? { transport: oauthTransport.value }
+            : undefined,
+      })
       showEditModal.value = false
-      await Promise.all([options.reloadAccounts(), options.reloadGroups()])
       toast.success('账号已更新')
+      void Promise.allSettled([options.reloadAccounts(), options.reloadGroups()])
     })
   }
 
@@ -143,6 +160,8 @@ export function useAccountEditor(options: {
       return
     configurationRequest.invalidate()
     apiKey.value = emptyApiKeyAccountForm()
+    oauthTransport.value = 'prefer_websocket'
+    savedOAuthTransport.value = 'prefer_websocket'
     savedConfiguration.value = undefined
     configurationReady.value = false
     editingAccountId.value = null
@@ -158,6 +177,7 @@ export function useAccountEditor(options: {
 
   return {
     apiKey,
+    oauthTransport,
     configurationLoading,
     configurationReady,
     showEditModal,

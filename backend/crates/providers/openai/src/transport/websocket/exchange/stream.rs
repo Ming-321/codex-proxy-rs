@@ -219,10 +219,6 @@ async fn forward_websocket_response_stream(state: WebSocketStreamForwardState) {
             }
         };
         let Some(message) = message else {
-            trace.record(
-                "upstream.eof",
-                json!({"lastEventType": last_event_type, "terminalSeen": false}),
-            );
             break;
         };
         let raw = match message {
@@ -364,20 +360,37 @@ async fn forward_websocket_response_stream(state: WebSocketStreamForwardState) {
     }
 
     let websocket_connection_id = websocket.connection_id();
-    let upstream_close = websocket
-        .exit_reason()
-        .and_then(|reason| reason.upstream_close().cloned())
-        .map(|close| close.with_connection_id(websocket_connection_id));
-    let error = match upstream_close {
-        Some(close) => CodexWebSocketExchangeError::ClosedBeforeTerminal(
-            close.with_last_event_type(last_event_type),
-        ),
-        None => CodexWebSocketExchangeError::closed_before_terminal_on(
-            websocket_connection_id,
-            None,
-            None,
+    let exit_reason = websocket.exit_reason();
+    trace.record(
+        "upstream.eof",
+        json!({
+            "lastEventType": last_event_type,
+            "terminalSeen": false,
+            "failureReason": exit_reason.as_ref().map(PumpExitReason::as_str),
+        }),
+    );
+    let error = match exit_reason.as_ref() {
+        Some(PumpExitReason::UpstreamCloseFrame { close }) => {
+            CodexWebSocketExchangeError::closed_before_terminal_on(
+                websocket_connection_id,
+                close.as_ref().and_then(|close| close.code()),
+                close
+                    .as_ref()
+                    .and_then(|close| close.reason().map(str::to_owned)),
+                last_event_type,
+            )
+        }
+        reason => CodexWebSocketExchangeError::StreamEndedBeforeTerminal {
+            reason: reason.map_or("stream_eof", PumpExitReason::as_str),
+            timeout: match reason {
+                Some(
+                    PumpExitReason::PongTimeout { timeout }
+                    | PumpExitReason::LivenessTimeout { timeout },
+                ) => Some(*timeout),
+                _ => None,
+            },
             last_event_type,
-        ),
+        },
     };
     let observation = connection_observation(&websocket, &error);
     discard_stream_websocket(
@@ -478,6 +491,7 @@ fn exchange_exit_reason(error: &CodexWebSocketExchangeError) -> &'static str {
                 "upstream_close"
             }
         }
+        CodexWebSocketExchangeError::StreamEndedBeforeTerminal { reason, .. } => reason,
         CodexWebSocketExchangeError::ReceiveIdleTimeout { .. } => "receive_idle_timeout",
         CodexWebSocketExchangeError::UnexpectedBinaryEvent => "unexpected_binary_event",
         _ => "exchange_failure",

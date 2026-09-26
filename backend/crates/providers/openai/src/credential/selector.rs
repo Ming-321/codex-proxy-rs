@@ -12,7 +12,7 @@ use gateway_core::account::{
     ProviderAccountId, QuotaEvidence,
 };
 use gateway_core::concurrency::{CapacityWait, ConcurrencyWaitQueue, QueueRejection};
-use gateway_core::engine::{AttemptContext, ContinuationAttempt};
+use gateway_core::engine::{AttemptContext, ContinuationAttempt, policy::AccountPolicyError};
 use gateway_core::provider_ports::{
     ProviderLeaseAcquisition, ProviderLeaseGuard, ProviderLeasePort, ProviderLeaseRequest,
     ProviderSchedulingLeaseRequest, ProviderSessionAffinityKey, ProviderSessionAffinityPort,
@@ -141,6 +141,7 @@ enum AffinityEscapeReason {
     LeaseSaturated,
     HigherPriority,
     PinnedAccount,
+    SchedulingPolicy,
     SelectionInvariant,
 }
 
@@ -153,6 +154,7 @@ impl AffinityEscapeReason {
             Self::LeaseSaturated => "lease_saturated",
             Self::HigherPriority => "higher_priority",
             Self::PinnedAccount => "pinned_account",
+            Self::SchedulingPolicy => "scheduling_policy",
             Self::SelectionInvariant => "selection_invariant",
         }
     }
@@ -206,6 +208,9 @@ impl AffinitySelection {
         }
         match selection {
             PreferredAccountSelection::Hit => {}
+            PreferredAccountSelection::OverriddenByPolicy => {
+                self.escape(AffinityEscapeReason::SchedulingPolicy);
+            }
             PreferredAccountSelection::Blocked(AccountSchedulingBlocker::ConcurrencyLimit) => {
                 self.escape(AffinityEscapeReason::LeaseSaturated);
             }
@@ -321,6 +326,42 @@ impl CodexCredentialSelector {
         .await
     }
 
+    /// 中间件完成请求改写后，用真实 OpenAI 会话事实复验已持有的租约。
+    ///
+    /// 此处只复用既有亲和与 cyber-policy 端口，不再次选号；冲突必须在发送前失败，
+    /// 避免同一 attempt 持有旧租约时重入账号选择。
+    pub(crate) async fn validate_translated_selection(
+        &self,
+        lease: &mut CodexCredentialLease,
+        session_affinity: Option<&CodexSessionAffinity>,
+        cyber_policy_session_key: Option<&ProviderSessionAffinityKey>,
+    ) -> Result<(), CredentialSelectionError> {
+        let selected_account = lease.account.id().clone();
+        if let Some(affinity) = session_affinity {
+            if self
+                .claim_initial_session_affinity(affinity.key(), &selected_account)
+                .await
+                .is_some_and(|effective| effective != selected_account)
+            {
+                return Err(CredentialSelectionError::NoEligibleCredential);
+            }
+            lease.affinity_expected_account_id = selected_account.clone();
+        }
+
+        let cyber_policy_scope = self
+            .prepare_cyber_policy_scope(cyber_policy_session_key)
+            .await;
+        if cyber_policy_scope
+            .as_ref()
+            .and_then(|scope| scope.state.as_ref())
+            .is_some_and(|state| state.excluded_accounts().contains(&selected_account))
+        {
+            return Err(CredentialSelectionError::NoEligibleCredential);
+        }
+        lease.cyber_policy_scope = cyber_policy_scope;
+        Ok(())
+    }
+
     /// 为不属于 Responses 文本模型目录的 Provider 原生端点选择账号。
     ///
     /// 账号范围、健康度、配额、并发租约、cookie 与认证准备仍走同一套选择链路；
@@ -352,6 +393,28 @@ impl CodexCredentialSelector {
             request.attempt.deadline(),
             request.attempt.concurrency_wait_budget(),
         );
+        let continuation_account = match request.attempt.continuation_attempt() {
+            ContinuationAttempt::Native => request
+                .attempt
+                .continuation()
+                .and_then(gateway_core::engine::continuation::ContinuationBinding::pinned)
+                .map(|continuation| continuation.account().clone()),
+            ContinuationAttempt::ReplayOwner => request
+                .attempt
+                .account_state_owner()
+                .filter(|owner| owner.provider() == &self.provider_kind)
+                .map(|owner| owner.account().clone()),
+            ContinuationAttempt::None | ContinuationAttempt::ReplayAny => None,
+        };
+        let required_account = request.attempt.required_account().cloned();
+        if required_account
+            .as_ref()
+            .zip(continuation_account.as_ref())
+            .is_some_and(|(required, continuation)| required != continuation)
+        {
+            return Err(CredentialSelectionError::NoEligibleCredential);
+        }
+        let pinned_account = required_account.or(continuation_account);
         let mut snapshot_retries = 0;
         'capacity: loop {
             let diagnostic = request.attempt.is_diagnostic_required_account();
@@ -396,7 +459,7 @@ impl CodexCredentialSelector {
             let mut eligible = Vec::with_capacity(accounts.len());
             for account in accounts {
                 if request.requires_websocket
-                    && account.authentication_kind() == super::CODEX_AUTHENTICATION_KIND_API_KEY
+                    && pinned_account.as_ref().is_none_or(|id| id == account.id())
                 {
                     let runtime = match self.repository.load_runtime_credential(&account).await {
                         Ok(runtime) => runtime,
@@ -408,11 +471,15 @@ impl CodexCredentialSelector {
                             )?;
                             continue 'capacity;
                         }
+                        // 非固定账号的损坏凭据不能阻断其余账号的传输资格检查。
+                        Err(CredentialRepositoryError::InvalidCredentialData)
+                            if pinned_account.is_none() =>
+                        {
+                            continue;
+                        }
                         Err(error) => return Err(error.into()),
                     };
-                    if !matches!(runtime.authentication, CodexRuntimeAuthentication::ApiKey(ref auth)
-                        if auth.configuration.transport == super::ApiKeyTransport::PreferWebsocket)
-                    {
+                    if runtime.transport == super::ResponsesTransport::Http {
                         continue;
                     }
                 }
@@ -473,28 +540,6 @@ impl CodexCredentialSelector {
                     AccountCandidate { account, signals }
                 })
                 .collect::<Vec<_>>();
-            let continuation_account = match request.attempt.continuation_attempt() {
-                ContinuationAttempt::Native => request
-                    .attempt
-                    .continuation()
-                    .and_then(gateway_core::engine::continuation::ContinuationBinding::pinned)
-                    .map(|continuation| continuation.account().clone()),
-                ContinuationAttempt::ReplayOwner => request
-                    .attempt
-                    .account_state_owner()
-                    .filter(|owner| owner.provider() == &self.provider_kind)
-                    .map(|owner| owner.account().clone()),
-                ContinuationAttempt::None | ContinuationAttempt::ReplayAny => None,
-            };
-            let required_account = request.attempt.required_account().cloned();
-            if required_account
-                .as_ref()
-                .zip(continuation_account.as_ref())
-                .is_some_and(|(required, continuation)| required != continuation)
-            {
-                return Err(CredentialSelectionError::NoEligibleCredential);
-            }
-            let pinned_account = required_account.or_else(|| continuation_account.clone());
             let mut affinity = if diagnostic {
                 AffinitySelection::default()
             } else {
@@ -573,7 +618,20 @@ impl CodexCredentialSelector {
                             .insert(candidate.account.id().clone());
                     }
                 }
-                let selection = AccountSelector.select(&candidates, &context);
+                let selection = match request
+                    .attempt
+                    .select_account(&self.provider_kind, upstream_model, &candidates, &context)
+                    .await
+                {
+                    Ok(selection) => selection,
+                    Err(AccountPolicyError::StaleCandidate) => continue 'capacity,
+                    Err(AccountPolicyError::Rejected) => {
+                        return Err(CredentialSelectionError::PolicyRejected);
+                    }
+                    Err(AccountPolicyError::Fault) => {
+                        return Err(CredentialSelectionError::PolicyUnavailable);
+                    }
+                };
                 request.attempt.trace().account_selection(
                     &candidates,
                     &context,
@@ -746,6 +804,7 @@ impl CodexCredentialSelector {
                         }
                         return Ok(CodexCredentialLease {
                             installation_id: runtime.installation_id,
+                            transport: runtime.transport,
                             account,
                             authentication: runtime.authentication,
                             cookies,
@@ -1390,6 +1449,7 @@ impl fmt::Debug for CodexCredentialSelector {
 }
 
 pub struct CodexCredentialLease {
+    transport: super::ResponsesTransport,
     account: ProviderAccount,
     authentication: CodexRuntimeAuthentication,
     cookies: Vec<RuntimeCodexCookie>,
@@ -1403,6 +1463,10 @@ pub struct CodexCredentialLease {
 }
 
 impl CodexCredentialLease {
+    pub(crate) const fn transport(&self) -> super::ResponsesTransport {
+        self.transport
+    }
+
     #[must_use]
     pub const fn account(&self) -> &ProviderAccount {
         &self.account
@@ -1527,6 +1591,10 @@ pub enum CredentialSelectionError {
     Coordinator,
     #[error("Codex Cookie policy rejected the value")]
     CookiePolicy,
+    #[error("account scheduling policy rejected the request")]
+    PolicyRejected,
+    #[error("account scheduling policy is unavailable")]
+    PolicyUnavailable,
 }
 
 impl From<CredentialRepositoryError> for CredentialSelectionError {

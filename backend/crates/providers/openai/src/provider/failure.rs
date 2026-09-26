@@ -541,11 +541,13 @@ pub(super) fn apply_websocket_recovery_policy(
         );
         return;
     }
-    let session_budget_exhausted = context.session_affinity_key.is_some_and(|key| {
-        context
-            .session_transport_recovery
-            .record_websocket_failure(key, context.max_retries)
-    });
+    // close 1009 只拒绝当前请求，不代表会话的 WS 传输不可用。
+    let session_budget_exhausted = failure.error.kind() != ProviderErrorKind::MessageTooBig
+        && context.session_affinity_key.is_some_and(|key| {
+            context
+                .session_transport_recovery
+                .record_websocket_failure(key, context.max_retries)
+        });
     let send_state = failure.error.send_state();
     let post_send = matches!(
         send_state,
@@ -808,7 +810,15 @@ pub(super) fn map_client_error(
     uncertain_state: UpstreamSendState,
     observe_transport: bool,
 ) -> MappedProviderFailure {
-    let diagnostic = client_diagnostic(&error);
+    let local_connection_capacity = crate::transport::connection::is_admission_failure(&error);
+    let diagnostic = if local_connection_capacity {
+        Some(
+            ProviderDiagnostic::new("OpenAI local connection capacity unavailable")
+                .with_classification("admission", "local_connection_capacity"),
+        )
+    } else {
+        client_diagnostic(&error)
+    };
     let raw_upstream_error = match &error {
         CodexClientError::WebSocket(error) => websocket_raw_error(error),
         _ => None,
@@ -848,13 +858,20 @@ pub(super) fn map_client_error(
     if let Some(failure) = error.upstream_failure() {
         return map_upstream_failure(failure, observation, ReplayBoundary::BeforeSemanticOutput);
     }
+    let connect_retry = !local_connection_capacity
+        && matches!(&error, CodexClientError::Http(error) if transient_http_connect(error));
     let mut failure = match error {
+        CodexClientError::ConnectionBudgetExhausted => MappedProviderFailure::plain(
+            provider_error(ProviderErrorKind::Timeout, UpstreamSendState::NotSent)
+                .with_connection_retry(gateway_core::engine::AttemptTransport::Fallback),
+        ),
         CodexClientError::Upstream { .. } => MappedProviderFailure::plain(provider_error(
             ProviderErrorKind::Protocol,
             UpstreamSendState::Sent,
         )),
         CodexClientError::InvalidHeaderName(_)
         | CodexClientError::InvalidHeaderValue(_)
+        | CodexClientError::MiddlewareHeaderConflict
         | CodexClientError::WebSocketEncode(_)
         | CodexClientError::RequestBodyEncode(_)
         | CodexClientError::RequestCompression(_)
@@ -960,6 +977,17 @@ pub(super) fn map_client_error(
             failure
         }
     };
+    if local_connection_capacity {
+        failure.error = provider_error(
+            ProviderErrorKind::ProviderInfrastructureUnavailable,
+            UpstreamSendState::NotSent,
+        );
+    }
+    if connect_retry {
+        failure.error = failure
+            .error
+            .with_connection_retry(gateway_core::engine::AttemptTransport::Fallback);
+    }
     if let Some(continuation_failure) = continuation_failure {
         failure.error = failure
             .error
@@ -986,6 +1014,11 @@ pub(super) fn map_client_error(
 /// 在消费 transport 错误前提取可持久化事实，不能使用可能携带 URL/凭据的 Display。
 fn client_diagnostic(error: &CodexClientError) -> Option<ProviderDiagnostic> {
     let (stage, code, message) = match error {
+        CodexClientError::ConnectionBudgetExhausted => (
+            "connect",
+            "connection_budget_exhausted",
+            "OpenAI connection recovery budget exhausted".to_owned(),
+        ),
         CodexClientError::WebSocket(error) => return Some(websocket_diagnostic(error)),
         CodexClientError::ErrorBodyRead { status, source, .. } => {
             return Some(
@@ -1040,6 +1073,11 @@ fn client_diagnostic(error: &CodexClientError) -> Option<ProviderDiagnostic> {
             "invalid_header_value",
             "OpenAI request header value is invalid".to_owned(),
         ),
+        CodexClientError::MiddlewareHeaderConflict => (
+            "prepare",
+            "middleware_header_conflict",
+            "OpenAI middleware header conflicts with a provider-managed header".to_owned(),
+        ),
         CodexClientError::WebSocketEncode(_) | CodexClientError::RequestBodyEncode(_) => (
             "prepare",
             "request_encode_failed",
@@ -1084,8 +1122,9 @@ fn websocket_diagnostic(error: &CodexWebSocketExchangeError) -> ProviderDiagnost
         }
         CodexWebSocketExchangeError::InvalidSse(_) => ("decode", "invalid_sse"),
         CodexWebSocketExchangeError::UnexpectedBinaryEvent => ("decode", "unexpected_binary_event"),
-        CodexWebSocketExchangeError::ClosedBeforeTerminal(_) => {
-            ("receive", "closed_before_terminal")
+        CodexWebSocketExchangeError::ClosedBeforeTerminal(_) => ("receive", "upstream_close"),
+        CodexWebSocketExchangeError::StreamEndedBeforeTerminal { reason, .. } => {
+            ("receive", *reason)
         }
         CodexWebSocketExchangeError::ConnectionLimitReached(_) => {
             ("upstream", "connection_limit_reached")
@@ -1182,6 +1221,22 @@ fn websocket_diagnostic_message(error: &CodexWebSocketExchangeError) -> Provider
         CodexWebSocketExchangeError::UnexpectedBinaryEvent => {
             "OpenAI WebSocket returned an unexpected binary event".to_owned()
         }
+        CodexWebSocketExchangeError::StreamEndedBeforeTerminal {
+            reason,
+            timeout,
+            last_event_type,
+        } => {
+            let mut message =
+                format!("OpenAI WebSocket stream ended before a terminal response ({reason})");
+            if let Some(timeout) = timeout {
+                message.push_str(&format!("; local keepalive timeout after {timeout:?}"));
+            }
+            if let Some(last_event_type) = last_event_type {
+                message.push_str("; last event type: ");
+                message.push_str(last_event_type);
+            }
+            message
+        }
         CodexWebSocketExchangeError::ReusedConnectionDiedBeforeFirstEvent { .. } => {
             "Reused OpenAI WebSocket died before the first upstream event".to_owned()
         }
@@ -1221,14 +1276,33 @@ pub(super) fn websocket_client_visible_error(
         ));
     }
     let close = error.close_before_terminal()?;
+    let message_too_big = close.code() == Some(WEBSOCKET_CLOSE_MESSAGE_TOO_BIG);
     let message = close
         .reason()
         .filter(|reason| !reason.is_empty())
-        .map_or_else(|| close.to_string(), str::to_owned);
+        .map_or_else(
+            || {
+                if message_too_big {
+                    "upstream websocket message too big".to_owned()
+                } else {
+                    close.to_string()
+                }
+            },
+            str::to_owned,
+        );
+    // RFC 6455 close 1009 是请求过大，客户端需收到可行动的错误码。
+    let (code, error_type) = if message_too_big {
+        (Some("message_too_big".to_owned()), "invalid_request_error")
+    } else {
+        (
+            close.code().map(|code| code.to_string()),
+            "websocket_close_error",
+        )
+    };
     Some(ClientVisibleUpstreamError::new(
         message,
-        close.code().map(|code| code.to_string()),
-        Some("websocket_close_error".to_owned()),
+        code,
+        Some(error_type.to_owned()),
     ))
 }
 
@@ -1453,6 +1527,7 @@ pub(super) fn websocket_send_state(error: &CodexWebSocketExchangeError) -> Upstr
         | CodexWebSocketExchangeError::PostSendAmbiguous { .. }
         | CodexWebSocketExchangeError::SendTimeout { .. }
         | CodexWebSocketExchangeError::ClosedBeforeTerminal(_)
+        | CodexWebSocketExchangeError::StreamEndedBeforeTerminal { .. }
         | CodexWebSocketExchangeError::ReceiveIdleTimeout { .. }
         | CodexWebSocketExchangeError::ReusedConnectionDiedBeforeFirstEvent { .. } => {
             UpstreamSendState::Ambiguous
@@ -1481,10 +1556,21 @@ pub(super) fn websocket_error_kind(error: &CodexWebSocketExchangeError) -> Provi
         CodexWebSocketExchangeError::ConnectionLimitReached(_) => ProviderErrorKind::RateLimited,
         CodexWebSocketExchangeError::Transport(_)
         | CodexWebSocketExchangeError::Connect(_)
-        | CodexWebSocketExchangeError::PostSendAmbiguous { .. }
-        | CodexWebSocketExchangeError::ClosedBeforeTerminal(_)
+        | CodexWebSocketExchangeError::StreamEndedBeforeTerminal { .. }
         | CodexWebSocketExchangeError::ReusedConnectionDiedBeforeFirstEvent { .. } => {
             ProviderErrorKind::Transport
+        }
+        // live 流可能包在 PostSendAmbiguous 中；RFC 6455 close 1009 是请求过大。
+        CodexWebSocketExchangeError::ClosedBeforeTerminal(_)
+        | CodexWebSocketExchangeError::PostSendAmbiguous { .. } => {
+            if error
+                .close_before_terminal()
+                .is_some_and(|close| close.code() == Some(WEBSOCKET_CLOSE_MESSAGE_TOO_BIG))
+            {
+                ProviderErrorKind::MessageTooBig
+            } else {
+                ProviderErrorKind::Transport
+            }
         }
         CodexWebSocketExchangeError::ConnectionObserved { .. } => {
             unreachable!("classified websocket errors never retain observation wrappers")
@@ -1504,4 +1590,29 @@ pub(super) fn remaining(deadline: SystemTime) -> Option<Duration> {
         .duration_since(SystemTime::now())
         .ok()
         .filter(|remaining| !remaining.is_zero())
+}
+
+/// 只恢复明确未发送的 HTTP 建连失败；已知 TLS/配置错误不反复尝试同一路径。
+fn transient_http_connect(error: &reqwest::Error) -> bool {
+    if !error.is_connect() || error.is_builder() {
+        return false;
+    }
+    let mut source = std::error::Error::source(error);
+    while let Some(cause) = source {
+        if cause.is::<native_tls::Error>() || cause.is::<rustls::Error>() {
+            return false;
+        }
+        if let Some(io) = cause.downcast_ref::<std::io::Error>()
+            && matches!(
+                io.kind(),
+                std::io::ErrorKind::PermissionDenied
+                    | std::io::ErrorKind::InvalidInput
+                    | std::io::ErrorKind::InvalidData
+            )
+        {
+            return false;
+        }
+        source = cause.source();
+    }
+    true
 }

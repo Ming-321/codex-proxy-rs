@@ -52,6 +52,25 @@ use crate::support::{
 };
 
 #[tokio::test]
+async fn account_capabilities_advertise_only_xai_oauth_quota_operations() {
+    let bundle = provider_xai::initialize(provider_ports()).await.unwrap();
+    let provider = bundle.admin_provider();
+    let id = ProviderAccountId::new("acct_capabilities").unwrap();
+    let oauth = provider.account_capabilities(&id, "oauth");
+    assert_eq!(
+        oauth,
+        gateway_admin::model::accounts::ProviderAccountCapabilities {
+            quota: true,
+            quota_refresh: true,
+            ..Default::default()
+        }
+    );
+    for kind in ["api_key", "unknown"] {
+        assert_eq!(provider.account_capabilities(&id, kind), Default::default());
+    }
+}
+
+#[tokio::test]
 async fn account_unavailable_clears_real_selector_cooldowns_only_for_deleted_account() {
     let store = MemoryProviderAccountStore::shared();
     let cooldowns = Arc::new(MemoryCooldownPort::default());
@@ -424,6 +443,7 @@ async fn xai_admin_provider_projects_cached_quota_models_and_canonical_export() 
             &UpstreamModelId::new("grok-4.5").expect("upstream model"),
             "Reply with exactly OK.",
         )
+        .await
         .expect("connection test operation");
     let Operation::Generate(request) = operation else {
         panic!("connection test must be a generate operation");

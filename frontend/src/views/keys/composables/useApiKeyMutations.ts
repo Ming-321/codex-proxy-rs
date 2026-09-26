@@ -1,6 +1,7 @@
 import type { Ref } from 'vue'
 import type { getApiKeys } from '@/api'
-import type { ClientProfileSelection, XaiClientProfileSelection } from '@/api/modules/client-profiles'
+import type { ProviderRequestProfile, ProviderRequestProfiles } from '@/api/modules/client-profiles'
+import { toast } from '@codex-proxy/ui'
 import { ref, shallowRef, watch } from 'vue'
 import {
   createApiKey,
@@ -10,7 +11,6 @@ import {
   revealApiKey,
   updateApiKey,
 } from '@/api'
-import { toast } from '@/components/base/BaseToast'
 import { useAsyncAction } from '@/composables/useAsyncAction'
 import { useCopyText } from '@/composables/useCopyText'
 import { useIdSet } from '@/composables/useIdSet'
@@ -20,8 +20,7 @@ type ApiKeyRow = Awaited<ReturnType<typeof getApiKeys>>['items'][number]
 export interface ApiKeyFormValue {
   seatId: string
   seatName: string
-  openaiClientProfileOverride: ClientProfileSelection | null
-  xaiClientProfileOverride: XaiClientProfileSelection | null
+  providerRequestProfileOverrides: ProviderRequestProfiles
   customKey: string
   name: string
   label: string
@@ -69,8 +68,7 @@ export function useApiKeyMutations(options: {
     form.value = {
       seatId: key.seatId ?? '',
       seatName: key.seatName ?? '',
-      openaiClientProfileOverride: key.openaiClientProfileOverride ? { ...key.openaiClientProfileOverride } : null,
-      xaiClientProfileOverride: key.xaiClientProfileOverride ? { ...key.xaiClientProfileOverride } : null,
+      providerRequestProfileOverrides: cloneProfiles(key.providerRequestProfileOverrides),
       customKey: '',
       name: key.name,
       label: key.label ?? '',
@@ -105,8 +103,6 @@ export function useApiKeyMutations(options: {
     await savingKeyAction.run(
       async () => {
         const payload = {
-          openaiClientProfileOverride: form.value.openaiClientProfileOverride,
-          xaiClientProfileOverride: form.value.xaiClientProfileOverride,
           name: form.value.name.trim(),
           label: form.value.label.trim() || null,
           groupIds: form.value.seatId ? [] : [...new Set(form.value.groupIds)],
@@ -117,12 +113,20 @@ export function useApiKeyMutations(options: {
         }
         const current = editingKey.value
         if (current) {
-          await updateApiKey({ id: current.id, ...payload })
+          await updateApiKey({
+            id: current.id,
+            ...payload,
+            providerRequestProfileOverrides: profileOverrideUpdates(
+              current.providerRequestProfileOverrides,
+              form.value.providerRequestProfileOverrides,
+            ),
+          })
         }
         else {
           const result = await createApiKey({
             ...payload,
             seatId: form.value.seatId || undefined,
+            providerRequestProfileOverrides: cloneProfiles(form.value.providerRequestProfileOverrides),
             customKey: form.value.customKey || undefined,
           })
           createdKey.value = result.plaintextKey
@@ -308,8 +312,7 @@ function emptyForm(): ApiKeyFormValue {
   return {
     seatId: '',
     seatName: '',
-    openaiClientProfileOverride: null,
-    xaiClientProfileOverride: null,
+    providerRequestProfileOverrides: {},
     customKey: '',
     name: '',
     label: '',
@@ -319,6 +322,22 @@ function emptyForm(): ApiKeyFormValue {
     dailyLimitUsd: '',
     weeklyLimitUsd: '',
   }
+}
+
+function cloneProfiles(value: ProviderRequestProfiles): ProviderRequestProfiles {
+  return JSON.parse(JSON.stringify(value)) as ProviderRequestProfiles
+}
+
+function profileOverrideUpdates(
+  previous: ProviderRequestProfiles,
+  current: ProviderRequestProfiles,
+): Record<string, ProviderRequestProfile | null> {
+  const updates: Record<string, ProviderRequestProfile | null> = cloneProfiles(current)
+  for (const provider of Object.keys(previous)) {
+    if (!Object.hasOwn(current, provider))
+      updates[provider] = null
+  }
+  return updates
 }
 
 function limitInputValue(limit: string | number) {

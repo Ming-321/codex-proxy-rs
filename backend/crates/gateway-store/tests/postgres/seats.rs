@@ -198,6 +198,57 @@ fn existing_key(id: &str) -> CarKeyDraft {
 }
 
 #[tokio::test]
+async fn upstream_plugin_upgrade_preserves_car_configuration_identity_and_charge_ledger() {
+    let Some(db) = setup_through("car_plugin_upgrade", 21).await else {
+        return;
+    };
+    let groups = PgAccountGroupRepository::new(db.pool.clone());
+    groups
+        .join_seat(join(&["key_a", "key_b"]), &context())
+        .await
+        .unwrap();
+    let budgets = PgClientBudgetStore::new(db.pool.clone());
+    budgets
+        .settle(charge("key_a", "req_before_plugin_upgrade", "12.5", true))
+        .await
+        .unwrap();
+    enable_automatic(&db, "260").await;
+    let protected = "select jsonb_build_object(
+        'groups', (select jsonb_agg(to_jsonb(t) order by id) from account_groups t),
+        'seats', (select jsonb_agg(to_jsonb(t) order by id) from seats t),
+        'keys', (select jsonb_agg(to_jsonb(t) order by id) from client_api_keys t),
+        'cycles', (select jsonb_agg(to_jsonb(t) order by account_group_id) from car_quota_cycles t),
+        'windows', (select jsonb_agg(to_jsonb(t) order by seat_id) from seat_budget_windows t),
+        'charges', (select jsonb_agg(to_jsonb(t) order by request_id) from client_key_charge_events t))";
+    let before: serde_json::Value = sqlx::query_scalar(protected)
+        .fetch_one(&db.pool)
+        .await
+        .unwrap();
+    super::TEST_MIGRATOR.run(&db.pool).await.unwrap();
+    super::TEST_MIGRATOR.run(&db.pool).await.unwrap();
+    let after: serde_json::Value = sqlx::query_scalar(protected)
+        .fetch_one(&db.pool)
+        .await
+        .unwrap();
+    assert_eq!(after, before, "新增插件结构不能重写拼车身份、配置或费用");
+    let warmup: bool =
+        sqlx::query_scalar("select account_warmup_enabled from runtime_settings where id=1")
+            .fetch_one(&db.pool)
+            .await
+            .unwrap();
+    assert!(!warmup);
+    budgets
+        .settle(charge("key_b", "req_after_plugin_upgrade", "7.5", true))
+        .await
+        .unwrap();
+    let used = groups.list_seats(group()).await.unwrap()[0]
+        .budget
+        .weekly_used_usd;
+    assert_eq!(used.canonical(), "20");
+    db.close().await;
+}
+
+#[tokio::test]
 async fn management_is_atomic_retryable_and_carries_usage_without_reallocating_on_disable() {
     let Some(db) = setup("car_management_atomic").await else {
         return;

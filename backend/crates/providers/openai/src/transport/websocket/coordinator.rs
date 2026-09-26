@@ -268,6 +268,7 @@ async fn prepare_pooled_websocket(
         pool.clone(),
         connect_lease,
         permit,
+        fast_path_budget.is_some(),
     );
     match waiter.wait(fast_path_budget).await? {
         WebSocketFastPath::Ready(handoff) => Ok(WebSocketFastPath::Ready(PreparedWebSocket {
@@ -323,6 +324,7 @@ fn start_pooled_websocket_connect(
     pool: CodexWebSocketPool,
     connect_lease: WebSocketPoolConnectLease,
     permit: Option<WebSocketOriginBreakerPermit>,
+    fast_path: bool,
 ) -> PooledWebSocketConnectWaiter {
     let task_key = connect_lease.key().clone();
     let started_at = connect_lease.started_at();
@@ -352,7 +354,7 @@ fn start_pooled_websocket_connect(
                 );
                 return;
             }
-            result = connect_websocket_connection(&connection, keepalive, context) => result,
+            result = connect_websocket_connection(&connection, keepalive, context, fast_path) => result,
         };
         match finish_breaker_attempt(permit, connected) {
             Ok((connection, connect_elapsed)) => {
@@ -460,7 +462,7 @@ async fn connect_with_budget(
     match wait_for_fast_path(
         TokioInstant::now(),
         fast_path_budget,
-        connect_websocket_connection(connection, keepalive, context),
+        connect_websocket_connection(connection, keepalive, context, fast_path_budget.is_some()),
     )
     .await
     {
@@ -473,9 +475,11 @@ async fn connect_websocket_connection(
     connection: &CodexWebSocketConnection,
     keepalive: PumpKeepalive,
     context: PumpLogContext,
+    fast_path: bool,
 ) -> Result<(PooledWebSocketConnection, Duration), CodexWebSocketExchangeError> {
     let started_at = Instant::now();
-    let (websocket, response) = connect_pumped_websocket(connection, keepalive, context).await?;
+    let (websocket, response) =
+        connect_pumped_websocket(connection, keepalive, context, fast_path).await?;
     Ok((
         PooledWebSocketConnection {
             websocket,
@@ -515,6 +519,10 @@ fn finish_breaker_attempt(
         Ok(connection) => {
             permit.succeed();
             Ok(connection)
+        }
+        Err(error) if crate::transport::connection::is_admission_failure(&error) => {
+            permit.cancel();
+            Err(error)
         }
         Err(CodexWebSocketExchangeError::Upstream(upstream)) if upstream.status_code < 500 => {
             // 账号或请求级 opening 响应证明 origin 可达，不得污染 transport 熔断器。

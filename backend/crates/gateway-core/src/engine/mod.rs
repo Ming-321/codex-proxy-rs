@@ -1,11 +1,17 @@
 //! 模型请求生命周期、单行持久化 port 与 commit/send/cancellation 边界。
 
 pub mod admission;
+pub mod authentication;
 pub mod budget;
+pub mod connection;
 pub mod continuation;
 pub mod coordinator;
 pub mod execution;
-mod observation;
+pub mod extensions;
+pub mod middleware;
+pub mod nested;
+pub mod observation;
+pub mod policy;
 pub mod probe;
 pub mod provider;
 
@@ -21,7 +27,10 @@ use std::time::{Duration, Instant, SystemTime};
 use async_trait::async_trait;
 use thiserror::Error;
 
-use crate::account::{AccountSelectionPolicy, ProviderAccountId};
+use crate::account::{
+    AccountCandidate, AccountSelection, AccountSelectionContext, AccountSelectionPolicy,
+    ProviderAccountId,
+};
 use crate::engine::continuation::{ContinuationBinding, NativeContinuationPin};
 use crate::error::{
     GatewayError, ProviderConnectionObservation, ProviderError, ProviderErrorKind, StoreError,
@@ -112,9 +121,9 @@ impl AttemptTrigger {
     }
 }
 
-/// 一次实际上游调用对 Provider 健康度产生的事实。
+/// 一次实际上游调用的诊断结果。
 ///
-/// 该事实只描述调用结果，不在 Core 中定义 circuit 策略或持久化方式。
+/// 该事实只描述调用结果，不参与跨请求的路由屏蔽。
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ProviderAttemptOutcome {
     /// 上游流自然完成且通过 canonical event 序列校验。
@@ -323,6 +332,14 @@ pub struct RequestAttemptContext {
     timing_started_at: Instant,
     trace: crate::diagnostics::TraceContext,
     concurrency_wait_budget: crate::concurrency::ConcurrencyWaitBudget,
+    connection_budget: connection::ConnectionBudget,
+    request_policy: Option<policy::RequestPolicyContext>,
+    execution_effects: Option<Arc<nested::ExecutionEffects>>,
+    middleware: Option<middleware::FrozenMiddlewarePlan>,
+    account_group_ids: Arc<[crate::account::scope::AccountGroupId]>,
+    endpoint: String,
+    client_transport: execution::ClientTransport,
+    extension_scope: extensions::ExtensionCallScope,
 }
 
 impl RequestAttemptContext {
@@ -368,6 +385,14 @@ impl RequestAttemptContext {
             timing_started_at: Instant::now(),
             trace: crate::diagnostics::TraceContext::default(),
             concurrency_wait_budget: crate::concurrency::ConcurrencyWaitBudget::default(),
+            connection_budget: connection::ConnectionBudget::default(),
+            request_policy: None,
+            execution_effects: None,
+            middleware: None,
+            account_group_ids: Arc::from([]),
+            endpoint: String::new(),
+            client_transport: execution::ClientTransport::InternalProbe,
+            extension_scope: extensions::ExtensionCallScope::default(),
         }
     }
 
@@ -387,10 +412,56 @@ impl RequestAttemptContext {
         self
     }
 
+    /// 传递请求内共享的连接恢复预算。
+    #[must_use]
+    pub fn with_connection_budget(mut self, budget: connection::ConnectionBudget) -> Self {
+        self.connection_budget = budget;
+        self
+    }
+
     /// 覆盖本次请求的单调计时原点。
     #[must_use]
     pub fn with_timing_started_at(mut self, timing_started_at: Instant) -> Self {
         self.timing_started_at = timing_started_at;
+        self
+    }
+
+    /// 附着与发布视图同代次的请求策略；诊断与无插件路径保持 `None`。
+    #[must_use]
+    pub fn with_request_policy(mut self, policy: Option<policy::RequestPolicyContext>) -> Self {
+        self.request_policy = policy;
+        self
+    }
+
+    /// 附着本次逻辑请求共享的外部副作用水位；不会传给 Provider 或插件 wire。
+    #[must_use]
+    pub fn with_execution_effects(
+        mut self,
+        effects: Option<Arc<nested::ExecutionEffects>>,
+    ) -> Self {
+        self.execution_effects = effects;
+        self
+    }
+
+    /// 附着与路由快照同代次的 attempt 中间件及可信绑定事实。
+    #[must_use]
+    pub fn with_middleware(
+        mut self,
+        middleware: Option<middleware::FrozenMiddlewarePlan>,
+        account_group_ids: Arc<[crate::account::scope::AccountGroupId]>,
+        endpoint: String,
+        client_transport: execution::ClientTransport,
+    ) -> Self {
+        self.middleware = middleware;
+        self.account_group_ids = account_group_ids;
+        self.endpoint = endpoint;
+        self.client_transport = client_transport;
+        self
+    }
+
+    #[must_use]
+    pub fn with_extension_scope(mut self, extension_scope: extensions::ExtensionCallScope) -> Self {
+        self.extension_scope = extension_scope;
         self
     }
 
@@ -408,6 +479,36 @@ impl RequestAttemptContext {
     #[must_use]
     pub const fn timing_started_at(&self) -> Instant {
         self.timing_started_at
+    }
+
+    #[must_use]
+    pub const fn request_policy(&self) -> Option<&policy::RequestPolicyContext> {
+        self.request_policy.as_ref()
+    }
+
+    #[must_use]
+    pub const fn extension_scope(&self) -> &extensions::ExtensionCallScope {
+        &self.extension_scope
+    }
+
+    #[must_use]
+    pub const fn middleware(&self) -> Option<&middleware::FrozenMiddlewarePlan> {
+        self.middleware.as_ref()
+    }
+
+    #[must_use]
+    pub fn account_group_ids(&self) -> &[crate::account::scope::AccountGroupId] {
+        &self.account_group_ids
+    }
+
+    #[must_use]
+    pub fn endpoint(&self) -> &str {
+        &self.endpoint
+    }
+
+    #[must_use]
+    pub const fn client_transport(&self) -> execution::ClientTransport {
+        self.client_transport
     }
 }
 
@@ -515,6 +616,60 @@ impl AttemptContext {
         self.request.timing_started_at()
     }
 
+    /// 返回同一次请求冻结的插件策略上下文。
+    #[must_use]
+    pub const fn request_policy_context(&self) -> Option<&policy::RequestPolicyContext> {
+        self.request.request_policy()
+    }
+
+    #[must_use]
+    pub const fn extension_scope(&self) -> &extensions::ExtensionCallScope {
+        self.request.extension_scope()
+    }
+
+    /// 在已选账号并持有其 lease 后，以 owned terminal 执行本次 retry 的中间件链。
+    ///
+    /// terminal 返回的 stream 仍须保持 cold；中间件不能取得 credential、发送状态、
+    /// canonical usage/cost 或结算所有权。
+    pub async fn execute_middleware(
+        &self,
+        operation: crate::operation::Operation,
+        provider: ProviderKind,
+        model: Option<String>,
+        account_id: ProviderAccountId,
+        terminal: provider::ProviderMiddlewareTerminal,
+    ) -> Result<provider::ProviderStream, ProviderError> {
+        let context = middleware::MiddlewareContext::new(
+            middleware::MiddlewareTarget {
+                request_id: self.request.request_id.clone(),
+                mount: middleware::MiddlewareMount::Attempt,
+                attempt_index: Some(self.attempt_index),
+                operation: Some(operation.kind()),
+                endpoint: self.request.endpoint.clone(),
+                transport: self.request.client_transport,
+                provider: Some(provider),
+                model,
+                account_id: Some(account_id),
+            },
+            middleware::MiddlewareAuthority {
+                client_key_id: self.request.client_api_key_ref.clone(),
+                account_group_ids: Arc::clone(&self.request.account_group_ids),
+                cancellation: self.cancellation.clone(),
+                deadline: self.deadline,
+                extension_scope: self.request.extension_scope.clone(),
+                execution_effects: self.request.execution_effects.as_ref().map(Arc::clone),
+            },
+        );
+        provider::execute_attempt_middleware(
+            self.request.middleware.as_ref(),
+            context,
+            operation,
+            self.request.client_transport,
+            terminal,
+        )
+        .await
+    }
+
     #[must_use]
     pub const fn attempt_index(&self) -> NonZeroU32 {
         self.attempt_index
@@ -580,6 +735,11 @@ impl AttemptContext {
         self.continuation_attempt
     }
 
+    #[must_use]
+    pub const fn connection_budget(&self) -> &connection::ConnectionBudget {
+        &self.request.connection_budget
+    }
+
     /// 返回本次 attempt 的 Provider 传输档位。
     #[must_use]
     pub const fn transport(&self) -> AttemptTransport {
@@ -589,6 +749,24 @@ impl AttemptContext {
     #[must_use]
     pub const fn cancellation(&self) -> &CancellationToken {
         &self.cancellation
+    }
+
+    /// 使用冻结策略选择账号；没有匹配策略时委托现有 `AccountSelector`。
+    pub async fn select_account<'a>(
+        &self,
+        provider: &ProviderKind,
+        model: Option<&str>,
+        candidates: &'a [AccountCandidate],
+        context: &AccountSelectionContext,
+    ) -> Result<Option<AccountSelection<'a>>, policy::AccountPolicyError> {
+        match self.request.request_policy() {
+            Some(policy) => {
+                policy
+                    .select_account(self.attempt_index, provider, model, candidates, context)
+                    .await
+            }
+            None => Ok(crate::account::AccountSelector.select(candidates, context)),
+        }
     }
 }
 
@@ -652,6 +830,15 @@ pub struct IntermediateFailure {
     pub upstream_status_code: Option<u16>,
     pub upstream_request_id: Option<String>,
     pub error: ProviderError,
+    pub latency: Duration,
+}
+
+/// 已认证有效请求在执行会话建立前的拒绝；不伪造模型执行或上游 attempt。
+#[derive(Debug)]
+pub struct EntryRejection {
+    pub request_id: ModelRequestId,
+    pub client_key_id: ClientApiKeyId,
+    pub error: GatewayError,
     pub latency: Duration,
 }
 
@@ -765,6 +952,11 @@ pub trait ExecutionStore: Send + Sync {
         &self,
         failure: IntermediateFailure,
     ) -> Result<(), StoreError>;
+    /// 记录路由或准入拒绝；可恢复观测失败不改变客户端结果。
+    async fn record_entry_rejection(&self, _rejection: EntryRejection) -> Result<(), StoreError> {
+        Ok(())
+    }
+
     /// 记录不挂在 `model_requests` 上的账号探测失败；默认丢弃。
     async fn record_probe_failure(&self, _failure: ProbeFailure) -> Result<(), StoreError> {
         Ok(())

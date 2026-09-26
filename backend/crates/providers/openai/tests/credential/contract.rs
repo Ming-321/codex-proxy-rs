@@ -162,6 +162,7 @@ fn selector_with_runtime(
         os_version: "6.8".to_owned(),
         arch: "x86_64".to_owned(),
         terminal: "selector-contract".to_owned(),
+        exact_user_agent: None,
         residency: None,
         verified_at: chrono::Utc::now(),
     });
@@ -2018,5 +2019,28 @@ fn model_access_queue_waits_for_allowed_account_without_using_free_forbidden_acc
             .unwrap()
             .iter()
             .all(|lease| lease.account_id() == &allowed)
+    );
+}
+
+#[test]
+fn legacy_oauth_defaults_to_websocket_and_reimport_preserves_http() {
+    use gateway_core::account::PlaintextCredential;
+    use provider_openai::credential::ResponsesTransport;
+    let incoming = CodexCredentialCodec::encode_new(
+        &secret("new-token"),
+        &profile("chatgpt-transport"),
+        Vec::new(),
+    )
+    .unwrap();
+    let mut legacy = incoming.expose_to_provider().clone();
+    legacy.remove("transport");
+    let runtime = CodexCredentialCodec::decode(&PlaintextCredential::new(legacy.clone())).unwrap();
+    assert_eq!(runtime.transport, ResponsesTransport::PreferWebsocket);
+    legacy.insert("transport".to_owned(), json!("http"));
+    let existing = PlaintextCredential::new(legacy);
+    let preserved = CodexCredentialCodec::preserve_installation_id(&incoming, &existing).unwrap();
+    assert_eq!(
+        CodexCredentialCodec::decode(&preserved).unwrap().transport,
+        ResponsesTransport::Http
     );
 }

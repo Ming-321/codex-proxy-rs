@@ -891,7 +891,7 @@ async fn api_key_import_export_preserves_target_without_oauth_exchange() {
     assert_eq!(data.api_key, "sk-test-only");
     assert_eq!(
         data.transport,
-        provider_openai::credential::ApiKeyTransport::Http
+        provider_openai::credential::ResponsesTransport::Http
     );
 }
 

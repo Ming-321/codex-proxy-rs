@@ -25,8 +25,7 @@ use super::accounts::{FakeAccountStore, FakeProviderAdmin, account_record, event
 
 fn runtime_settings(enabled: bool, probe_enabled: bool, adaptive: bool) -> RuntimeSettings {
     RuntimeSettings {
-        openai_client_profile: None,
-        xai_client_profile: None,
+        request_profiles: Default::default(),
         request_location_enabled: false,
         request_location: Default::default(),
         config_revision: revision(1),
@@ -52,6 +51,9 @@ fn runtime_settings(enabled: bool, probe_enabled: bool, adaptive: bool) -> Runti
         account_auto_freeze_probe_enabled: probe_enabled,
         account_auto_freeze_probe_model: Some("gpt-5.5".to_owned()),
         account_auto_freeze_adaptive_concurrency: adaptive,
+        account_warmup_enabled: false,
+        account_warmup_schedule_time: "08:00".to_owned(),
+        account_warmup_model: None,
         updated_at: Utc::now(),
     }
 }
@@ -201,6 +203,7 @@ impl AccountProbe for SuccessfulProbe {
     fn probe(
         &self,
         _: AccountProbeRequest,
+        _: Option<Arc<gateway_core::routing::RuntimeSnapshot>>,
     ) -> futures::future::BoxFuture<'_, Result<AccountProbeResult, AccountProbeError>> {
         Box::pin(async {
             Ok(AccountProbeResult {
@@ -216,6 +219,7 @@ impl AccountProbe for FailingProbe {
     fn probe(
         &self,
         _: AccountProbeRequest,
+        _: Option<Arc<gateway_core::routing::RuntimeSnapshot>>,
     ) -> futures::future::BoxFuture<'_, Result<AccountProbeResult, AccountProbeError>> {
         Box::pin(async {
             Err(AccountProbeError::new(

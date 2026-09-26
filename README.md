@@ -99,7 +99,7 @@ API Key 持有者可在同一登录页切换登录身份，进入 `/key-usage` �
 | Base URL | `http://127.0.0.1:8080/v1`；远程接入使用服务器的 HTTPS 地址 |
 | API Key | 管理端创建的客户端密钥 |
 
-可用模型以该密钥查询到的模型列表为准：
+查询该密钥可见的模型目录：
 
 ```bash
 curl http://127.0.0.1:8080/v1/models \
@@ -108,14 +108,13 @@ curl http://127.0.0.1:8080/v1/models \
 
 ## 文档
 
-- [客户端接入与生图](deploy/README.md#客户端配置)
-- [部署、备份与恢复](deploy/README.md)
-- [API 参考](docs/api.md)
-- [模型定价与手动同步](docs/api.md#模型定价)
-- [系统架构](docs/architecture.md)
-- [管理端主题](docs/theme.md)
-- [数据库迁移](backend/migrations/README.md)
-- [贡献与审查](CONTRIBUTING.md)
+| 任务 | 文档 |
+| --- | --- |
+| 部署与使用 | [部署、备份与恢复](deploy/README.md) · [客户端接入与生图](deploy/README.md#客户端配置) |
+| 接口集成 | [API 参考](docs/api.md) · [模型定价](docs/api.md#模型定价) |
+| 使用插件 | [安装、配置与使用](docs/plugins.md) |
+| 开发插件 | [SDK 与合同](backend/crates/gateway-plugin/sdk/README.md) · [打包工具](backend/apps/plugin-cli/README.md) |
+| 开发宿主 | [贡献与验证](CONTRIBUTING.md) · [源码联调](docs/development.md) · [系统架构](docs/architecture.md) · [管理端主题](docs/theme.md) · [数据库迁移](backend/migrations/README.md) |
 
 ## 社区
 

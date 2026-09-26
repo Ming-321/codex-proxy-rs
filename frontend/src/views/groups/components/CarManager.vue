@@ -1,15 +1,7 @@
 <script setup lang="ts">
 import type { AccountGroup } from '@/api'
+import { BaseButton, BaseCard, BaseColorPicker, BaseConfirmModal, BaseFormItem, BaseInput, BaseSelect, BaseSwitch, toast } from '@codex-proxy/ui'
 import { shallowRef } from 'vue'
-import BaseButton from '@/components/base/BaseButton.vue'
-import BaseCard from '@/components/base/BaseCard.vue'
-import BaseColorPicker from '@/components/base/BaseColorPicker/index.vue'
-import BaseConfirmModal from '@/components/base/BaseConfirmModal.vue'
-import BaseFormItem from '@/components/base/BaseForm/FormItem.vue'
-import BaseInput from '@/components/base/BaseInput.vue'
-import BaseSelect from '@/components/base/BaseSelect.vue'
-import BaseSwitch from '@/components/base/BaseSwitch.vue'
-import { toast } from '@/components/base/BaseToast'
 import ClientProfileEditor from '@/components/client-profile/ClientProfileEditor.vue'
 import XaiClientProfileEditor from '@/components/client-profile/XaiClientProfileEditor.vue'
 import { formatDateTime } from '@/utils/date'
@@ -176,7 +168,7 @@ async function copy(value: string) {
                 </td>
                 <td>
                   <div v-for="key in seat.keys" :key="key.id">
-                    {{ key.name }}{{ key.revoke ? '（撤销）' : key.create ? '（新增）' : key.enabled ? '' : '（停用）' }} · {{ key.openaiClientProfileOverride ? `${key.openaiClientProfileOverride.platform} / ${key.openaiClientProfileOverride.client}` : key.xaiClientProfileOverride ? '独立身份' : '继承默认身份' }}
+                    {{ key.name }}{{ key.revoke ? '（撤销）' : key.create ? '（新增）' : key.enabled ? '' : '（停用）' }} · {{ key.openaiClientProfileOverride ? key.openaiClientProfileOverride.mode === 'custom' ? '自定义身份' : `${key.openaiClientProfileOverride.platform} / ${key.openaiClientProfileOverride.client}` : key.xaiClientProfileOverride ? '独立身份' : '继承默认身份' }}
                     <p v-if="!key.create && !keysBelongToSeat(key.id, seat.id)" class="my-1 text-cp-xs text-cp-text-secondary">
                       纳入已有 Key：当前日已用 ${{ money(keys.find(item => item.id === key.id)?.dailyUsedUsd ?? 0) }}，周已用 ${{ money(keys.find(item => item.id === key.id)?.weeklyUsedUsd ?? 0) }}，保存时承接费用；窗口不兼容则整次拒绝
                     </p>
@@ -303,7 +295,7 @@ async function copy(value: string) {
             </p>
             <details v-else class="mt-3">
               <summary class="cursor-pointer text-cp-sm text-cp-text-secondary">
-                客户端身份 {{ key.openaiClientProfileOverride ? `${key.openaiClientProfileOverride.client} / ${key.openaiClientProfileOverride.platform}` : '继承默认' }}
+                客户端身份 {{ key.openaiClientProfileOverride ? key.openaiClientProfileOverride.mode === 'custom' ? '自定义身份' : `${key.openaiClientProfileOverride.client} / ${key.openaiClientProfileOverride.platform}` : '继承默认' }}
               </summary>
               <div class="mt-3">
                 <XaiClientProfileEditor v-if="account?.provider === 'xai'" v-model="key.xaiClientProfileOverride" allow-inherit /><ClientProfileEditor v-else v-model="key.openaiClientProfileOverride" allow-inherit />

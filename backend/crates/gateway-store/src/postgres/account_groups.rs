@@ -234,7 +234,7 @@ impl AccountGroupStore for PgAccountGroupRepository {
             .map(|group_id| group_id.as_str().to_owned())
             .collect::<Vec<_>>();
         let rows = sqlx::query(
-            "select proxy.location_country, proxy.location_region, proxy.location_city, proxy.location_timezone, membership.account_group_id,
+            "select proxy.auto_location, proxy.detected_location_json, proxy.location_country, proxy.location_region, proxy.location_city, proxy.location_timezone, membership.account_group_id,
                     account.id, account.provider_kind, account.name, account.notes, account.email,
                     account.upstream_user_id, account.upstream_account_id, account.plan_type,
                     account.authentication_kind, account.credential_revision, account.outbound_proxy_url,
@@ -602,6 +602,8 @@ async fn group_costs(
         return Ok(BTreeMap::new());
     }
     let completed_usage = completed_usage_fact_predicate("mr");
+    // 用量按实际完成请求的账号统计：账号属于多个分组时计入每个所属分组，
+    // 不再按 Client Key 绑定分组快照归属，避免多分组 Key 的费用重复出现在未承接请求的分组上。
     let statement = format!(
         "with requested_groups(group_id) as (
            select unnest($1::text[])
@@ -614,8 +616,10 @@ async fn group_costs(
                 coalesce(sum(mr.cost_amount), 0)::text as retained_total_usd
          from requested_groups
          cross join runtime_settings settings
+         left join account_group_accounts membership
+           on membership.account_group_id = requested_groups.group_id
          left join model_requests mr
-           on mr.routing_group_refs @> array[requested_groups.group_id]::text[]
+           on mr.provider_account_ref = membership.provider_account_id
           and mr.started_at >= now() - make_interval(days => settings.usage_retention_days::int)
           and {completed_usage}
           and mr.cost_currency = 'USD'

@@ -321,6 +321,19 @@ impl XaiAdminProvider {
 
 #[async_trait]
 impl ProviderAdmin for XaiAdminProvider {
+    fn account_capabilities(
+        &self,
+        _account_id: &ProviderAccountId,
+        authentication_kind: &str,
+    ) -> gateway_admin::model::accounts::ProviderAccountCapabilities {
+        let oauth = authentication_kind == crate::credential::XAI_AUTHENTICATION_KIND_OAUTH;
+        gateway_admin::model::accounts::ProviderAccountCapabilities {
+            quota: oauth,
+            quota_refresh: oauth,
+            ..Default::default()
+        }
+    }
+
     fn client_profile_options(
         &self,
     ) -> Result<gateway_core::account::OpaqueProviderData, ProviderAdminError> {
@@ -391,7 +404,7 @@ impl ProviderAdmin for XaiAdminProvider {
         self.quota.invalidate_scheduling(account_ids);
     }
 
-    fn connection_test_operation(
+    async fn connection_test_operation(
         &self,
         upstream_model: &UpstreamModelId,
         input_text: &str,
@@ -586,7 +599,7 @@ impl ProviderAdmin for XaiAdminProvider {
 
     async fn start_authorization(
         &self,
-        pending: PendingAuthorizationMutation,
+        pending: gateway_admin::model::provider_credentials::PendingAuthorizationMutation,
     ) -> Result<AuthorizationStarted, ProviderAdminError> {
         if pending.provider_kind() != &self.provider_kind {
             return Err(provider_error(ProviderAdminErrorKind::Invalid));
@@ -901,16 +914,19 @@ impl XaiAdminProvider {
                         .with_outbound_proxy(stored.mutation.outbound_proxy().cloned()),
                     credential: prepared.credential,
                 };
-                PreparedAuthorizationCredential::Create(prepared_create(prepared, Utc::now())?)
+                PreparedAuthorizationCredential::Create(Box::new(prepared_create(
+                    prepared,
+                    Utc::now(),
+                )?))
             }
             AuthorizationMutationTarget::Reauthorize { .. } => {
                 let current =
                     current.ok_or_else(|| provider_error(ProviderAdminErrorKind::Internal))?;
                 let prepared = verified_rotation(current, tokens)?;
-                PreparedAuthorizationCredential::Reauthorize(prepared_rotation(
+                PreparedAuthorizationCredential::Reauthorize(Box::new(prepared_rotation(
                     prepared,
                     self.provider_kind.clone(),
-                )?)
+                )?))
             }
         };
         Ok(PreparedAuthorizationCommit::new(
@@ -1033,6 +1049,7 @@ fn prepared_rotation(
             email: profile.email,
             plan_type: profile.plan_type,
             preserve_profile,
+            preserve_credential_state: false,
             provider_material: ProviderDocument::new(OpaqueProviderData::new(
                 credential.into_inner(),
             )),

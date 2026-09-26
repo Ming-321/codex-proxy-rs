@@ -1,13 +1,14 @@
 <script setup lang="ts">
-import type { ClientProfilePreset, ClientProfilePreview, ClientProfileSelection } from '@/api/modules/client-profiles'
+import type {
+  ClientProfileOptions,
+  ClientProfilePreview,
+  ClientProfileSelection,
+} from '@/api/modules/client-profiles'
+import { BaseButton, BaseSegmented } from '@codex-proxy/ui'
 import { computed, onMounted, shallowRef, watch } from 'vue'
 import { getClientProfileOptions, previewClientProfile } from '@/api/modules/client-profiles'
-import BaseButton from '@/components/base/BaseButton.vue'
-import BaseFormItem from '@/components/base/BaseForm/FormItem.vue'
-import BaseInput from '@/components/base/BaseInput.vue'
-import BaseSegmented from '@/components/base/BaseSegmented.vue'
-import BaseSelect from '@/components/base/BaseSelect.vue'
 import { errorMessage } from '@/utils/async'
+import ClientProfilePresetFields from './ClientProfilePresetFields.vue'
 import ClientProfilePreviewPanel from './ClientProfilePreviewPanel.vue'
 
 const props = withDefaults(defineProps<{ active?: boolean, disabled?: boolean, allowInherit?: boolean }>(), {
@@ -16,74 +17,39 @@ const props = withDefaults(defineProps<{ active?: boolean, disabled?: boolean, a
   allowInherit: false,
 })
 const model = defineModel<ClientProfileSelection | null>({ required: true })
-const presets = shallowRef<ClientProfilePreset[]>([])
-const globalConfiguration = shallowRef<ClientProfileSelection>()
+const options = shallowRef<ClientProfileOptions>()
 const preview = shallowRef<ClientProfilePreview>()
 const loading = shallowRef(true)
 const loadError = shallowRef('')
 const previewError = shallowRef('')
 const previewing = shallowRef(false)
-const platforms = { macos: 'MacOS', linux: 'Linux', windows: 'Windows' }
-const presetOptions = computed(() => presets.value.map(({ configuration }) => ({
-  value: `${configuration.platform}-${configuration.client}`,
-  label: `${platforms[configuration.platform]} · ${configuration.client === 'desktop' ? 'Desktop' : 'CLI'}`,
-})))
-const currentPreset = computed(() => presets.value.find(({ configuration }) =>
-  configuration.client === model.value?.client && configuration.platform === model.value?.platform,
-))
-const needsVersionInput = computed(() => model.value?.versionMode === 'fixed'
-  && (!model.value.codexVersion || (model.value.client === 'desktop' && (!model.value.desktopVersion || !model.value.desktopBuild))))
+const independentDraft = shallowRef<ClientProfileSelection>()
+const effective = computed(() => model.value ?? options.value?.globalConfiguration)
+const inherited = computed(() => props.allowInherit && model.value === null)
+const preset = computed(() => effective.value && !effective.value.mode ? effective.value : undefined)
+const custom = computed(() => effective.value?.mode === 'custom' || preset.value?.versionMode === 'fixed')
+const needsInput = computed(() => effective.value?.mode === 'custom'
+  ? !effective.value.userAgent.trim()
+  : preset.value?.versionMode === 'fixed'
+    && (!preset.value.codexVersion || (preset.value.client === 'desktop' && (!preset.value.desktopVersion || !preset.value.desktopBuild))))
 const profileSource = computed({
   get: () => model.value === null ? 'global' : 'independent',
   set: (value: string) => {
-    if (value === 'global')
+    if (value === 'global') {
+      if (model.value)
+        independentDraft.value = { ...model.value }
       model.value = null
-    else if (globalConfiguration.value)
-      model.value = { ...globalConfiguration.value }
-  },
-})
-const selectedPreset = computed({
-  get: () => model.value ? `${model.value.platform}-${model.value.client}` : '',
-  set: (value: string) => {
-    const preset = presets.value.find(({ configuration }) => `${configuration.platform}-${configuration.client}` === value)
-    if (preset)
-      model.value = { ...preset.configuration, versionMode: preset.automaticAvailable ? 'latest' : 'fixed' }
-  },
-})
-const versionMode = computed({
-  get: () => model.value?.versionMode ?? 'latest',
-  set: (value: string) => {
-    if (!model.value)
-      return
-    const fixed = value === 'fixed'
-    model.value = {
-      ...model.value,
-      versionMode: fixed ? 'fixed' : 'latest',
-      codexVersion: fixed ? preview.value?.codexVersion ?? null : null,
-      desktopVersion: fixed ? preview.value?.desktopVersion ?? null : null,
-      desktopBuild: fixed ? preview.value?.desktopBuild ?? null : null,
+    }
+    else if (independentDraft.value ?? options.value?.globalConfiguration) {
+      model.value = { ...(independentDraft.value ?? options.value!.globalConfiguration) }
     }
   },
 })
-const customFields = [
-  { key: 'originator', label: '客户端标识' },
-  { key: 'osVersion', label: '系统版本' },
-  { key: 'arch', label: 'CPU 架构' },
-  { key: 'terminal', label: '终端标记' },
-] as const
-
-function updateField(key: keyof ClientProfileSelection, value: string) {
-  if (model.value)
-    model.value = { ...model.value, [key]: value || null }
-}
-
 async function load() {
   loading.value = true
   loadError.value = ''
   try {
-    const options = await getClientProfileOptions()
-    presets.value = options.presets
-    globalConfiguration.value = options.globalConfiguration
+    options.value = await getClientProfileOptions()
   }
   catch (error) {
     loadError.value = errorMessage(error)
@@ -97,8 +63,8 @@ watch([model, () => props.active], ([configuration, active], _, onCleanup) => {
   let cancelled = false
   preview.value = undefined
   previewError.value = ''
-  previewing.value = active && !needsVersionInput.value
-  if (!active || needsVersionInput.value)
+  previewing.value = active && !needsInput.value
+  if (!active || needsInput.value)
     return
   const timer = setTimeout(async () => {
     try {
@@ -108,7 +74,7 @@ watch([model, () => props.active], ([configuration, active], _, onCleanup) => {
     }
     catch (error) {
       if (!cancelled)
-        previewError.value = errorMessage(error)
+        previewError.value = errorMessage(error).replaceAll('User-Agent', '用户代理')
     }
     finally {
       if (!cancelled)
@@ -121,7 +87,7 @@ watch([model, () => props.active], ([configuration, active], _, onCleanup) => {
   })
 }, { immediate: true })
 
-onMounted(load)
+onMounted(() => load())
 </script>
 
 <template>
@@ -135,63 +101,35 @@ onMounted(load)
           { label: '全局配置', value: 'global' },
           { label: '独立配置', value: 'independent' },
         ]"
-        :disabled="disabled || loading || !!loadError"
+        :disabled="disabled || loading || !options"
       />
       <slot name="source-extra" />
     </div>
-    <div v-if="loadError" role="alert" class="flex items-center justify-between gap-3 text-cp text-cp-error">
+    <div v-if="loadError" role="alert" class="flex flex-wrap items-center justify-between gap-3 text-cp text-cp-error">
       <span>预设加载失败：{{ loadError }}</span>
-      <BaseButton size="sm" @click="load">
+      <BaseButton size="sm" :disabled="disabled || loading" @click="load()">
         重试
       </BaseButton>
     </div>
-    <p v-else-if="loading" role="status" class="m-0 text-cp text-cp-text-secondary">
-      正在加载客户端预设…
+    <p v-if="loading" role="status" class="m-0 text-cp text-cp-text-secondary">
+      正在加载客户端身份…
     </p>
-    <template v-else>
-      <template v-if="model">
-        <div class="grid gap-4 sm:grid-cols-2">
-          <BaseFormItem label="客户端预设">
-            <BaseSelect v-model="selectedPreset" class="w-full" :options="presetOptions" :disabled="disabled" />
-          </BaseFormItem>
-          <BaseFormItem label="版本策略">
-            <BaseSelect
-              v-model="versionMode"
-              class="w-full"
-              :options="[
-                { label: '跟随最新版本', value: 'latest', disabled: !currentPreset?.automaticAvailable },
-                { label: '自定义版本', value: 'fixed' },
-              ]"
-              :disabled="disabled"
-            />
-          </BaseFormItem>
-        </div>
-        <p v-if="currentPreset?.reason" class="m-0 text-cp-sm text-cp-text-secondary">
-          {{ currentPreset.reason }}
-        </p>
-        <div v-if="model.versionMode === 'fixed'" class="grid gap-4 sm:grid-cols-2">
-          <BaseFormItem label="Codex Core 版本" required>
-            <BaseInput :model-value="model.codexVersion ?? ''" :disabled="disabled" placeholder="例如 0.155.0" @update:model-value="updateField('codexVersion', $event)" />
-          </BaseFormItem>
-          <template v-if="model.client === 'desktop'">
-            <BaseFormItem label="Desktop 版本" required>
-              <BaseInput :model-value="model.desktopVersion ?? ''" :disabled="disabled" placeholder="填写该制品的应用版本" @update:model-value="updateField('desktopVersion', $event)" />
-            </BaseFormItem>
-            <BaseFormItem label="Desktop 构建号" required>
-              <BaseInput :model-value="model.desktopBuild ?? ''" :disabled="disabled" placeholder="填写该制品的构建号" @update:model-value="updateField('desktopBuild', $event)" />
-            </BaseFormItem>
-          </template>
-          <BaseFormItem v-for="field in customFields" :key="field.key" :label="field.label">
-            <BaseInput
-              :model-value="model[field.key] ?? ''"
-              :placeholder="currentPreset?.defaults[field.key] ?? ''"
-              :disabled="disabled"
-              @update:model-value="updateField(field.key, $event)"
-            />
-          </BaseFormItem>
-        </div>
-      </template>
-    </template>
-    <ClientProfilePreviewPanel :preview="preview" :previewing="previewing" :needs-version-input="needsVersionInput" :error="previewError" />
+    <ClientProfilePresetFields
+      v-else-if="!inherited"
+      :model-value="effective ?? null"
+      :presets="options?.presets ?? []"
+      :preview="preview"
+      :previewing="previewing"
+      :error="previewError"
+      :disabled="disabled"
+      @update:model-value="model = $event"
+    />
+    <ClientProfilePreviewPanel
+      v-if="inherited || !custom"
+      :preview="preview"
+      :previewing="previewing"
+      :needs-version-input="!!needsInput"
+      :error="previewError"
+    />
   </div>
 </template>

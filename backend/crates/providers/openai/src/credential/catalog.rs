@@ -277,7 +277,7 @@ impl CodexCredentialCatalogService {
             .map_err(|_| CodexCredentialCatalogError::InvalidCredentialData)?;
         let request_profile = match scope.request_profile(&provider) {
             Some(configuration) => {
-                crate::transport::profile::selection::ClientProfileSelection::parse(configuration)
+                crate::transport::profile::identity::RequestProfileSelection::parse(configuration)
                     .and_then(|selection| selection.resolve(&self.profile))
                     .map_err(|_| CodexCredentialCatalogError::InvalidCredentialData)?
             }
@@ -532,6 +532,27 @@ impl CodexCredentialCatalogService {
         let catalog = CodexPlanCatalog::new(scope, Utc::now(), model_ids(&fetched.models));
         self.replace_plan_catalog(&catalog).await?;
         Ok(catalog)
+    }
+
+    /// 读取目标账号的原生目录条目；供管理端按账号导出目录文件使用。
+    ///
+    /// 按账号直接请求上游，避免进程快照的跨套餐同名模型合并替换目标账号的原生对象；
+    /// 停用账号也不在常规快照候选中，仍允许管理员显式导出。
+    /// 返回顺序沿用上游目录顺序，条目内容保持上游原样，不做别名改写或字段裁剪。
+    pub async fn account_catalog_documents(
+        &self,
+        account: &ProviderAccount,
+    ) -> Result<(Vec<CodexCatalogModel>, SystemTime), CodexCredentialCatalogError> {
+        let client = CodexBackendClient::new(
+            self.http.clone(),
+            self.base_url.clone(),
+            self.profile.clone(),
+        );
+        let fetched = self.fetch_account_models(&client, account, None).await?;
+        if fetched.models.is_empty() {
+            return Err(CodexCredentialCatalogError::NoEligibleCredential);
+        }
+        Ok((fetched.models, SystemTime::now()))
     }
 
     /// 读取当前账号所属套餐的目录 cache，不触发上游请求。

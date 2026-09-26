@@ -27,8 +27,7 @@ use gateway_core::engine::admission::{
 use gateway_core::engine::budget::{ClientBudgetCharge, ClientBudgetError, ClientBudgetPort};
 use gateway_core::engine::execution::{
     AuthenticatedClient, ClientAuthenticationError, DefaultExecutionService, ExecutionService,
-    ExecutionSession, ProviderCircuitDecision, ProviderCircuitError, ProviderCircuitPort,
-    StartExecution, StartProviderExecution, StartedExecution,
+    ExecutionSession, StartExecution, StartProviderExecution, StartedExecution,
 };
 use gateway_core::engine::provider::{
     Provider, ProviderCallMetadata, ProviderRegistry, ProviderRequest, ProviderStream,
@@ -48,9 +47,7 @@ use gateway_core::lifecycle::{
 use gateway_core::metering::{Decimal, ProviderReportedCost};
 use gateway_core::operation::Operation;
 use gateway_core::policy::ClientApiKeyId;
-use gateway_core::routing::{
-    ProviderCatalogGeneration, ProviderKind, ProviderModelCapabilities, PublicModelId,
-};
+use gateway_core::routing::{ProviderCatalogGeneration, ProviderModelCapabilities, PublicModelId};
 use gateway_core::runtime::RuntimeSnapshotHandle;
 use gateway_core::upstream::{UpstreamSendState, UpstreamTransport};
 use gateway_protocol::openai::codex_responses_request_semantics;
@@ -997,29 +994,6 @@ impl ClientBudgetPort for SettlementPorts {
     }
 }
 
-impl ProviderCircuitPort for SettlementPorts {
-    fn decision<'a>(
-        &'a self,
-        _: &'a ProviderKind,
-    ) -> BoxFuture<'a, Result<ProviderCircuitDecision, ProviderCircuitError>> {
-        Box::pin(async { Ok(ProviderCircuitDecision::Allow) })
-    }
-
-    fn observe_failure<'a>(
-        &'a self,
-        _: &'a ProviderKind,
-    ) -> BoxFuture<'a, Result<(), ProviderCircuitError>> {
-        Box::pin(async { Ok(()) })
-    }
-
-    fn observe_success<'a>(
-        &'a self,
-        _: &'a ProviderKind,
-    ) -> BoxFuture<'a, Result<(), ProviderCircuitError>> {
-        Box::pin(async { Ok(()) })
-    }
-}
-
 struct ChargedWebSocketProvider;
 
 fn websocket_charge() -> Decimal {
@@ -1043,7 +1017,7 @@ impl Provider for ChargedWebSocketProvider {
     }
 
     async fn execute(
-        &self,
+        self: Arc<Self>,
         request: ProviderRequest,
         _: AttemptContext,
     ) -> Result<ProviderStream, ProviderError> {
@@ -1126,7 +1100,6 @@ async fn websocket_disconnect_during_core_settlement_finishes_charge_before_rele
             ports.clone(),
             ProviderRegistry::new([Arc::new(ChargedWebSocketProvider) as Arc<dyn Provider>])
                 .unwrap(),
-            ports.clone(),
             ports.clone(),
             Arc::new(UnusedContinuation),
             Arc::new(IgnoredClientApiKeyUsage),

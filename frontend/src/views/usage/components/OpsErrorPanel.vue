@@ -2,14 +2,9 @@
 import type { UsageTimeRangeParams } from '../composables/useUsageTimeRange'
 import type { OpsError } from '@/api'
 
+import { BaseIconButton, BaseInput, BaseTable, BaseTableColumnSettings, BaseTablePagination, useTableColumns } from '@codex-proxy/ui'
 import { Eye, RefreshCw, Search } from '@lucide/vue'
 import { shallowRef, toRef } from 'vue'
-import BaseIconButton from '@/components/base/BaseIconButton.vue'
-import BaseInput from '@/components/base/BaseInput.vue'
-import BaseTableColumnSettings from '@/components/base/BaseTable/BaseTableColumnSettings.vue'
-import BaseTablePagination from '@/components/base/BaseTable/BaseTablePagination.vue'
-import BaseTable from '@/components/base/BaseTable/index.vue'
-import { useTableColumns } from '@/components/base/BaseTable/useTableColumns'
 import ProviderIconGroup from '@/components/ProviderIconGroup.vue'
 import { useOpsErrorsTable } from '../composables/useOpsErrorsTable'
 import { opsErrorColumns } from '../constants'
@@ -55,6 +50,10 @@ const upstreamSendStateLabels: Record<string, string> = {
 function showDetail(record: OpsError) {
   selectedRecord.value = record
   detailOpen.value = true
+}
+
+function handleRefresh() {
+  void refresh()
 }
 
 function accountText(record: OpsError) {
@@ -117,7 +116,7 @@ function upstreamSendStateText(value: string | null | undefined) {
           label="刷新错误明细"
           :loading="refreshing"
           :disabled="loading || refreshing"
-          @click="refresh"
+          @click="handleRefresh"
         >
           <template #loading>
             <RefreshCw class="size-4.5 animate-spin motion-reduce:animate-none" />

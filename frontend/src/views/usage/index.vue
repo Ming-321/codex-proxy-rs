@@ -1,16 +1,9 @@
 <script setup lang="ts">
+import { BaseCard, BaseIconButton, BasePageHeader, BaseSegmented, BaseSelect, BaseTableColumnSettings, BaseTablePagination, useTableColumns } from '@codex-proxy/ui'
+
 import { Eye } from '@lucide/vue'
 import { computed, shallowRef, watch } from 'vue'
-
-import BaseCard from '@/components/base/BaseCard.vue'
-import BaseIconButton from '@/components/base/BaseIconButton.vue'
-import BasePageHeader from '@/components/base/BasePageHeader.vue'
-import BaseSegmented from '@/components/base/BaseSegmented.vue'
-import BaseSelect from '@/components/base/BaseSelect.vue'
-import BaseTableColumnSettings from '@/components/base/BaseTable/BaseTableColumnSettings.vue'
-import BaseTablePagination from '@/components/base/BaseTable/BaseTablePagination.vue'
-import { useTableColumns } from '@/components/base/BaseTable/useTableColumns'
-import ProviderFilterSegmented from '@/components/ProviderFilterSegmented.vue'
+import ProviderFilter from '@/components/ProviderFilter.vue'
 import OpsErrorPanel from './components/OpsErrorPanel.vue'
 import UsageFilters from './components/UsageFilters.vue'
 import UsageInsightsGrid from './components/UsageInsightsGrid.vue'
@@ -67,10 +60,10 @@ watch(timeRange, () => {
     <BasePageHeader title="使用统计" description="查看请求用量、性能趋势与调用错误记录">
       <template #actions>
         <BaseSelect v-model="timeRange" :options="usageTimeRangeOptions" class="w-34" />
-        <ProviderFilterSegmented
+        <ProviderFilter
           v-model="providerQuery"
           :disabled="refreshingList"
-          class="w-31 shrink-0"
+          class="shrink-0"
         />
       </template>
     </BasePageHeader>

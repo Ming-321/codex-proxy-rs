@@ -1,14 +1,11 @@
 <script setup lang="ts">
+import type { AccountAuthorizationView } from '../../composables/useAccountAuthorization'
+import { BaseButton, BaseForm, BaseFormItem, BaseIconButton, BaseScrollbar, BaseTextarea } from '@codex-proxy/ui'
 import { Copy, KeyRound } from '@lucide/vue'
-import BaseButton from '@/components/base/BaseButton.vue'
-import BaseFormItem from '@/components/base/BaseForm/FormItem.vue'
-import BaseForm from '@/components/base/BaseForm/index.vue'
-import BaseIconButton from '@/components/base/BaseIconButton.vue'
-import BaseScrollbar from '@/components/base/BaseScrollbar.vue'
-import BaseTextarea from '@/components/base/BaseTextarea.vue'
+import { computed } from 'vue'
 import { useCopyText } from '@/composables/useCopyText'
 
-defineProps<{
+const props = defineProps<{
   authUrl: string
   panelTitle: string
   panelDescription: string
@@ -16,10 +13,28 @@ defineProps<{
   callbackPlaceholder: string
   loading: boolean
   disabled: boolean
+  authorization: AccountAuthorizationView
+  canStart: boolean
 }>()
-const emit = defineEmits<{ regenerate: [] }>()
+const emit = defineEmits<{ regenerate: [], reset: [] }>()
 const callback = defineModel<string>({ required: true })
 const copyWithToast = useCopyText()
+const safeAuthUrl = computed(() => {
+  try {
+    const url = new URL(props.authUrl)
+    return ['http:', 'https:'].includes(url.protocol) && !url.username && !url.password ? url.href : undefined
+  }
+  catch {
+    return undefined
+  }
+})
+const statusText = computed(() => {
+  if (props.authorization.status === 'expired')
+    return '授权已过期，可重新开始或检查已完成的授权结果'
+  if (props.authorization.status === 'paused')
+    return '查询已暂停，可检查授权结果后继续'
+  return ''
+})
 </script>
 
 <template>
@@ -46,11 +61,12 @@ const copyWithToast = useCopyText()
       <BaseButton
         variant="secondary"
         :loading="loading"
-        :disabled="disabled"
-        @click="emit('regenerate')"
+        :disabled="disabled || (!authorization.flow && !canStart)"
+        @click="authorization.flow ? emit('reset') : emit('regenerate')"
       >
-        {{ authUrl ? '重新生成授权链接' : '生成授权链接' }}
+        {{ authorization.flow ? '重新开始授权' : '生成授权链接' }}
       </BaseButton>
+      <a v-if="safeAuthUrl" :href="safeAuthUrl" target="_blank" rel="noopener noreferrer" class="text-cp-sm text-cp-link underline underline-offset-4">打开授权页面</a>
     </div>
 
     <BaseForm v-if="authUrl">
@@ -78,7 +94,14 @@ const copyWithToast = useCopyText()
       </BaseFormItem>
     </BaseForm>
 
-    <BaseForm>
+    <p v-if="statusText" class="m-0 text-cp-sm text-cp-text-secondary" role="status">
+      {{ statusText }}
+    </p>
+    <p v-if="authorization.error" class="m-0 text-cp-sm text-cp-error" role="alert">
+      {{ authorization.error }}
+    </p>
+
+    <BaseForm v-if="authorization.flow">
       <BaseFormItem :label="callbackLabel" required>
         <BaseTextarea
           v-model="callback"

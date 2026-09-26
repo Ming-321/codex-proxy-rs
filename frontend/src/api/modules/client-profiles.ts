@@ -1,9 +1,16 @@
 import request from '../request'
 
-export interface ClientProfileSelection {
+export type ProviderRequestProfile = Record<string, unknown>
+export type ProviderRequestProfiles = Record<string, ProviderRequestProfile>
+export type ProviderRequestProfileUpdates = Record<string, ProviderRequestProfile | null>
+
+export interface PresetClientProfileSelection {
+  mode?: undefined
   client: 'desktop' | 'cli'
   platform: 'macos' | 'linux' | 'windows'
   versionMode: 'latest' | 'fixed'
+  cliEntry?: 'tui' | 'exec' | null
+  osType?: string | null
   originator: string | null
   osVersion: string | null
   arch: string | null
@@ -11,6 +18,20 @@ export interface ClientProfileSelection {
   codexVersion: string | null
   desktopVersion: string | null
   desktopBuild: string | null
+}
+
+export interface CustomClientProfileSelection {
+  mode: 'custom'
+  userAgent: string
+  originator?: string | null
+  codexVersion?: string | null
+}
+
+export type ClientProfileSelection = PresetClientProfileSelection | CustomClientProfileSelection
+
+export interface ClientProfileOptions {
+  presets: ClientProfilePreset[]
+  globalConfiguration: ClientProfileSelection
 }
 
 export interface ClientProfilePreview {
@@ -26,20 +47,21 @@ export interface ClientProfilePreview {
   desktopBuild: string | null
   userAgent: string
   versionSource: 'official' | 'custom'
+  recognized?: boolean
   verifiedAt: string | null
   checkedAt: string | null
   error: string | null
 }
 
 export interface ClientProfilePreset {
-  configuration: ClientProfileSelection
+  configuration: PresetClientProfileSelection
   automaticAvailable: boolean
   reason: string | null
-  defaults: Pick<ClientProfileSelection, 'originator' | 'osVersion' | 'arch' | 'terminal'>
+  defaults: Pick<PresetClientProfileSelection, 'originator' | 'osType' | 'osVersion' | 'arch' | 'terminal'>
 }
 
 export function getClientProfileOptions() {
-  return request<{ presets: ClientProfilePreset[], globalConfiguration: ClientProfileSelection }>({
+  return request<ClientProfileOptions>({
     url: '/api/admin/settings/client-profiles/openai',
     method: 'GET',
     silent: true,

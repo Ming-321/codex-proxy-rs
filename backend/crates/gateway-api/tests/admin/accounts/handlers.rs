@@ -8,6 +8,71 @@ use tower::ServiceExt as _;
 use super::super::{AdminTestFixture, AdminTestState};
 
 #[tokio::test]
+async fn standalone_credential_rotation_route_is_not_exposed() {
+    let fixture = AdminTestFixture::new().await;
+    fixture.auth.insert_session("valid-session");
+    let response = admin::router::<AdminTestState>()
+        .with_state(fixture.state())
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/api/admin/accounts/rotate")
+                .header(header::COOKIE, "cpr_session=valid-session")
+                .header(header::CONTENT_TYPE, "application/json")
+                .body(Body::from("{}"))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::NOT_FOUND);
+}
+
+#[tokio::test]
+async fn connection_update_requires_admin_and_validates_before_calling_the_service() {
+    let fixture = AdminTestFixture::new().await;
+    fixture.auth.insert_session("valid-session");
+    let input = serde_json::json!({
+        "accountId":"acct_api",
+        "enabled":true,
+        "concurrencyLimit":null,
+        "weight":1,
+        "groupIds":[],
+        "connection":{"baseUrl":"https://api.example.invalid/v1", "transport":"http"}
+    });
+    for (authenticated, transport, oauth, expected) in [
+        (false, "http", false, StatusCode::UNAUTHORIZED),
+        (true, "invalid", false, StatusCode::BAD_REQUEST),
+        // 夹具没有凭据 Store，合法输入必须进入服务，不能按普通设置静默保存。
+        (true, "http", false, StatusCode::SERVICE_UNAVAILABLE),
+        (true, "http", true, StatusCode::SERVICE_UNAVAILABLE),
+    ] {
+        let mut input = input.clone();
+        input["connection"]["transport"] = serde_json::json!(transport);
+        if oauth {
+            input["connection"]
+                .as_object_mut()
+                .unwrap()
+                .remove("baseUrl");
+        }
+        let mut request = Request::builder()
+            .method("POST")
+            .uri("/api/admin/accounts/update")
+            .header(header::CONTENT_TYPE, "application/json")
+            .header("x-request-id", "req_connection_update");
+        if authenticated {
+            request = request.header(header::COOKIE, "cpr_session=valid-session");
+        }
+        let response = admin::router::<AdminTestState>()
+            .with_state(fixture.state())
+            .oneshot(request.body(Body::from(input.to_string())).unwrap())
+            .await
+            .unwrap();
+        assert_eq!(response.status(), expected);
+        assert_eq!(response.headers()[header::CACHE_CONTROL], "no-store");
+    }
+}
+
+#[tokio::test]
 async fn personal_info_requires_admin_and_a_valid_account_query() {
     let fixture = AdminTestFixture::new().await;
     fixture.auth.insert_session("valid-session");

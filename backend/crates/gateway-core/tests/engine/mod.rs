@@ -1,7 +1,11 @@
 mod admission;
+mod connection;
 mod continuation;
 mod coordinator;
 mod execution;
+mod extensions;
+mod middleware;
+mod policy;
 mod probe;
 mod provider;
 

@@ -28,6 +28,7 @@ fn client(base_url: &str) -> CodexBackendClient {
             os_version: "15.5.0".to_owned(),
             arch: "arm64".to_owned(),
             terminal: "xterm-256color".to_owned(),
+            exact_user_agent: None,
             residency: None,
             verified_at: Utc
                 .with_ymd_and_hms(2026, 8, 20, 0, 0, 0)

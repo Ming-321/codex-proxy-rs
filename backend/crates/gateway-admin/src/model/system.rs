@@ -1,6 +1,40 @@
 //! 版本、自更新、回滚与进程重启的 UTC 语义模型。
 
 use chrono::{DateTime, Utc};
+use serde::{Deserialize, Serialize};
+
+/// 本次检查或安装选择的更新稳定性范围，具体版本准入由 Host 判定。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize)]
+#[serde(rename_all = "lowercase")]
+pub enum SystemUpdateChannel {
+    Stable,
+    Alpha,
+    Beta,
+    Rc,
+    #[serde(rename = "exp")]
+    Experimental,
+}
+
+impl SystemUpdateChannel {
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Stable => "stable",
+            Self::Alpha => "alpha",
+            Self::Beta => "beta",
+            Self::Rc => "rc",
+            Self::Experimental => "exp",
+        }
+    }
+}
+
+/// Host 返回的本次检查通道及当前构建允许选择的范围。
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SystemUpdatePolicy {
+    pub channel: SystemUpdateChannel,
+    pub available_channels: Vec<SystemUpdateChannel>,
+}
 
 /// 当前运行版本及更新检查摘要。
 ///
@@ -23,6 +57,7 @@ pub struct SystemVersion {
 /// 部署模式与构建类型的展示标签归 API；其余字段均为 Host 已确认的原始事实。
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SystemUpdateDetail {
+    pub policy: SystemUpdatePolicy,
     pub current_version: String,
     pub latest_version: String,
     pub has_update: bool,

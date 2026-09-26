@@ -8,12 +8,12 @@ FROM node:26-bookworm-slim@sha256:2d49d876e96237d76de412761cf05dbfe5aee325cc4406
 
 WORKDIR /app/frontend
 COPY frontend/package.json frontend/pnpm-lock.yaml frontend/pnpm-workspace.yaml ./
-RUN npm install --global pnpm@11.7.0 \
+RUN npm install --global "$(node -p 'require("./package.json").packageManager')" \
     && pnpm install --frozen-lockfile
 COPY frontend ./
 RUN pnpm build
 
-FROM rust:1.98-bookworm@sha256:9a73a5088750b4c95158ab26629c854c3d6fc4b173cb7bc8079ad252d8ed7bfa AS backend-builder
+FROM rust:1.98-bookworm@sha256:93ce27a88655056a51dbdd8f5f2d7ddc071c7b0070fb288a37b5a285fc83971e AS backend-builder
 
 WORKDIR /app/backend
 ARG TARGETARCH
@@ -40,7 +40,7 @@ RUN --mount=type=cache,target=/usr/local/cargo/registry \
 # 备份客户端来源：与 compose 服务端同一固定镜像，版本一致。
 FROM ${POSTGRES_IMAGE} AS pg-client
 
-FROM debian:bookworm-slim@sha256:88200866dfff7ea7f5cbcb6ec7c8a701889efe6fe859fe64d6990e4b07ea4171 AS runtime-base
+FROM debian:bookworm-slim@sha256:3783cc01769c7b2b1b83a5c5ad96c815348e28ed7da68e2e3687004faa906251 AS runtime-base
 
 ENV TZ=Asia/Shanghai
 
@@ -88,5 +88,9 @@ ARG CPR_PREBUILT_DIR=dist/docker
 
 COPY --chown=cpr:cpr ${CPR_PREBUILT_DIR}/linux-${TARGETARCH}/codex-proxy-rs /app/bin/codex-proxy-rs
 COPY --chown=cpr:cpr ${CPR_PREBUILT_DIR}/web/dist ./web/dist
-RUN chmod +x /app/bin/codex-proxy-rs
+COPY --chown=cpr:cpr ${CPR_PREBUILT_DIR}/linux-${TARGETARCH}/plugins/official /app/bin/plugins/official
+RUN chmod +x /app/bin/codex-proxy-rs \
+    && find /app/bin/plugins/official -type f -exec chmod 0444 '{}' + \
+    && chmod 0555 /app/bin/plugins/official \
+    && chmod 0755 /app/bin/plugins
 USER cpr

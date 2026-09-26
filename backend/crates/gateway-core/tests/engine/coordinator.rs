@@ -294,6 +294,8 @@ enum Script {
 
 struct ScriptedProvider {
     profile_generation: AtomicUsize,
+    default_profile_calls: AtomicUsize,
+    default_profile: Mutex<Option<gateway_core::account::OpaqueProviderData>>,
     scripts: Mutex<VecDeque<Script>>,
     contexts: Mutex<Vec<AttemptContext>>,
     operations: Mutex<Vec<Operation>>,
@@ -312,6 +314,8 @@ impl ScriptedProvider {
     fn new(scripts: Vec<Script>) -> Self {
         Self {
             profile_generation: AtomicUsize::new(1),
+            default_profile_calls: AtomicUsize::new(0),
+            default_profile: Mutex::new(None),
             scripts: Mutex::new(scripts.into()),
             contexts: Mutex::new(Vec::new()),
             operations: Mutex::new(Vec::new()),
@@ -334,6 +338,13 @@ impl Provider for ScriptedProvider {
         Ok(gateway_core::account::OpaqueProviderData::new(fields))
     }
 
+    fn default_request_profile(
+        &self,
+    ) -> Result<Option<gateway_core::account::OpaqueProviderData>, ProviderError> {
+        self.default_profile_calls.fetch_add(1, Ordering::SeqCst);
+        Ok(self.default_profile.lock().unwrap().clone())
+    }
+
     fn name(&self) -> &'static str {
         "openai"
     }
@@ -349,7 +360,7 @@ impl Provider for ScriptedProvider {
     }
 
     async fn execute(
-        &self,
+        self: Arc<Self>,
         request: ProviderRequest,
         context: AttemptContext,
     ) -> Result<ProviderStream, ProviderError> {
@@ -4680,4 +4691,247 @@ fn first_resolved_profile_is_frozen_across_account_retries() {
     let first = contexts[0].request_profile().unwrap();
     assert_eq!(first.expose_to_provider()["generation"], 1);
     assert_eq!(contexts[1].request_profile(), Some(first));
+}
+
+#[test]
+fn provider_default_profile_is_applied_once_and_frozen_across_account_retries() {
+    use gateway_core::account::OpaqueProviderData;
+    let operation = generate_operation();
+    let route_plan = plan(&operation);
+    let (coordinator, _, provider) = coordinator(vec![
+        Script::Stream {
+            account_id: "acct_first",
+            items: vec![Err(ProviderError::new(
+                ProviderErrorKind::RateLimited,
+                UpstreamSendState::Sent,
+            )
+            .with_status(429)
+            .with_replay_safe())],
+        },
+        Script::Stream {
+            account_id: "acct_second",
+            items: complete_stream(None),
+        },
+    ]);
+    *provider.default_profile.lock().unwrap() = Some(OpaqueProviderData::new(
+        json!({"selection":"configured-default"})
+            .as_object()
+            .unwrap()
+            .clone(),
+    ));
+    let mut session = block_on(coordinator.start(
+        model_request(&operation, SystemTime::now() + Duration::from_secs(30)),
+        operation,
+        route_plan,
+        None,
+        None,
+        CancellationToken::new(),
+    ))
+    .unwrap();
+    block_on(session.collect_uncommitted()).unwrap();
+    let contexts = provider.contexts.lock().unwrap();
+    assert_eq!(provider.default_profile_calls.load(Ordering::SeqCst), 1);
+    assert_eq!(contexts.len(), 2);
+    let first = contexts[0].request_profile().unwrap();
+    assert_eq!(
+        first.expose_to_provider()["selection"],
+        "configured-default"
+    );
+    assert_eq!(contexts[1].request_profile(), Some(first));
+}
+
+#[test]
+fn connection_recovery_keeps_one_account_and_http_transport_until_success() {
+    let operation = generate_operation();
+    let route_plan = plan(&operation);
+    let failure = || Script::Stream {
+        account_id: "acct_only",
+        items: vec![Err(ProviderError::new(
+            ProviderErrorKind::Transport,
+            UpstreamSendState::NotSent,
+        )
+        .with_connection_retry(AttemptTransport::Fallback))],
+    };
+    let (coordinator, store, provider) = coordinator(vec![
+        failure(),
+        failure(),
+        failure(),
+        Script::Stream {
+            account_id: "acct_only",
+            items: complete_stream(None),
+        },
+    ]);
+    let mut session = block_on(coordinator.start(
+        model_request(&operation, SystemTime::now() + Duration::from_secs(30)),
+        operation,
+        route_plan,
+        None,
+        None,
+        CancellationToken::new(),
+    ))
+    .unwrap();
+    block_on(session.collect_uncommitted()).unwrap();
+    block_on(session.commit_downstream(Some(200))).unwrap();
+    let contexts = provider.contexts.lock().unwrap();
+    assert_eq!(contexts.len(), 4);
+    let account = ProviderAccountId::new("acct_only").unwrap();
+    for context in contexts.iter().skip(1) {
+        assert_eq!(context.required_account(), Some(&account));
+        assert_eq!(context.transport(), AttemptTransport::Fallback);
+        assert!(!context.excluded_accounts().contains(&account));
+    }
+    let state = store.state.lock().unwrap();
+    assert_eq!(state.intermediate_failures, 3);
+    assert_eq!(state.finalizations[0].outcome, ExecutionOutcome::Succeeded);
+    assert_eq!(provider.released_leases.load(Ordering::SeqCst), 3);
+    drop(session);
+    assert_eq!(provider.released_leases.load(Ordering::SeqCst), 4);
+}
+
+#[test]
+fn connection_recovery_exhaustion_preserves_transport_failure() {
+    let operation = generate_operation();
+    let route_plan = plan(&operation);
+    let (coordinator, store, provider) = coordinator(
+        (0..4)
+            .map(|_| Script::Stream {
+                account_id: "acct_only",
+                items: vec![Err(ProviderError::new(
+                    ProviderErrorKind::Transport,
+                    UpstreamSendState::NotSent,
+                )
+                .with_connection_retry(AttemptTransport::Fallback))],
+            })
+            .collect(),
+    );
+    let mut session = block_on(coordinator.start(
+        model_request(&operation, SystemTime::now() + Duration::from_secs(30)),
+        operation,
+        route_plan,
+        None,
+        None,
+        CancellationToken::new(),
+    ))
+    .unwrap();
+    let error = block_on(session.collect_uncommitted()).unwrap_err();
+    assert!(
+        matches!(error, EngineError::Provider(ref error) if error.kind() == ProviderErrorKind::Transport)
+    );
+    assert_eq!(provider.contexts.lock().unwrap().len(), 4);
+    assert_eq!(
+        store.state.lock().unwrap().finalizations[0].attempt_count,
+        4
+    );
+    assert_eq!(provider.released_leases.load(Ordering::SeqCst), 3);
+    drop(session);
+    assert_eq!(provider.released_leases.load(Ordering::SeqCst), 4);
+}
+
+#[test]
+fn connection_recovery_never_replays_sent_or_ambiguous_payloads() {
+    for send_state in [UpstreamSendState::Sent, UpstreamSendState::Ambiguous] {
+        let operation = generate_operation();
+        let route_plan = plan(&operation);
+        let (coordinator, store, provider) = coordinator(vec![Script::Stream {
+            account_id: "acct_only",
+            items: vec![Err(ProviderError::new(
+                ProviderErrorKind::Transport,
+                send_state,
+            )
+            .with_connection_retry(AttemptTransport::Fallback))],
+        }]);
+        let mut session = block_on(coordinator.start(
+            model_request(&operation, SystemTime::now() + Duration::from_secs(30)),
+            operation,
+            route_plan,
+            None,
+            None,
+            CancellationToken::new(),
+        ))
+        .unwrap();
+        assert!(block_on(session.collect_uncommitted()).is_err());
+        assert_eq!(provider.contexts.lock().unwrap().len(), 1);
+        assert_eq!(store.state.lock().unwrap().intermediate_failures, 0);
+    }
+}
+
+#[test]
+fn connection_backoff_cancellation_releases_account_without_another_attempt() {
+    let operation = generate_operation();
+    let route_plan = plan(&operation);
+    let (coordinator, _, provider) = coordinator(vec![Script::Stream {
+        account_id: "acct_first",
+        items: vec![Err(ProviderError::new(
+            ProviderErrorKind::Transport,
+            UpstreamSendState::NotSent,
+        )
+        .with_connection_retry(AttemptTransport::Fallback))],
+    }]);
+    let cancellation = CancellationToken::new();
+    let mut session = block_on(coordinator.start(
+        model_request(&operation, SystemTime::now() + Duration::from_secs(30)),
+        operation,
+        route_plan,
+        None,
+        None,
+        cancellation.clone(),
+    ))
+    .expect("start execution");
+    let cancel = std::thread::spawn(move || {
+        std::thread::sleep(Duration::from_millis(50));
+        cancellation.cancel();
+    });
+    assert!(matches!(
+        block_on(session.collect_uncommitted()),
+        Err(EngineError::Cancelled)
+    ));
+    cancel.join().expect("cancel task");
+    assert_eq!(provider.contexts.lock().expect("contexts").len(), 1);
+    assert_eq!(provider.released_leases.load(Ordering::SeqCst), 1);
+}
+
+#[test]
+fn connection_failure_after_a_replay_safe_rejection_keeps_existing_account_rotation() {
+    let operation = generate_operation();
+    let route_plan = plan(&operation);
+    let (coordinator, _, provider) = coordinator(vec![
+        Script::Stream {
+            account_id: "acct_first",
+            items: vec![Err(ProviderError::new(
+                ProviderErrorKind::RateLimited,
+                UpstreamSendState::Sent,
+            )
+            .with_replay_safe())],
+        },
+        Script::Stream {
+            account_id: "acct_second",
+            items: vec![Err(ProviderError::new(
+                ProviderErrorKind::Transport,
+                UpstreamSendState::NotSent,
+            )
+            .with_connection_retry(AttemptTransport::Fallback))],
+        },
+        Script::Stream {
+            account_id: "acct_other",
+            items: complete_stream(None),
+        },
+    ]);
+    let mut session = block_on(coordinator.start(
+        model_request(&operation, SystemTime::now() + Duration::from_secs(30)),
+        operation,
+        route_plan,
+        None,
+        None,
+        CancellationToken::new(),
+    ))
+    .unwrap();
+    block_on(session.collect_uncommitted()).unwrap();
+    let contexts = provider.contexts.lock().unwrap();
+    assert_eq!(contexts.len(), 3);
+    assert!(contexts[2].required_account().is_none());
+    assert!(
+        contexts[2]
+            .excluded_accounts()
+            .contains(&ProviderAccountId::new("acct_second").unwrap())
+    );
 }

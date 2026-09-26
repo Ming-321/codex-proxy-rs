@@ -1,4 +1,0 @@
-interface:
-  display_name: "release"
-  short_description: "按仓库流程准备稳定版或实验版的中文说明，完成发行与渠道验证"
-  default_prompt: "使用 $release 按指定的稳定版或实验版渠道准备中文发布说明，并核对发版条件。"

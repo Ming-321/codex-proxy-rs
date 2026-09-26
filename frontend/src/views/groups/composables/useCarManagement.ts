@@ -1,7 +1,7 @@
 import type { Account, AccountGroup, ApiKey, CarKeyDraft, CarManagementDraft, CarQuotaState, CarSeatDraft, Seat } from '@/api'
+import { toast } from '@codex-proxy/ui'
 import { computed, nextTick, onMounted, ref, shallowRef, watch } from 'vue'
 import { getAccountGroups, getAccounts, getApiKeys, getCarQuota, getCarQuotaSettings, getSeats, revealApiKey, saveCarManagement } from '@/api'
-import { toast } from '@/components/base/BaseToast'
 import { errorMessage } from '@/utils/async'
 import { DEFAULT_ACCOUNT_GROUP_COLOR } from '../constants'
 

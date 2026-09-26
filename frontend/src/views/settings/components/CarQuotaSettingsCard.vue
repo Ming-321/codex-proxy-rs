@@ -1,14 +1,8 @@
 <script setup lang="ts">
 import type { CarQuotaSettings } from '@/api/modules/account-groups'
+import { BaseButton, BaseCard, BaseForm, BaseFormItem, BaseInput, BaseSwitch, toast } from '@codex-proxy/ui'
 import { computed, onMounted, reactive } from 'vue'
 import { getCarQuotaSettings, saveCarQuotaSettings } from '@/api/modules/account-groups'
-import BaseButton from '@/components/base/BaseButton.vue'
-import BaseCard from '@/components/base/BaseCard.vue'
-import BaseFormItem from '@/components/base/BaseForm/FormItem.vue'
-import BaseForm from '@/components/base/BaseForm/index.vue'
-import BaseInput from '@/components/base/BaseInput.vue'
-import BaseSwitch from '@/components/base/BaseSwitch.vue'
-import { toast } from '@/components/base/BaseToast'
 import { useAsyncAction } from '@/composables/useAsyncAction'
 
 const action = useAsyncAction()

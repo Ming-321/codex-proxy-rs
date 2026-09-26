@@ -566,6 +566,9 @@ async fn idle_connection_reaches_the_official_limit_without_starting_an_executio
     assert_eq!(response.status(), StatusCode::SWITCHING_PROTOCOLS);
 
     tokio::time::advance(Duration::from_secs(60 * 60)).await;
+    // 连接寿命仍由虚拟时间推进验证；真实 TCP 交付期间恢复时钟，避免暂停时钟
+    // 在内核尚未报告 socket 就绪前自动跳到读取超时，误报连接寿命处理失败。
+    tokio::time::resume();
     tokio::task::yield_now().await;
     let text = loop {
         let message = tokio::time::timeout(Duration::from_secs(1), socket.next())

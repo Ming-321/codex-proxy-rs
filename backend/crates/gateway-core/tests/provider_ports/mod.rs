@@ -110,3 +110,32 @@ fn scheduling_state_preserves_provider_neutral_signals() {
         1
     );
 }
+
+#[test]
+fn warmup_schedule_time_and_policy_validation() {
+    use gateway_core::provider_ports::{ProviderWarmupPolicy, valid_warmup_schedule_time};
+
+    assert!(valid_warmup_schedule_time("08:00"));
+    assert!(valid_warmup_schedule_time("08:00,13:00"));
+    assert!(valid_warmup_schedule_time("00:00,23:59"));
+    assert!(!valid_warmup_schedule_time(""));
+    assert!(!valid_warmup_schedule_time("8:00"));
+    assert!(!valid_warmup_schedule_time("24:00"));
+    assert!(!valid_warmup_schedule_time("08:60"));
+    assert!(!valid_warmup_schedule_time("08:00,"));
+    assert!(!valid_warmup_schedule_time("08:00, 13:00"));
+
+    let policy = ProviderWarmupPolicy::try_new(
+        true,
+        "08:00,13:00".to_owned(),
+        Some("test-model".to_owned()),
+    )
+    .expect("valid warmup policy");
+    assert!(policy.enabled());
+    assert_eq!(policy.schedule_time(), "08:00,13:00");
+    assert_eq!(policy.model(), Some("test-model"));
+    assert_eq!(policy.scheduled_times(), vec![(8, 0), (13, 0)]);
+
+    assert!(ProviderWarmupPolicy::try_new(true, "invalid".to_owned(), None).is_err());
+    assert!(ProviderWarmupPolicy::try_new(true, "08:00".to_owned(), None).is_err());
+}
