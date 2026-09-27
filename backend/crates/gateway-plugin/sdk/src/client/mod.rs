@@ -2,6 +2,7 @@
 
 mod data;
 mod frame;
+mod keys;
 mod middleware;
 mod plugin;
 mod resources;

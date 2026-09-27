@@ -24,6 +24,8 @@
     "requests",
     "public_endpoints",
     "groups",
-    "keys"
+    "keys",
+    "key_budgets",
+    "quota_observations"
   ]
 }

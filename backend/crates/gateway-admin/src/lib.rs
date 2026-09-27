@@ -527,7 +527,7 @@ pub fn initialize_plugin_accounts(
     ))
 }
 
-/// 为 Runtime 创建只暴露非秘密 Client Key 目录的窄端口。
+/// 为 Runtime 创建非秘密 Client Key 目录与预算重置的窄端口。
 #[must_use]
 pub fn initialize_plugin_client_keys(
     providers: ports::provider::ProviderAdminRegistry,

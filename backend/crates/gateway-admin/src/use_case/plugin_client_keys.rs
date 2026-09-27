@@ -1,21 +1,23 @@
-//! 插件 Client Key 目录；复用管理服务并收窄为非秘密投影。
+//! 插件 Client Key 管理；复用管理服务，只开放非秘密目录与预算操作。
 
 use std::sync::Arc;
 
 use async_trait::async_trait;
-use gateway_core::policy::ClientApiKeyId;
+use gateway_core::{engine::budget::ClientBudgetStatus, policy::ClientApiKeyId};
 
 use crate::{
     model::{
-        AdminError,
+        AdminError, MutationContext,
         client_keys::{
-            ClientKeyCursor, ClientKeyCursorValue, ClientKeyListQuery, ClientKeyPageSize,
-            ClientKeySort, ClientKeySortField, SortDirection,
+            ClientKeyBudgetMutationOrigin, ClientKeyCursor, ClientKeyCursorValue,
+            ClientKeyListQuery, ClientKeyPageSize, ClientKeySort, ClientKeySortField,
+            ResetClientKeyBudget, SortDirection, UpdateClientKeyBudgetLimits,
         },
         plugin_client_keys::{
             PluginClientKey, PluginClientKeyCursor, PluginClientKeyFacts, PluginClientKeyListQuery,
             PluginClientKeyPage,
         },
+        plugin_resources::PluginResourceOwner,
     },
     ports::plugin_client_keys::PluginClientKeyAccess,
     use_case::client_keys::ClientKeyService,
@@ -40,6 +42,40 @@ impl PluginClientKeyAccess for DefaultPluginClientKeyAccess {
             enabled: key.enabled,
             group_ids: key.groups.into_iter().map(|group| group.id).collect(),
         })
+    }
+
+    async fn budget(&self, id: &ClientApiKeyId) -> Result<ClientBudgetStatus, AdminError> {
+        self.service.budget(id).await
+    }
+
+    async fn update_budget_limits(
+        &self,
+        owner: &PluginResourceOwner,
+        command: UpdateClientKeyBudgetLimits,
+        context: &MutationContext,
+    ) -> Result<ClientApiKeyId, AdminError> {
+        self.service
+            .update_budget_limits(
+                context,
+                command,
+                ClientKeyBudgetMutationOrigin::Plugin(owner.clone()),
+            )
+            .await
+    }
+
+    async fn reset_budget(
+        &self,
+        owner: &PluginResourceOwner,
+        command: ResetClientKeyBudget,
+        context: &MutationContext,
+    ) -> Result<ClientApiKeyId, AdminError> {
+        self.service
+            .reset_budget(
+                context,
+                command,
+                ClientKeyBudgetMutationOrigin::Plugin(owner.clone()),
+            )
+            .await
     }
 
     async fn list(

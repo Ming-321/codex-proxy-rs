@@ -1,6 +1,6 @@
 use gateway_admin::{
     model::{
-        client_keys::UpdateClientKey,
+        client_keys::{SetClientKeyEnabled, UpdateClientKey},
         plugins::{instances::PluginPermissionGrant, management::PluginManagementRequest},
     },
     ports::plugin_management::PluginManagement,
@@ -11,6 +11,7 @@ use serde_json::{Value, json};
 #[tokio::test]
 async fn key_facts_read_current_database_groups_without_secrets() {
     let Some(environment) = crate::support::environment::Environment::create().await else {
+        eprintln!("SKIP: plugin integration environment absent");
         return;
     };
     let account = environment.account(None).await;
@@ -39,7 +40,10 @@ async fn key_facts_read_current_database_groups_without_secrets() {
         .unwrap()
         .clone();
     let view = runtime.views(&generation).await.unwrap().remove(0);
-    for groups in [vec![], vec![group.clone()], vec![]] {
+    for (groups, enabled) in [(vec![], true), (vec![group.clone()], false), (vec![], true)] {
+        environment
+            .set_account_group_enabled(group.clone(), enabled)
+            .await;
         environment
             .store
             .admin_ports()
@@ -54,6 +58,19 @@ async fn key_facts_read_current_database_groups_without_secrets() {
                     limits: RateLimits::unlimited(),
                     daily_limit_usd: None,
                     weekly_limit_usd: None,
+                },
+                &crate::support::environment::mutation(),
+            )
+            .await
+            .unwrap();
+        environment
+            .store
+            .admin_ports()
+            .client_keys()
+            .set_client_key_enabled(
+                SetClientKeyEnabled {
+                    id: ClientApiKeyId::new(id).unwrap(),
+                    enabled,
                 },
                 &crate::support::environment::mutation(),
             )
@@ -77,13 +94,14 @@ async fn key_facts_read_current_database_groups_without_secrets() {
         let result: Value = serde_json::from_slice(&response.body).unwrap();
         assert_eq!(
             result[0],
-            json!({"schema_version":1,"client_key_id":id,"enabled":true,
+            json!({"schema_version":1,"client_key_id":id,"enabled":enabled,
             "group_ids": groups.iter().map(|id| id.as_str()).collect::<Vec<_>>() })
         );
         assert_eq!(result[1]["error"], "rejected");
         assert_eq!(result[2]["error"], "invalid_input");
     }
     drop(generation);
+    environment.release_plugin_accounts(&runtime);
     runtime.shutdown().await;
     drop(core);
     drop(access);

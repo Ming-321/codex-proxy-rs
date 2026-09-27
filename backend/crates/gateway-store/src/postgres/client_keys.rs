@@ -708,14 +708,105 @@ impl PgAdminClientKeyStore {
 
 #[async_trait]
 impl ClientKeyStore for PgAdminClientKeyStore {
+    async fn update_client_key_budget_limits(
+        &self,
+        command: gateway_admin::model::client_keys::UpdateClientKeyBudgetLimits,
+        origin: gateway_admin::model::client_keys::ClientKeyBudgetMutationOrigin,
+        context: &MutationContext,
+    ) -> AdminStoreResult<Option<gateway_admin::model::Revision>> {
+        use gateway_admin::model::client_keys::ClientKeyBudgetMutationOrigin;
+        let map_error = |error| admin_store_error(ENTITY, error);
+        let mut tx = match &origin {
+            ClientKeyBudgetMutationOrigin::Admin => self
+                .keys
+                .pool
+                .begin()
+                .await
+                .map_err(|_| map_error(postgres_unavailable("begin budget limits update")))?,
+            ClientKeyBudgetMutationOrigin::Plugin(owner) => {
+                super::plugins::begin_authorized_mutation(&self.keys.pool, owner, "key_budgets")
+                    .await?
+            }
+        };
+        // 保持与完整 Key 编辑相同的锁顺序；绝不读出整份配置再覆盖写回。
+        sqlx::query("select config_revision from runtime_settings where id=1 for update")
+            .execute(&mut *tx)
+            .await
+            .map_err(|_| map_error(postgres_unavailable("lock budget limits configuration")))?;
+        let current: Option<(String, String)> = sqlx::query_as(
+            "select daily_limit_usd::text, weekly_limit_usd::text from client_api_keys where id=$1 for update"
+        ).bind(command.id.as_str()).fetch_optional(&mut *tx).await
+            .map_err(|_| map_error(postgres_unavailable("lock budget limits key")))?;
+        let (daily, weekly) = current.ok_or_else(|| {
+            map_error(StoreError::NotFound {
+                entity: ENTITY,
+                id: command.id.as_str().to_owned(),
+            })
+        })?;
+        let daily: Decimal = daily
+            .parse()
+            .map_err(|_| map_error(postgres_unavailable("decode daily budget limit")))?;
+        let weekly: Decimal = weekly
+            .parse()
+            .map_err(|_| map_error(postgres_unavailable("decode weekly budget limit")))?;
+        let mut fields = Vec::new();
+        if command.daily_limit_usd.is_some_and(|value| value != daily) {
+            fields.push("daily_limit_usd".to_owned());
+        }
+        if command
+            .weekly_limit_usd
+            .is_some_and(|value| value != weekly)
+        {
+            fields.push("weekly_limit_usd".to_owned());
+        }
+        if fields.is_empty() {
+            tx.commit()
+                .await
+                .map_err(|_| map_error(postgres_unavailable("finish unchanged budget limits")))?;
+            return Ok(None);
+        }
+        sqlx::query(
+            "update client_api_keys set
+            daily_limit_usd=coalesce($2::text::numeric, daily_limit_usd),
+            weekly_limit_usd=coalesce($3::text::numeric, weekly_limit_usd), updated_at=now()
+            where id=$1",
+        )
+        .bind(command.id.as_str())
+        .bind(command.daily_limit_usd.map(|value| value.canonical()))
+        .bind(command.weekly_limit_usd.map(|value| value.canonical()))
+        .execute(&mut *tx)
+        .await
+        .map_err(|_| map_error(postgres_unavailable("update budget limits")))?;
+        let revision = super::bump_config_revision_in_transaction(&mut tx)
+            .await
+            .map_err(map_error)?;
+        super::append_admin_audit_event_in_transaction(
+            &mut tx,
+            mutation_audit(
+                context,
+                "update_budget_limits",
+                "client_api_key",
+                command.id.as_str(),
+                fields,
+            ),
+            revision,
+        )
+        .await
+        .map_err(map_error)?;
+        tx.commit()
+            .await
+            .map_err(|_| map_error(postgres_unavailable("commit budget limits update")))?;
+        Ok(Some(admin_revision(revision)?))
+    }
+
     async fn reset_client_key_budget(
         &self,
         command: ResetClientKeyBudget,
+        origin: gateway_admin::model::client_keys::ClientKeyBudgetMutationOrigin,
         context: &MutationContext,
     ) -> AdminStoreResult<()> {
-        super::client_budgets::reset_client_key_budget(&self.keys.pool, command, context)
+        super::client_budgets::reset_client_key_budget(&self.keys.pool, command, origin, context)
             .await
-            .map_err(|error| admin_store_error(ENTITY, error))
     }
 
     async fn get_client_key(

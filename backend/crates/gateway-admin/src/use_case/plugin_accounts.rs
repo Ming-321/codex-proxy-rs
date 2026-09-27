@@ -45,6 +45,22 @@ impl DefaultPluginAccountAccess {
         }
     }
 
+    async fn quota(
+        &self,
+        account_id: &ProviderAccountId,
+        refresh: bool,
+    ) -> Result<crate::model::provider_credentials::ProviderQuota, AdminError> {
+        let account = self.get_runtime(account_id).await?;
+        self.provider(&account.provider_kind)?
+            .quota(crate::model::provider_credentials::ProviderQuotaRequest {
+                account_id: account_id.clone(),
+                refresh,
+                rolling_usage: None,
+            })
+            .await
+            .map_err(|error| map_provider_error(error, "plugin quota facts"))
+    }
+
     fn provider(
         &self,
         provider_kind: &ProviderKind,
@@ -99,16 +115,16 @@ impl PluginAccountAccess for DefaultPluginAccountAccess {
         &self,
         account_id: &ProviderAccountId,
     ) -> Result<crate::model::provider_credentials::ProviderQuota, AdminError> {
-        let account = self.get_runtime(account_id).await?;
-        self.provider(&account.provider_kind)?
-            .quota(crate::model::provider_credentials::ProviderQuotaRequest {
-                account_id: account_id.clone(),
-                refresh: false,
-                rolling_usage: None,
-            })
-            .await
-            .map_err(|error| map_provider_error(error, "plugin quota facts"))
+        self.quota(account_id, false).await
     }
+
+    async fn refresh_quota(
+        &self,
+        account_id: &ProviderAccountId,
+    ) -> Result<crate::model::provider_credentials::ProviderQuota, AdminError> {
+        self.quota(account_id, true).await
+    }
+
     async fn save(
         &self,
         command: PreparedPluginAccountSave,

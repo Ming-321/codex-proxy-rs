@@ -5,7 +5,7 @@ use std::sync::{Arc, OnceLock, Weak};
 use chrono::{DateTime, Utc};
 use gateway_admin::{
     model::{
-        AdminError, AdminErrorKind, MutationActor, MutationContext, PageSize, Revision,
+        AdminError, PageSize, Revision,
         plugins::instances::PluginPermissionGrant,
         provider_credentials::{
             PluginAccountListQuery, PreparedCredentialCreate, PreparedCredentialRotationFacts,
@@ -26,7 +26,11 @@ use gateway_plugin_sdk::{
     },
 };
 
-use super::{NetworkScope, invalid};
+use super::{
+    NetworkScope,
+    admin::{encode, map_admin_error, mutation_context},
+    invalid,
+};
 use crate::RpcReply;
 
 pub(crate) struct PluginAccountPortSlot {
@@ -304,17 +308,6 @@ fn credential_facts(
     }
 }
 
-pub(super) fn mutation_context(context: &CallContext) -> MutationContext {
-    MutationContext {
-        actor: MutationActor::System,
-        // RPC 回调使用真实 call_id，RPC 结果的后置提交仍使用原始上下文；scope 由宿主签发且全局唯一。
-        request_id: format!(
-            "plugin:{}:scope:{}:call:{}",
-            context.instance_id, context.resource_scope_id, context.call_id
-        ),
-    }
-}
-
 fn decode<T: serde::de::DeserializeOwned>(payload: &[u8]) -> Result<T, PluginFault> {
     serde_json::from_slice(payload).map_err(|_| invalid())
 }
@@ -347,30 +340,9 @@ fn credential_timestamp(value: Option<i64>) -> Result<Option<DateTime<Utc>>, Plu
         .transpose()
 }
 
-pub(super) fn encode(value: &impl serde::Serialize) -> Result<RpcReply, PluginFault> {
-    Ok(RpcReply {
-        result: serde_json::json!({}),
-        payload: serde_json::to_vec(value).map_err(|_| invalid())?,
-    })
-}
-
 fn denied() -> PluginFault {
     PluginFault::new(
         ErrorCode::PermissionDenied,
         "account callback is not authorized",
     )
-}
-
-pub(super) fn map_admin_error(error: AdminError) -> PluginFault {
-    let code = match error.kind() {
-        AdminErrorKind::Invalid => ErrorCode::InvalidInput,
-        AdminErrorKind::Unauthorized | AdminErrorKind::Forbidden => ErrorCode::PermissionDenied,
-        AdminErrorKind::NotFound => ErrorCode::Rejected,
-        AdminErrorKind::Conflict => ErrorCode::Conflict,
-        AdminErrorKind::RateLimited => ErrorCode::Capacity,
-        AdminErrorKind::UpstreamResultUnknown => ErrorCode::Uncertain,
-        AdminErrorKind::BadGateway => ErrorCode::Upstream,
-        AdminErrorKind::Unavailable | AdminErrorKind::Internal => ErrorCode::Fault,
-    };
-    PluginFault::new(code, "account callback failed")
 }

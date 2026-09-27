@@ -265,7 +265,7 @@ impl PluginRuntime {
         self.account_ports.bind(access)
     }
 
-    /// Key 目录由 Admin 组合并保活，Runtime 不取得明文访问端口。
+    /// Key 目录与预算端口由 Admin 组合并保活，Runtime 不取得明文访问端口。
     pub fn bind_client_key_ports(
         &self,
         access: &Arc<dyn PluginClientKeyAccess>,

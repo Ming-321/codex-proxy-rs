@@ -863,9 +863,23 @@ fn mutation(
 
 #[async_trait]
 impl ClientKeyStore for MemoryClientKeyStore {
+    async fn update_client_key_budget_limits(
+        &self,
+        _: gateway_admin::model::client_keys::UpdateClientKeyBudgetLimits,
+        _: gateway_admin::model::client_keys::ClientKeyBudgetMutationOrigin,
+        _: &MutationContext,
+    ) -> AdminStoreResult<Option<Revision>> {
+        Err(AdminStoreError::new(
+            AdminStoreErrorKind::Unavailable,
+            "client key",
+            "unused budget update",
+        ))
+    }
+
     async fn reset_client_key_budget(
         &self,
         command: gateway_admin::model::client_keys::ResetClientKeyBudget,
+        _: gateway_admin::model::client_keys::ClientKeyBudgetMutationOrigin,
         _: &MutationContext,
     ) -> AdminStoreResult<()> {
         use gateway_admin::model::client_keys::ClientKeyBudgetPeriod;
@@ -1026,6 +1040,9 @@ impl AccountStore for UnusedStore {
         _: TimeRange,
         _: &[String],
     ) -> AdminStoreResult<Vec<AccountUsage>> {
+        if self.account.lock().expect("account").is_some() {
+            return Ok(Vec::new());
+        }
         Err(unavailable("account usage"))
     }
 
@@ -1411,7 +1428,12 @@ impl ProviderAdmin for UnusedProvider {
         &self,
         _: gateway_admin::model::provider_credentials::ProviderQuotaRequest,
     ) -> Result<ProviderQuota, ProviderAdminError> {
-        Err(unsupported_provider())
+        Err(self
+            .error
+            .lock()
+            .expect("provider error")
+            .clone()
+            .unwrap_or_else(unsupported_provider))
     }
 
     async fn models(

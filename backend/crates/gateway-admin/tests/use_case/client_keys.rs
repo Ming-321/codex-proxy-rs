@@ -33,9 +33,19 @@ struct TestClientKeyStore {
 
 #[async_trait]
 impl ClientKeyStore for TestClientKeyStore {
+    async fn update_client_key_budget_limits(
+        &self,
+        _: gateway_admin::model::client_keys::UpdateClientKeyBudgetLimits,
+        _: gateway_admin::model::client_keys::ClientKeyBudgetMutationOrigin,
+        _: &MutationContext,
+    ) -> AdminStoreResult<Option<Revision>> {
+        Err(unused())
+    }
+
     async fn reset_client_key_budget(
         &self,
         command: gateway_admin::model::client_keys::ResetClientKeyBudget,
+        _: gateway_admin::model::client_keys::ClientKeyBudgetMutationOrigin,
         _: &MutationContext,
     ) -> AdminStoreResult<()> {
         self.resets.lock().unwrap().push(command);
@@ -147,7 +157,11 @@ async fn reset_budget_forwards_scope_and_returns_only_key_identity() {
     };
     let result = services
         .client_keys()
-        .reset_budget(&mutation_context(), command.clone())
+        .reset_budget(
+            &mutation_context(),
+            command.clone(),
+            gateway_admin::model::client_keys::ClientKeyBudgetMutationOrigin::Admin,
+        )
         .await
         .unwrap();
     assert_eq!(result, command.id);

@@ -14,7 +14,7 @@ use gateway_store::postgres::PgPluginStore;
 
 use super::super::TestDatabase;
 
-pub(super) fn artifact(digest: char, platforms: &[&str]) -> InspectedPluginArtifact {
+pub(in crate::postgres) fn artifact(digest: char, platforms: &[&str]) -> InspectedPluginArtifact {
     InspectedPluginArtifact {
         metadata: PluginArtifactMetadata {
             plugin_id: "test.example".into(),
@@ -54,7 +54,7 @@ pub(super) fn context() -> MutationContext {
     }
 }
 
-pub(super) async fn initialize_revision(database: &TestDatabase) {
+pub(in crate::postgres) async fn initialize_revision(database: &TestDatabase) {
     sqlx::query(
         "insert into runtime_settings(id, config_revision, updated_at) values (1,1,now()) on conflict do nothing",
     )

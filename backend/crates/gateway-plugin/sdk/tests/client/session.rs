@@ -130,6 +130,84 @@ impl PluginHandler for TestHandler {
         Box::pin(async move {
             match call.method.as_str() {
                 "echo" => Ok(CallReply::unary(call.params, call.payload)),
+                "key_facts" => {
+                    let result = call
+                        .host
+                        .key_facts(gateway_plugin_sdk::call::data::ClientKeyFactsQuery {
+                            client_key_id: "key_1".into(),
+                        })
+                        .await?;
+                    Ok(CallReply::unary(
+                        serde_json::to_value(result).unwrap(),
+                        vec![],
+                    ))
+                }
+                "get_budget" => {
+                    let result = call
+                        .host
+                        .get_key_budget(
+                            gateway_plugin_sdk::call::key_budgets::GetKeyBudgetRequest {
+                                client_key_id: "key_1".into(),
+                            },
+                        )
+                        .await?;
+                    Ok(CallReply::unary(
+                        serde_json::to_value(result).unwrap(),
+                        vec![],
+                    ))
+                }
+                "update_budget_limits" => {
+                    let result = call
+                        .host
+                        .update_key_budget_limits(
+                            gateway_plugin_sdk::call::key_budgets::UpdateKeyBudgetLimitsRequest {
+                                client_key_id: "key_1".into(),
+                                daily_limit_usd: None,
+                                weekly_limit_usd: Some("12.5".into()),
+                            },
+                        )
+                        .await?;
+                    Ok(CallReply::unary(
+                        serde_json::to_value(result).unwrap(),
+                        vec![],
+                    ))
+                }
+                "refresh_quota" => {
+                    let result = call
+                        .host
+                        .refresh_account_quota(gateway_plugin_sdk::call::data::QuotaFactsQuery {
+                            account_id: "acct_1".into(),
+                        })
+                        .await?;
+                    Ok(CallReply::unary(
+                        serde_json::to_value(result).unwrap(),
+                        vec![],
+                    ))
+                }
+                "reset_budget" => {
+                    use gateway_plugin_sdk::call::{
+                        host::KeyListRequest,
+                        key_budgets::{BudgetPeriod, ResetKeyBudgetRequest},
+                    };
+                    let keys = call
+                        .host
+                        .list_keys(KeyListRequest {
+                            cursor: None,
+                            limit: 10,
+                        })
+                        .await?;
+                    let result = call
+                        .host
+                        .reset_key_budget(ResetKeyBudgetRequest {
+                            client_key_id: keys.keys[0].id.clone(),
+                            period: BudgetPeriod::Weekly,
+                        })
+                        .await?;
+                    Ok(CallReply::unary(
+                        serde_json::to_value(result).unwrap(),
+                        vec![],
+                    ))
+                }
                 "slow" => {
                     tokio::time::sleep(Duration::from_millis(80)).await;
                     Ok(CallReply::unary(call.params, call.payload))
@@ -573,6 +651,76 @@ async fn shutdown(host: &mut HostPeer, task: JoinHandle<Result<(), SessionError>
         .expect("plugin session did not shut down")
         .expect("plugin session task panicked")
         .expect("plugin session shutdown failed");
+}
+
+#[tokio::test]
+async fn typed_budget_helpers_preserve_wire_contract_and_propagate_failure_without_retry() {
+    for failed in [false, true] {
+        let (mut host, task) = start_session(TestHandler::default()).await;
+        send_call(&mut host, 1, "reset_budget", json!({}), vec![]).await;
+        let list = receive(&mut host).await;
+        let Message::Callback {
+            id,
+            parent_id: 1,
+            method,
+            params,
+        } = list.message
+        else {
+            panic!("expected Key list callback")
+        };
+        assert_eq!(method, "host.keys.list");
+        assert_eq!(params, json!({"cursor":null,"limit":10}));
+        assert!(list.payload.is_empty());
+        send_control(&mut host, Message::Result { id, result: json!({"keys":[{"id":"key_1","name":"test","enabled":true}],"next_cursor":null}) }).await;
+        let reset = receive(&mut host).await;
+        let Message::Callback {
+            id,
+            parent_id: 1,
+            method,
+            params,
+        } = reset.message
+        else {
+            panic!("expected budget reset callback")
+        };
+        assert_eq!(method, "host.keys.reset_budget");
+        assert_eq!(params, json!({}));
+        assert_eq!(
+            serde_json::from_slice::<Value>(&reset.payload).unwrap(),
+            json!({"client_key_id":"key_1","period":"weekly"})
+        );
+        if failed {
+            send_control(
+                &mut host,
+                Message::Error {
+                    id,
+                    error: PluginFault::new(ErrorCode::Conflict, "stale instance"),
+                },
+            )
+            .await;
+            let Message::Error { id: 1, error } = receive(&mut host).await.message else {
+                panic!("expected error propagated without another callback")
+            };
+            assert_eq!(error.code, ErrorCode::Conflict);
+        } else {
+            write_frame(
+                &mut host.writer,
+                &Frame {
+                    message: Message::Result {
+                        id,
+                        result: json!({}),
+                    },
+                    payload: serde_json::to_vec(&json!({"client_key_id":"key_1"})).unwrap(),
+                },
+            )
+            .await
+            .unwrap();
+            let Message::Result { id: 1, result } = receive(&mut host).await.message else {
+                panic!("expected successful reset")
+            };
+            assert_eq!(result, json!({"client_key_id":"key_1"}));
+        }
+        shutdown(&mut host, task).await;
+    }
 }
 
 #[tokio::test]
@@ -1431,4 +1579,90 @@ async fn quiesce_rejects_new_calls_and_shutdown_closes_the_session() {
     .expect("quiesce hook was not signalled");
 
     shutdown(&mut host, task).await;
+}
+
+#[tokio::test]
+async fn typed_key_and_quota_calls_keep_payloads_and_do_not_retry_failures() {
+    for (entry, method, request, response) in [
+        (
+            "key_facts",
+            "host.data.keys.get",
+            json!({"client_key_id":"key_1"}),
+            json!({"schema_version":1,"client_key_id":"key_1","enabled":false,"group_ids":["grp_1"]}),
+        ),
+        (
+            "get_budget",
+            "host.keys.get_budget",
+            json!({"client_key_id":"key_1"}),
+            json!({
+                "client_key_id":"key_1", "daily_limit_usd":"10", "weekly_limit_usd":"20",
+                "daily_used_usd":"1.25", "weekly_used_usd":"2.5", "daily_resets_at_ms":null, "weekly_resets_at_ms":null,
+            }),
+        ),
+        (
+            "update_budget_limits",
+            "host.keys.update_budget_limits",
+            json!({"client_key_id":"key_1","weekly_limit_usd":"12.5"}),
+            json!({"client_key_id":"key_1"}),
+        ),
+        (
+            "refresh_quota",
+            "host.quota_observations.refresh",
+            json!({"account_id":"acct_1"}),
+            json!({"schema_version":1,"account_id":"acct_1","observed_at_ms":null,"windows":[]}),
+        ),
+    ] {
+        for failed in [false, true] {
+            let (mut host, task) = start_session(TestHandler::default()).await;
+            send_call(&mut host, 1, entry, json!({}), vec![]).await;
+            let callback = receive(&mut host).await;
+            let Message::Callback {
+                id,
+                parent_id: 1,
+                method: actual,
+                params,
+            } = callback.message
+            else {
+                panic!("expected callback");
+            };
+            assert_eq!(actual, method);
+            assert_eq!(params, json!({}));
+            assert_eq!(
+                serde_json::from_slice::<Value>(&callback.payload).unwrap(),
+                request
+            );
+            if failed {
+                send_control(
+                    &mut host,
+                    Message::Error {
+                        id,
+                        error: PluginFault::new(ErrorCode::Conflict, "changed"),
+                    },
+                )
+                .await;
+                let Message::Error { id: 1, error } = receive(&mut host).await.message else {
+                    panic!("expected propagated error without retry");
+                };
+                assert_eq!(error.code, ErrorCode::Conflict);
+            } else {
+                write_frame(
+                    &mut host.writer,
+                    &Frame {
+                        message: Message::Result {
+                            id,
+                            result: json!({}),
+                        },
+                        payload: serde_json::to_vec(&response).unwrap(),
+                    },
+                )
+                .await
+                .unwrap();
+                let Message::Result { id: 1, result } = receive(&mut host).await.message else {
+                    panic!("expected projected response");
+                };
+                assert_eq!(result, response);
+            }
+            shutdown(&mut host, task).await;
+        }
+    }
 }

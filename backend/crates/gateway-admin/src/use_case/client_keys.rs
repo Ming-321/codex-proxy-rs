@@ -4,8 +4,9 @@ use std::sync::Arc;
 
 use async_trait::async_trait;
 use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD};
-use gateway_core::policy::ClientApiKeyId;
-use gateway_core::runtime::SnapshotControl;
+use gateway_core::{
+    engine::budget::ClientBudgetStatus, policy::ClientApiKeyId, runtime::SnapshotControl,
+};
 use rand_core::{OsRng, RngCore as _};
 use uuid::Uuid;
 
@@ -13,10 +14,10 @@ use crate::{
     model::{
         AdminError, MutationContext,
         client_keys::{
-            ClientKeyCursorValue, ClientKeyListQuery, ClientKeyMutation, ClientKeyPage,
-            ClientKeyRecord, ClientKeySecret, ClientKeySortField, CreateClientKey,
-            CreatedClientKey, DeleteClientKey, NewClientKey, ResetClientKeyBudget,
-            SetClientKeyEnabled, UpdateClientKey,
+            ClientKeyBudgetMutationOrigin, ClientKeyCursorValue, ClientKeyListQuery,
+            ClientKeyMutation, ClientKeyPage, ClientKeyRecord, ClientKeySecret, ClientKeySortField,
+            CreateClientKey, CreatedClientKey, DeleteClientKey, NewClientKey, ResetClientKeyBudget,
+            SetClientKeyEnabled, UpdateClientKey, UpdateClientKeyBudgetLimits,
         },
     },
     ports::store::{AdminStoreError, AdminStoreErrorKind, ClientKeyStore},
@@ -50,10 +51,18 @@ pub trait ClientKeyService: Send + Sync {
         context: &MutationContext,
         command: DeleteClientKey,
     ) -> Result<ClientKeyMutation, AdminError>;
+    async fn budget(&self, id: &ClientApiKeyId) -> Result<ClientBudgetStatus, AdminError>;
+    async fn update_budget_limits(
+        &self,
+        context: &MutationContext,
+        command: UpdateClientKeyBudgetLimits,
+        origin: ClientKeyBudgetMutationOrigin,
+    ) -> Result<ClientApiKeyId, AdminError>;
     async fn reset_budget(
         &self,
         context: &MutationContext,
         command: ResetClientKeyBudget,
+        origin: ClientKeyBudgetMutationOrigin,
     ) -> Result<ClientApiKeyId, AdminError>;
 }
 
@@ -88,14 +97,40 @@ impl ClientKeyService for DefaultClientKeyService {
             .ok_or_else(|| AdminError::not_found("Client API Key 不存在"))
     }
 
+    async fn budget(&self, id: &ClientApiKeyId) -> Result<ClientBudgetStatus, AdminError> {
+        self.get(id).await.map(|key| key.budget)
+    }
+
+    async fn update_budget_limits(
+        &self,
+        context: &MutationContext,
+        command: UpdateClientKeyBudgetLimits,
+        origin: ClientKeyBudgetMutationOrigin,
+    ) -> Result<ClientApiKeyId, AdminError> {
+        if command.daily_limit_usd.is_none() && command.weekly_limit_usd.is_none() {
+            return Err(AdminError::invalid("至少指定一个预算上限"));
+        }
+        let id = command.id.clone();
+        if let Some(revision) = self
+            .store
+            .update_client_key_budget_limits(command, origin, context)
+            .await
+            .map_err(|error| map_store_error(error, "client API key"))?
+        {
+            publish_committed(self.snapshot.as_ref(), revision).await?;
+        }
+        Ok(id)
+    }
+
     async fn reset_budget(
         &self,
         context: &MutationContext,
         command: ResetClientKeyBudget,
+        origin: ClientKeyBudgetMutationOrigin,
     ) -> Result<ClientApiKeyId, AdminError> {
         let id = command.id.clone();
         self.store
-            .reset_client_key_budget(command, context)
+            .reset_client_key_budget(command, origin, context)
             .await
             .map_err(|error| map_store_error(error, "client API key"))?;
         Ok(id)
