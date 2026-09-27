@@ -6,7 +6,7 @@ use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD};
 use gateway_admin::{
     model::{
         AdminError, PageSize,
-        client_keys::{ClientKeyBudgetPeriod, ResetClientKeyBudget},
+        client_keys::{ClientKeyBudgetPeriod, ResetClientKeyBudget, UpdateClientKeyBudgetLimits},
         plugin_client_keys::{PluginClientKeyCursor, PluginClientKeyListQuery},
         plugin_resources::PluginResourceOwner,
         plugins::instances::PluginInstance,
@@ -55,31 +55,75 @@ impl PluginClientKeys {
         if method == "host.keys.list" {
             return self.ports.list(params, payload).await;
         }
-        if method != key_budgets::RESET {
-            return Err(denied());
-        }
         if params != serde_json::json!({}) {
             return Err(invalid());
         }
-        let request: key_budgets::ResetKeyBudgetRequest =
-            serde_json::from_slice(payload).map_err(|_| invalid())?;
-        let command = ResetClientKeyBudget {
-            id: ClientApiKeyId::new(request.client_key_id).map_err(|_| invalid())?,
-            period: match request.period {
-                key_budgets::BudgetPeriod::Daily => ClientKeyBudgetPeriod::Daily,
-                key_budgets::BudgetPeriod::Weekly => ClientKeyBudgetPeriod::Weekly,
-                key_budgets::BudgetPeriod::All => ClientKeyBudgetPeriod::All,
-            },
-        };
-        let result = self
-            .ports
-            .upgrade()?
-            .reset_budget(&self.owner, command, &mutation_context(context))
-            .await
-            .map_err(map_admin_error)?;
-        encode(&key_budgets::ResetKeyBudgetResult {
-            client_key_id: result.as_str().to_owned(),
-        })
+        let access = self.ports.upgrade()?;
+        match method {
+            key_budgets::GET => {
+                let request: key_budgets::GetKeyBudgetRequest =
+                    serde_json::from_slice(payload).map_err(|_| invalid())?;
+                let id = ClientApiKeyId::new(request.client_key_id).map_err(|_| invalid())?;
+                let budget = access.budget(&id).await.map_err(map_admin_error)?;
+                encode(&key_budgets::KeyBudget {
+                    client_key_id: id.as_str().to_owned(),
+                    daily_limit_usd: budget.limits.daily_usd.canonical(),
+                    weekly_limit_usd: budget.limits.weekly_usd.canonical(),
+                    daily_used_usd: budget.daily_used_usd.canonical(),
+                    weekly_used_usd: budget.weekly_used_usd.canonical(),
+                    daily_resets_at_ms: budget
+                        .daily_resets_at
+                        .map(|time| chrono::DateTime::<chrono::Utc>::from(time).timestamp_millis()),
+                    weekly_resets_at_ms: budget
+                        .weekly_resets_at
+                        .map(|time| chrono::DateTime::<chrono::Utc>::from(time).timestamp_millis()),
+                })
+            }
+            key_budgets::UPDATE_LIMITS => {
+                let request: key_budgets::UpdateKeyBudgetLimitsRequest =
+                    serde_json::from_slice(payload).map_err(|_| invalid())?;
+                let command = UpdateClientKeyBudgetLimits {
+                    id: ClientApiKeyId::new(request.client_key_id).map_err(|_| invalid())?,
+                    daily_limit_usd: request
+                        .daily_limit_usd
+                        .map(|value| value.parse())
+                        .transpose()
+                        .map_err(|_| invalid())?,
+                    weekly_limit_usd: request
+                        .weekly_limit_usd
+                        .map(|value| value.parse())
+                        .transpose()
+                        .map_err(|_| invalid())?,
+                };
+                let id = access
+                    .update_budget_limits(&self.owner, command, &mutation_context(context))
+                    .await
+                    .map_err(map_admin_error)?;
+                encode(&key_budgets::UpdateKeyBudgetLimitsResult {
+                    client_key_id: id.as_str().to_owned(),
+                })
+            }
+            key_budgets::RESET => {
+                let request: key_budgets::ResetKeyBudgetRequest =
+                    serde_json::from_slice(payload).map_err(|_| invalid())?;
+                let command = ResetClientKeyBudget {
+                    id: ClientApiKeyId::new(request.client_key_id).map_err(|_| invalid())?,
+                    period: match request.period {
+                        key_budgets::BudgetPeriod::Daily => ClientKeyBudgetPeriod::Daily,
+                        key_budgets::BudgetPeriod::Weekly => ClientKeyBudgetPeriod::Weekly,
+                        key_budgets::BudgetPeriod::All => ClientKeyBudgetPeriod::All,
+                    },
+                };
+                let id = access
+                    .reset_budget(&self.owner, command, &mutation_context(context))
+                    .await
+                    .map_err(map_admin_error)?;
+                encode(&key_budgets::ResetKeyBudgetResult {
+                    client_key_id: id.as_str().to_owned(),
+                })
+            }
+            _ => Err(denied()),
+        }
     }
 }
 

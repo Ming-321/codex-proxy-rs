@@ -434,7 +434,10 @@ impl CallbackHandler for PluginCallbacks {
             }
             if matches!(
                 method.as_str(),
-                "host.keys.list" | gateway_plugin_sdk::call::key_budgets::RESET
+                "host.keys.list"
+                    | gateway_plugin_sdk::call::key_budgets::RESET
+                    | gateway_plugin_sdk::call::key_budgets::GET
+                    | gateway_plugin_sdk::call::key_budgets::UPDATE_LIMITS
             ) {
                 return keys.call(&context, &method, params, &payload).await;
             }
@@ -460,6 +463,7 @@ impl CallbackHandler for PluginCallbacks {
                 method.as_str(),
                 gateway_plugin_sdk::call::data::ACCOUNTS_LIST
                     | gateway_plugin_sdk::call::data::QUOTA_GET
+                    | gateway_plugin_sdk::call::data::QUOTA_REFRESH
             ) {
                 return data.call(&context, &method, params, &payload).await;
             }

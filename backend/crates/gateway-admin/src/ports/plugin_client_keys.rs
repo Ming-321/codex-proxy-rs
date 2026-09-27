@@ -1,17 +1,26 @@
-//! 插件 Client Key 非秘密目录与受控预算重置端口。
+//! 插件 Client Key 非秘密目录与受控预算管理端口。
 
 use async_trait::async_trait;
-use gateway_core::policy::ClientApiKeyId;
+use gateway_core::{engine::budget::ClientBudgetStatus, policy::ClientApiKeyId};
 
 use crate::model::{
     AdminError, MutationContext,
-    client_keys::ResetClientKeyBudget,
+    client_keys::{ResetClientKeyBudget, UpdateClientKeyBudgetLimits},
     plugin_client_keys::{PluginClientKeyListQuery, PluginClientKeyPage},
     plugin_resources::PluginResourceOwner,
 };
 
 #[async_trait]
 pub trait PluginClientKeyAccess: Send + Sync {
+    async fn budget(&self, id: &ClientApiKeyId) -> Result<ClientBudgetStatus, AdminError>;
+
+    async fn update_budget_limits(
+        &self,
+        owner: &PluginResourceOwner,
+        command: UpdateClientKeyBudgetLimits,
+        context: &MutationContext,
+    ) -> Result<ClientApiKeyId, AdminError>;
+
     async fn reset_budget(
         &self,
         owner: &PluginResourceOwner,

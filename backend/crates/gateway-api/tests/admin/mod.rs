@@ -863,10 +863,23 @@ fn mutation(
 
 #[async_trait]
 impl ClientKeyStore for MemoryClientKeyStore {
+    async fn update_client_key_budget_limits(
+        &self,
+        _: gateway_admin::model::client_keys::UpdateClientKeyBudgetLimits,
+        _: gateway_admin::model::client_keys::ClientKeyBudgetMutationOrigin,
+        _: &MutationContext,
+    ) -> AdminStoreResult<Option<Revision>> {
+        Err(AdminStoreError::new(
+            AdminStoreErrorKind::Unavailable,
+            "client key",
+            "unused budget update",
+        ))
+    }
+
     async fn reset_client_key_budget(
         &self,
         command: gateway_admin::model::client_keys::ResetClientKeyBudget,
-        _: gateway_admin::model::client_keys::ClientKeyBudgetResetOrigin,
+        _: gateway_admin::model::client_keys::ClientKeyBudgetMutationOrigin,
         _: &MutationContext,
     ) -> AdminStoreResult<()> {
         use gateway_admin::model::client_keys::ClientKeyBudgetPeriod;

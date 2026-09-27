@@ -34,6 +34,14 @@ pub trait PluginAccountAccess: Send + Sync {
         Err(AdminError::unavailable("插件额度事实查询暂不可用"))
     }
 
+    /// 通过 Provider 原生管理路径刷新额度；不向插件暴露凭据或执行额度重置。
+    async fn refresh_quota(
+        &self,
+        _account_id: &ProviderAccountId,
+    ) -> Result<crate::model::provider_credentials::ProviderQuota, AdminError> {
+        Err(AdminError::unavailable("插件额度观测刷新暂不可用"))
+    }
+
     async fn save(
         &self,
         command: PreparedPluginAccountSave,

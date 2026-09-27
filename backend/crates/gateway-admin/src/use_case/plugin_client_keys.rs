@@ -1,17 +1,17 @@
-//! 插件 Client Key 管理；复用管理服务，只开放非秘密目录与预算重置。
+//! 插件 Client Key 管理；复用管理服务，只开放非秘密目录与预算操作。
 
 use std::sync::Arc;
 
 use async_trait::async_trait;
-use gateway_core::policy::ClientApiKeyId;
+use gateway_core::{engine::budget::ClientBudgetStatus, policy::ClientApiKeyId};
 
 use crate::{
     model::{
         AdminError, MutationContext,
         client_keys::{
-            ClientKeyBudgetResetOrigin, ClientKeyCursor, ClientKeyCursorValue, ClientKeyListQuery,
-            ClientKeyPageSize, ClientKeySort, ClientKeySortField, ResetClientKeyBudget,
-            SortDirection,
+            ClientKeyBudgetMutationOrigin, ClientKeyCursor, ClientKeyCursorValue,
+            ClientKeyListQuery, ClientKeyPageSize, ClientKeySort, ClientKeySortField,
+            ResetClientKeyBudget, SortDirection, UpdateClientKeyBudgetLimits,
         },
         plugin_client_keys::{
             PluginClientKey, PluginClientKeyCursor, PluginClientKeyListQuery, PluginClientKeyPage,
@@ -34,6 +34,25 @@ impl DefaultPluginClientKeyAccess {
 
 #[async_trait]
 impl PluginClientKeyAccess for DefaultPluginClientKeyAccess {
+    async fn budget(&self, id: &ClientApiKeyId) -> Result<ClientBudgetStatus, AdminError> {
+        self.service.budget(id).await
+    }
+
+    async fn update_budget_limits(
+        &self,
+        owner: &PluginResourceOwner,
+        command: UpdateClientKeyBudgetLimits,
+        context: &MutationContext,
+    ) -> Result<ClientApiKeyId, AdminError> {
+        self.service
+            .update_budget_limits(
+                context,
+                command,
+                ClientKeyBudgetMutationOrigin::Plugin(owner.clone()),
+            )
+            .await
+    }
+
     async fn reset_budget(
         &self,
         owner: &PluginResourceOwner,
@@ -44,7 +63,7 @@ impl PluginClientKeyAccess for DefaultPluginClientKeyAccess {
             .reset_budget(
                 context,
                 command,
-                ClientKeyBudgetResetOrigin::Plugin(owner.clone()),
+                ClientKeyBudgetMutationOrigin::Plugin(owner.clone()),
             )
             .await
     }

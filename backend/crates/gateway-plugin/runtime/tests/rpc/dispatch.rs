@@ -297,6 +297,12 @@ async fn managed_resources_require_their_domains_and_control_plane_stages() {
         ("host.groups.change_members", Permission::Groups),
         ("host.keys.ensure", Permission::Keys),
         ("host.keys.reset_budget", Permission::KeyBudgets),
+        ("host.keys.get_budget", Permission::KeyBudgets),
+        ("host.keys.update_budget_limits", Permission::KeyBudgets),
+        (
+            "host.quota_observations.refresh",
+            Permission::QuotaObservations,
+        ),
     ] {
         for granted in [false, true] {
             let callbacks = Arc::new(Callbacks::default());

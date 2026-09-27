@@ -152,11 +152,12 @@ pub enum Permission {
     Groups,
     Keys,
     KeyBudgets,
+    QuotaObservations,
 }
 
 impl Permission {
     /// 当前公开访问域，安装摘要与授权校验复用同一集合。
-    pub const ALL: [Self; 9] = [
+    pub const ALL: [Self; 10] = [
         Self::Network,
         Self::Models,
         Self::Accounts,
@@ -166,6 +167,7 @@ impl Permission {
         Self::Groups,
         Self::Keys,
         Self::KeyBudgets,
+        Self::QuotaObservations,
     ];
 
     #[must_use]
@@ -180,6 +182,7 @@ impl Permission {
             Self::Groups => "groups",
             Self::Keys => "keys",
             Self::KeyBudgets => "key_budgets",
+            Self::QuotaObservations => "quota_observations",
         }
     }
 
@@ -196,6 +199,7 @@ impl Permission {
             Self::Groups => "专用账号分组",
             Self::Keys => "专用 API Key",
             Self::KeyBudgets => "API Key 预算",
+            Self::QuotaObservations => "账号额度观测",
         }
     }
 
@@ -215,8 +219,11 @@ impl Permission {
                 "创建本插件的分组，可将所有现有及未来新增账号加入或移出这些分组，不修改其他分组"
             }
             Self::Keys => "创建绑定本插件分组的 API Key，不读取密钥明文或修改管理员创建的 Key",
+            Self::QuotaObservations => {
+                "查询所有现有及未来账号的额度观测，并通过宿主刷新上游观测；不读取凭据、不执行上游额度重置"
+            }
             Self::KeyBudgets => {
-                "查询 API Key 非秘密信息并重置所有现有及未来新增 Key 的预算用量，包括管理员和其他插件创建的 Key；不读取明文或修改额度上限"
+                "查询所有现有及未来新增 Key 的预算、修改日／周金额上限和重置用量，包括管理员和其他插件创建的 Key；不读取密钥或修改其他配置"
             }
         }
     }

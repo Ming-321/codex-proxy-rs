@@ -22,9 +22,9 @@ use crate::model::{
     },
     auth::{AdminAuditEvent, AuthSession},
     client_keys::{
-        ClientKeyBudgetResetOrigin, ClientKeyListQuery, ClientKeyPage, ClientKeyRecord,
+        ClientKeyBudgetMutationOrigin, ClientKeyListQuery, ClientKeyPage, ClientKeyRecord,
         ClientKeySecret, DeleteClientKey, NewClientKey, ResetClientKeyBudget, SetClientKeyEnabled,
-        UpdateClientKey,
+        UpdateClientKey, UpdateClientKeyBudgetLimits,
     },
     observability::{
         DashboardObservation, DashboardRuntimeSlots, DiagnosticDimension, DiagnosticObservation,
@@ -333,11 +333,19 @@ pub trait ClientKeyStore: Send + Sync {
         context: &MutationContext,
     ) -> AdminStoreResult<Revision>;
 
+    /// 局部更新预算上限，保留其他策略和账本；无变化时不产生配置版本或审计。
+    async fn update_client_key_budget_limits(
+        &self,
+        command: UpdateClientKeyBudgetLimits,
+        origin: ClientKeyBudgetMutationOrigin,
+        context: &MutationContext,
+    ) -> AdminStoreResult<Option<Revision>>;
+
     /// 仅修改运行时账本并原子记录审计，不推进配置版本。
     async fn reset_client_key_budget(
         &self,
         command: ResetClientKeyBudget,
-        origin: ClientKeyBudgetResetOrigin,
+        origin: ClientKeyBudgetMutationOrigin,
         context: &MutationContext,
     ) -> AdminStoreResult<()>;
 }

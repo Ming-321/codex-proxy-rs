@@ -1,8 +1,9 @@
-//! 只读基础事实；版本 1 不提供凭据、预测、聚合或主动上游刷新。
+//! 基础事实投影；主动刷新由独立的 quota_observations 访问域授权。
 
 use serde::{Deserialize, Serialize};
 
 pub const ACCOUNTS_LIST: &str = "host.data.accounts.list";
+pub const QUOTA_REFRESH: &str = "host.quota_observations.refresh";
 pub const QUOTA_GET: &str = "host.data.quota.get";
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

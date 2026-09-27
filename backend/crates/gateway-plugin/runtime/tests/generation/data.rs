@@ -22,7 +22,7 @@ use gateway_plugin_sdk::{Capability, Contributions, Permission, Stage};
 use serde_json::{Value, json};
 
 #[derive(Default)]
-struct Facts(AtomicUsize);
+struct Facts(AtomicUsize, AtomicUsize);
 
 fn account() -> AccountRecord {
     let at = "2026-01-01T00:00:00Z".parse().unwrap();
@@ -65,6 +65,26 @@ fn account() -> AccountRecord {
 
 #[async_trait]
 impl PluginAccountAccess for Facts {
+    async fn refresh_quota(
+        &self,
+        account: &ProviderAccountId,
+    ) -> Result<ProviderQuota, AdminError> {
+        self.1.fetch_add(1, Ordering::SeqCst);
+        if account.as_str() == "acct_missing" {
+            return Err(AdminError::not_found("missing account"));
+        }
+        if account.as_str() == "acct_unsupported" {
+            return Err(AdminError::invalid("unsupported quota refresh"));
+        }
+        if account.as_str() == "acct_unavailable" {
+            return Err(AdminError::unavailable("quota refresh unavailable"));
+        }
+        let mut quota = self.get_quota(account).await?;
+        quota.observed_at = Some("2026-01-01T00:00:00Z".parse().unwrap());
+        quota.windows[0].used_percent = Some(17.5);
+        Ok(quota)
+    }
+
     async fn list(&self, query: PluginAccountListQuery) -> Result<PluginAccountPage, AdminError> {
         self.0.fetch_add(1, Ordering::SeqCst);
         assert_eq!(query.limit.get(), 1);
@@ -205,6 +225,107 @@ async fn management_facts_are_minimal_bounded_and_separately_authorized() {
                     .iter()
                     .all(|result| result["error"] == "permission_denied")
             );
+        }
+        drop(generation);
+        runtime.shutdown().await;
+        super::wait_until_empty(cache.path()).await;
+    }
+}
+
+#[tokio::test]
+async fn quota_refresh_requires_observation_permission_and_returns_only_facts() {
+    for permission in [
+        None,
+        Some(Permission::Data),
+        Some(Permission::QuotaObservations),
+    ] {
+        let (cache, store, runtime) = super::setup_with_permissions(
+            Contributions::from([crate::support::contribution(
+                Capability::Management,
+                vec![Stage::Management],
+                vec![],
+                vec![],
+            )]),
+            Default::default(),
+            permission.into_iter().collect(),
+        )
+        .await;
+        let facts = Arc::new(Facts::default());
+        let port: Arc<dyn PluginAccountAccess> = facts.clone();
+        runtime.bind_account_ports(&port).unwrap();
+        {
+            let mut snapshot = store.snapshot.lock().unwrap();
+            let instance = &mut snapshot.instances[0];
+            instance.grants = permission
+                .into_iter()
+                .map(|permission| PluginPermissionGrant {
+                    permission: permission.as_str().into(),
+                })
+                .collect();
+            instance.configuration = json!({
+                "management_registration":{"routes":[{"method":"GET","path":"facts","request_content_types":[],"response_content_types":["application/json"]}]},
+                "data_queries":[
+                    {"method":"host.data.quota.get","query":{"account_id":"acct_facts"}},
+                    {"method":"host.quota_observations.refresh","query":{"account_id":"acct_facts"}},
+                    {"method":"host.quota_observations.refresh","query":{"account_id":"acct_facts","provider_id":"forged"}},
+                    {"method":"host.quota_observations.refresh","query":{"account_id":"acct_missing"}},
+                    {"method":"host.quota_observations.refresh","query":{"account_id":"acct_unsupported"}},
+                    {"method":"host.quota_observations.refresh","query":{"account_id":"acct_unavailable"}},
+                    {"method":"host.auth.get","query":{"account_id":"acct_facts"}}
+
+                ]
+            });
+        }
+        let generation =
+            ExtensionPreparationPort::prepare(&runtime, ConfigRevision::new(1).unwrap())
+                .await
+                .unwrap();
+        assert!(runtime.middleware_registry().resolve(&generation).is_none());
+        assert!(runtime.policy_registry().resolve(&generation).is_none());
+        let view = runtime.views(&generation).await.unwrap().remove(0);
+        let response = runtime
+            .handle(
+                &generation,
+                &view.target,
+                PluginManagementRequest {
+                    method: "GET".into(),
+                    path: "facts".into(),
+                    query: String::new(),
+                    content_type: None,
+                    body: vec![],
+                    request_id: "data-fixture".into(),
+                },
+            )
+            .await
+            .unwrap();
+        let result: Value = serde_json::from_slice(&response.body).unwrap();
+        if permission == Some(Permission::QuotaObservations) {
+            assert_eq!(facts.1.load(Ordering::SeqCst), 4);
+            assert_eq!(result[0]["observed_at_ms"], Value::Null);
+            assert_eq!(
+                result[1],
+                json!({"schema_version":1,"account_id":"acct_facts","observed_at_ms":1767225600000i64,
+                "windows":[{"key":"weekly","window_seconds":604800,"used_percent":17.5,"reset_at_ms":null}]})
+            );
+            for (index, code) in [
+                (2, "invalid_input"),
+                (3, "rejected"),
+                (4, "invalid_input"),
+                (5, "fault"),
+                (6, "permission_denied"),
+            ] {
+                assert_eq!(result[index]["error"], code);
+            }
+        } else {
+            assert_eq!(facts.1.load(Ordering::SeqCst), 0);
+            for denied in &result.as_array().unwrap()[1..] {
+                assert_eq!(denied["error"], "permission_denied");
+            }
+            if permission == Some(Permission::Data) {
+                assert_eq!(result[0]["account_id"], "acct_facts");
+            } else {
+                assert_eq!(result[0]["error"], "permission_denied");
+            }
         }
         drop(generation);
         runtime.shutdown().await;

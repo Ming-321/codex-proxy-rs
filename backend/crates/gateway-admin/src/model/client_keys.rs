@@ -222,9 +222,17 @@ pub struct ResetClientKeyBudget {
     pub period: ClientKeyBudgetPeriod,
 }
 
+/// 仅更新指定金额上限；省略的周期保持不变，不修改已用金额或窗口。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct UpdateClientKeyBudgetLimits {
+    pub id: ClientApiKeyId,
+    pub daily_limit_usd: Option<gateway_core::metering::Decimal>,
+    pub weekly_limit_usd: Option<gateway_core::metering::Decimal>,
+}
+
 /// 预算变更的调用来源；插件身份由 Runtime 给出，不能从插件请求反序列化。
 #[derive(Debug, Clone)]
-pub enum ClientKeyBudgetResetOrigin {
+pub enum ClientKeyBudgetMutationOrigin {
     Admin,
     Plugin(PluginResourceOwner),
 }

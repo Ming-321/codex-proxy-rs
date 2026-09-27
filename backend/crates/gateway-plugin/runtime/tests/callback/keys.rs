@@ -25,7 +25,7 @@ use crate::support::{
 };
 
 #[tokio::test]
-async fn plugin_process_resets_native_budget_through_client_key_service() {
+async fn plugin_process_manages_native_budget_through_client_key_service() {
     for granted in [false, true] {
         let Some(environment) = Environment::create().await else {
             eprintln!("SKIP: plugin integration environment absent");
@@ -45,7 +45,16 @@ async fn plugin_process_resets_native_budget_through_client_key_service() {
                 {"method":"host.keys.reset_budget","query":{"client_key_id":"key_budget"}},
                 {"method":"host.keys.reset_budget","query":{"client_key_id":"key_budget","period":"monthly"}},
                 {"method":"host.keys.reset_budget","query":{"client_key_id":"key_budget","period":"all","instance_id":"forged"}},
-                {"method":"host.keys.reset_budget","query":{"client_key_id":"missing","period":"all"}}
+                {"method":"host.keys.reset_budget","query":{"client_key_id":"missing","period":"all"}},
+                {"method":"host.keys.get_budget","query":{"client_key_id":"key_budget"}},
+                {"method":"host.keys.update_budget_limits","query":{"client_key_id":"key_budget","weekly_limit_usd":"25.5"}},
+                {"method":"host.keys.get_budget","query":{"client_key_id":"key_budget"}},
+                {"method":"host.keys.update_budget_limits","query":{"client_key_id":"key_budget"}},
+                {"method":"host.keys.update_budget_limits","query":{"client_key_id":"key_budget","daily_limit_usd":"-1"}},
+                {"method":"host.keys.get_budget","query":{"client_key_id":"missing"}},
+                {"method":"host.keys.update_budget_limits","query":{"client_key_id":"missing","weekly_limit_usd":"2"}},
+                {"method":"host.keys.update_budget_limits","query":{"client_key_id":"key_budget","max_concurrency":1}},
+                {"method":"host.keys.get_budget","query":{"client_key_id":"key_budget","instance_id":"forged"}}
             ]
         }), if granted { vec![account_grant("key_budgets")] } else { vec![] }).await;
         let (runtime, core) = environment.runtime().await;
@@ -90,7 +99,34 @@ async fn plugin_process_resets_native_budget_through_client_key_service() {
             assert_eq!(results[5], json!({"error":"rejected"}));
             assert_eq!(after.budget.weekly_used_usd.canonical(), "0");
             assert_eq!(after.budget.daily_used_usd, before.budget.daily_used_usd);
-            assert_eq!(after.budget.limits, before.budget.limits);
+            assert_eq!(
+                after.budget.limits.daily_usd,
+                before.budget.limits.daily_usd
+            );
+            assert_eq!(after.budget.limits.weekly_usd.canonical(), "25.5");
+            let mut expected = json!({
+                "client_key_id":"key_budget", "daily_limit_usd":"10", "weekly_limit_usd":"20",
+                "daily_used_usd":"3", "weekly_used_usd":"0",
+                "daily_resets_at_ms":before.budget.daily_resets_at.map(|time| chrono::DateTime::<chrono::Utc>::from(time).timestamp_millis()),
+                "weekly_resets_at_ms":before.budget.weekly_resets_at.map(|time| chrono::DateTime::<chrono::Utc>::from(time).timestamp_millis()),
+            });
+            assert_eq!(results[6], expected);
+            assert_eq!(results[7], json!({"client_key_id":"key_budget"}));
+            expected["weekly_limit_usd"] = json!("25.5");
+            assert_eq!(results[8], expected);
+            for index in [9, 10, 13, 14] {
+                assert_eq!(results[index], json!({"error":"invalid_input"}));
+            }
+            for index in [11, 12] {
+                assert_eq!(results[index], json!({"error":"rejected"}));
+            }
+            assert_eq!(
+                environment
+                    .audit_requests("update_budget_limits")
+                    .await
+                    .len(),
+                1
+            );
             assert_eq!(after.budget.daily_resets_at, before.budget.daily_resets_at);
             assert_eq!(
                 after.budget.weekly_resets_at,
@@ -145,13 +181,18 @@ fn reset_queries() -> Value {
     // 重置无需先查询目录；两个基础接口由测试插件自行选择调用顺序。
     json!([
         {"method":"host.keys.reset_budget","query":{"client_key_id":"key_budget","period":"weekly"}},
-        {"method":"host.keys.list","query":{"limit":10}}
+        {"method":"host.keys.list","query":{"limit":10}},
+        {"method":"host.keys.get_budget","query":{"client_key_id":"key_budget"}},
+        {"method":"host.keys.update_budget_limits","query":{"client_key_id":"key_budget","daily_limit_usd":"10"}}
     ])
 }
 
 fn assert_reset_results(results: &Value) {
     assert_eq!(results[0], json!({"client_key_id":"key_budget"}));
     assert_eq!(results[1]["keys"][0]["id"], "key_budget");
+    assert_eq!(results[2]["daily_used_usd"], "3");
+    assert_eq!(results[2]["weekly_used_usd"], "0");
+    assert_eq!(results[3], json!({"client_key_id":"key_budget"}));
 }
 
 #[tokio::test]
@@ -294,6 +335,23 @@ struct HoldCommittedReply {
 
 #[async_trait::async_trait]
 impl PluginClientKeyAccess for HoldCommittedReply {
+    async fn budget(
+        &self,
+        id: &ClientApiKeyId,
+    ) -> Result<gateway_core::engine::budget::ClientBudgetStatus, AdminError> {
+        self.inner.budget(id).await
+    }
+    async fn update_budget_limits(
+        &self,
+        owner: &PluginResourceOwner,
+        command: gateway_admin::model::client_keys::UpdateClientKeyBudgetLimits,
+        context: &MutationContext,
+    ) -> Result<ClientApiKeyId, AdminError> {
+        self.inner
+            .update_budget_limits(owner, command, context)
+            .await
+    }
+
     async fn reset_budget(
         &self,
         owner: &PluginResourceOwner,

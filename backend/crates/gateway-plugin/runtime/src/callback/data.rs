@@ -12,7 +12,8 @@ use crate::RpcReply;
 
 pub(super) struct PluginData {
     accounts: Arc<PluginAccountPortSlot>,
-    authorized: bool,
+    data_authorized: bool,
+    quota_authorized: bool,
 }
 
 impl PluginData {
@@ -22,7 +23,10 @@ impl PluginData {
     ) -> Self {
         Self {
             accounts,
-            authorized: grants.iter().any(|grant| grant.permission == "data"),
+            data_authorized: grants.iter().any(|grant| grant.permission == "data"),
+            quota_authorized: grants
+                .iter()
+                .any(|grant| grant.permission == "quota_observations"),
         }
     }
 
@@ -33,8 +37,14 @@ impl PluginData {
         params: serde_json::Value,
         payload: &[u8],
     ) -> Result<RpcReply, PluginFault> {
-        // 管理范围的只读授权不继承到客户端请求链，避免借数据查询扩大当前 Key 的范围。
-        if !self.authorized
+        // 基础事实读取不隐含上游访问权；管理范围也不继承到客户端请求链。
+        let authorized = match method {
+            data::ACCOUNTS_LIST => self.data_authorized,
+            data::QUOTA_GET => self.data_authorized || self.quota_authorized,
+            data::QUOTA_REFRESH => self.quota_authorized,
+            _ => false,
+        };
+        if !authorized
             || !matches!(
                 context.stage,
                 Stage::Management | Stage::CommandLine | Stage::Maintenance
@@ -86,14 +96,16 @@ impl PluginData {
                     next_cursor: page.next_cursor.map(|id| id.as_str().to_owned()),
                 })
             }
-            data::QUOTA_GET => {
+            data::QUOTA_GET | data::QUOTA_REFRESH => {
                 let query: data::QuotaFactsQuery =
                     serde_json::from_slice(payload).map_err(|_| invalid())?;
                 let account_id = ProviderAccountId::new(query.account_id).map_err(|_| invalid())?;
-                let quota = accounts
-                    .get_quota(&account_id)
-                    .await
-                    .map_err(map_admin_error)?;
+                let quota = if method == data::QUOTA_REFRESH {
+                    accounts.refresh_quota(&account_id).await
+                } else {
+                    accounts.get_quota(&account_id).await
+                }
+                .map_err(map_admin_error)?;
                 serde_json::to_vec(&data::QuotaFacts {
                     schema_version: 1,
                     account_id: account_id.as_str().to_owned(),

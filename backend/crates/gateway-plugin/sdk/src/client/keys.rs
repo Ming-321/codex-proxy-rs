@@ -1,4 +1,4 @@
-//! 非秘密 Key 目录与预算重置的类型化调用。
+//! 非秘密 Key 目录与预算管理的类型化调用。
 
 use crate::{
     ErrorCode, PluginFault,
@@ -11,6 +11,28 @@ use crate::{
 use super::{HostClient, SessionError, payload_call};
 
 impl HostClient {
+    /// 只读查询单个 Key 的预算，不开启或重置窗口。
+    ///
+    /// # Errors
+    /// 未授权、阶段不符、Key 不存在或宿主读取失败时返回错误。
+    pub async fn get_key_budget(
+        &self,
+        request: key_budgets::GetKeyBudgetRequest,
+    ) -> Result<key_budgets::KeyBudget, PluginFault> {
+        payload_call(self, key_budgets::GET, request).await
+    }
+
+    /// 更新指定日／周上限；省略项不变，零表示不限，不清零用量。
+    ///
+    /// # Errors
+    /// 未授权、阶段不符、参数无效、Key 不存在或宿主写入失败时返回错误。
+    pub async fn update_key_budget_limits(
+        &self,
+        request: key_budgets::UpdateKeyBudgetLimitsRequest,
+    ) -> Result<key_budgets::UpdateKeyBudgetLimitsResult, PluginFault> {
+        payload_call(self, key_budgets::UPDATE_LIMITS, request).await
+    }
+
     /// 查询 Key 的非秘密身份；模型或预算访问域决定可用阶段。
     ///
     /// # Errors

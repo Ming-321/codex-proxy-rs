@@ -3405,3 +3405,34 @@ async fn unregistered_provider_accounts_have_no_live_management_capabilities() {
     );
     assert_eq!(page.items[0].capabilities, Default::default());
 }
+
+#[tokio::test]
+async fn plugin_quota_refresh_uses_native_provider_without_changing_configuration() {
+    let events = events();
+    let provider = FakeProviderAdmin::new("openai", events.clone());
+    let store = FakeAccountStore::new("openai", events.clone());
+    let access = gateway_admin::initialize_plugin_accounts(
+        ProviderAdminRegistry::new([provider.clone() as Arc<dyn ProviderAdmin>]).unwrap(),
+        store,
+        Arc::new(RecordingPluginAccountPublication(events.clone())),
+    );
+    let id = ProviderAccountId::new("acct_test").unwrap();
+    access.get_quota(&id).await.unwrap();
+    access.refresh_quota(&id).await.unwrap();
+    assert_eq!(
+        provider.quota_requests(),
+        vec![
+            ProviderQuotaRequest {
+                account_id: id.clone(),
+                refresh: false,
+                rolling_usage: None
+            },
+            ProviderQuotaRequest {
+                account_id: id,
+                refresh: true,
+                rolling_usage: None
+            },
+        ]
+    );
+    assert!(!recorded(&events).contains(&"snapshot.publish_committed"));
+}

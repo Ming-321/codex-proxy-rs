@@ -644,10 +644,19 @@ impl AccountRuntimeStore for UnavailableStore {
 
 #[async_trait]
 impl ClientKeyStore for UnavailableStore {
+    async fn update_client_key_budget_limits(
+        &self,
+        _: gateway_admin::model::client_keys::UpdateClientKeyBudgetLimits,
+        _: gateway_admin::model::client_keys::ClientKeyBudgetMutationOrigin,
+        _: &MutationContext,
+    ) -> AdminStoreResult<Option<Revision>> {
+        Err(unavailable("client key budget limits"))
+    }
+
     async fn reset_client_key_budget(
         &self,
         _: gateway_admin::model::client_keys::ResetClientKeyBudget,
-        _: gateway_admin::model::client_keys::ClientKeyBudgetResetOrigin,
+        _: gateway_admin::model::client_keys::ClientKeyBudgetMutationOrigin,
         _: &MutationContext,
     ) -> AdminStoreResult<()> {
         Err(unavailable("client key budget reset"))
