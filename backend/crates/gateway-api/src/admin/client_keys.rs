@@ -352,6 +352,9 @@ pub struct ClientKeyView {
     weekly_limit_usd: String,
     daily_used_usd: String,
     weekly_used_usd: String,
+    weekly_controller: Option<String>,
+    weekly_control_revision: u64,
+    weekly_waiting: bool,
     daily_resets_at: Option<DateTime<Utc>>,
     weekly_resets_at: Option<DateTime<Utc>>,
     created_at: DateTime<Utc>,
@@ -413,6 +416,9 @@ impl From<ClientKeyRecord> for ClientKeyView {
             weekly_limit_usd: record.budget.limits.weekly_usd.canonical(),
             daily_used_usd: record.budget.daily_used_usd.canonical(),
             weekly_used_usd: record.budget.weekly_used_usd.canonical(),
+            weekly_controller: record.budget.weekly_controller,
+            weekly_control_revision: record.budget.weekly_control_revision,
+            weekly_waiting: record.budget.weekly_waiting,
             daily_resets_at: record.budget.daily_resets_at.map(DateTime::from),
             weekly_resets_at: record.budget.weekly_resets_at.map(DateTime::from),
             created_at: record.created_at,
@@ -854,6 +860,10 @@ where
     Router::new()
         .route("/api/admin/client-keys", get(list_client_keys::<S>))
         .route(
+            "/api/admin/client-keys/release-weekly-control",
+            post(release_weekly_control::<S>),
+        )
+        .route(
             "/api/admin/client-keys/create",
             post(create_client_key::<S>),
         )
@@ -961,6 +971,43 @@ where
             .update(&auth.context().mutation_context(), command)
             .await,
     )
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct ReleaseWeeklyControlRequest {
+    id: String,
+    expected_revision: u64,
+}
+
+async fn release_weekly_control<S>(
+    auth: AdminAuth,
+    State(state): State<S>,
+    AdminJson(payload): AdminJson<ReleaseWeeklyControlRequest>,
+) -> Result<impl IntoResponse, AdminError>
+where
+    S: SessionState + Send + Sync,
+{
+    let id = ClientApiKeyId::new(payload.id)
+        .map_err(|_| map_wire_error(WireValidationError::new("id")))?;
+    state
+        .admin_services()
+        .client_keys()
+        .change_weekly_budget(
+            &auth.context().mutation_context(),
+            gateway_admin::model::weekly_budget::ChangeWeeklyBudget {
+                id: id.clone(),
+                expected_revision: payload.expected_revision,
+                action: gateway_admin::model::weekly_budget::WeeklyBudgetAction::Release,
+            },
+            gateway_admin::model::client_keys::ClientKeyBudgetMutationOrigin::Admin,
+        )
+        .await
+        .map_err(map_service_error)?;
+    Ok(AdminResponse::new(
+        StatusCode::OK,
+        AdminEnvelope::ok(MutatedClientKeyData::new(id.as_str().to_owned())),
+    ))
 }
 
 async fn reset_client_key_budget<S>(

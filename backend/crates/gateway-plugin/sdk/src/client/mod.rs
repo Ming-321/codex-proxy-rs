@@ -7,6 +7,7 @@ mod middleware;
 mod plugin;
 mod resources;
 mod session;
+mod weekly_budget;
 
 use crate::{ErrorCode, PluginFault};
 use serde::{Serialize, de::DeserializeOwned};

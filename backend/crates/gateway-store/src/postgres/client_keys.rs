@@ -821,6 +821,22 @@ impl ClientKeyStore for PgAdminClientKeyStore {
             .transpose()
     }
 
+    async fn weekly_budget_control(
+        &self,
+        id: &ClientApiKeyId,
+    ) -> AdminStoreResult<gateway_admin::model::weekly_budget::WeeklyBudgetControl> {
+        super::weekly_budget::get(&self.keys.pool, id).await
+    }
+
+    async fn change_weekly_budget(
+        &self,
+        command: gateway_admin::model::weekly_budget::ChangeWeeklyBudget,
+        origin: gateway_admin::model::client_keys::ClientKeyBudgetMutationOrigin,
+        context: &MutationContext,
+    ) -> AdminStoreResult<gateway_admin::model::weekly_budget::WeeklyBudgetControl> {
+        super::weekly_budget::change(&self.keys.pool, command, origin, context).await
+    }
+
     async fn list_client_keys(
         &self,
         query: AdminClientKeyListQuery,

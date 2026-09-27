@@ -297,6 +297,14 @@ async fn save_inner(
             .bind(id).execute(&mut *tx).await.map_err(|_| unavailable())?;
     }
     let committed_revision = admin_revision(revision)?;
+    if !instance.enabled
+        || !instance
+            .grants
+            .iter()
+            .any(|grant| grant.permission == "key_budgets")
+    {
+        super::super::weekly_budget::release_owner(&mut tx, &instance.id).await?;
+    }
     // 旧配置与新配置共享事务，任一版本检查或状态提交失败都不留下半次切换。
     for replacement in replacements {
         let previous_id = uuid::Uuid::parse_str(&replacement.id).map_err(|_| conflict())?;
@@ -316,6 +324,7 @@ async fn save_inner(
         .bind(&instance.artifact_sha256)
         .fetch_optional(&mut *tx).await.map_err(|_| unavailable())?
         .ok_or_else(conflict)?;
+        super::super::weekly_budget::release_owner(&mut tx, &replacement.id).await?;
         super::state::rebind_existing_configuration(
             &mut tx,
             &replacement.id,
@@ -395,6 +404,7 @@ pub(super) async fn delete(
     if enabled {
         return Err(conflict());
     }
+    super::super::weekly_budget::release_owner(&mut tx, id).await?;
     sqlx::query("delete from plugin_instances where id=$1")
         .bind(key)
         .execute(&mut *tx)

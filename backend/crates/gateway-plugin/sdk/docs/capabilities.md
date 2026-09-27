@@ -172,6 +172,27 @@ Key 明文仍通过宿主管理面查看，插件模型调用使用返回的 Key
 
 ### Client Key 预算
 
+#### 持续接管周窗口
+
+`key_budgets` 授权同时允许持续接管周窗口。类型位于 `call::weekly_budget`，控制参数 `{}`、二进制 JSON 输入输出，调用阶段与其他预算接口相同。旧宿主不支持这些方法，插件必须声明包含这些能力的最低宿主版本。
+
+| SDK 方法 | 回调 | 用途 |
+| --- | --- | --- |
+| `weekly_budget_control(WeeklyBudgetQuery)` | `host.keys.weekly_control.get` | 查询 `revision`、接管实例 ID `controller`、`expires_at_ms` 和 `waiting` |
+| `change_weekly_budget(ChangeWeeklyBudgetRequest)` | `host.keys.weekly_control.change` | 按 `expected_revision` 执行 `operation` |
+
+`operation` 是带 `action` 的对象：`claim` 需要 `expires_at_ms`，`clear_used` 默认 `false`；`sync` 需要 `expires_at_ms`；`release` 不需要额外字段。到期时间必须晚于宿主执行时间。`claim` 要求当前无接管者，`sync` 和插件 `release` 要求当前实例拥有接管权。正常换周、上游提前重置及重置卡共用 `sync`，宿主不猜测账号关联或重置证据。
+
+先读取版本，将完整变更请求持久化在插件私有状态后再调用。成功后版本加一；最新一次变更的原样重试返回已提交版本，不再次清零。早于最新变更的请求返回版本冲突，不能改成当前版本后盲目重放。多个 Key 各自独立提交，部分成功时只重试未确认项。去重状态保存在宿主数据库，进程重启和响应丢失不影响它。
+
+首次接管默认保留周已用金额，显式 `clear_used=true` 只执行一次。`sync` 清零周用量，以取得 Key 锁后的宿主执行时刻为新计费起点，并设置提供的到期时间；不回算历史费用。日预算、限额和 Key 启用开关保持原语义。结算按完成时间归属当前计费起点；同步前完成但迟到落盘的费用保留历史记录，不回扣新周期。
+
+接管期间宿主不会自动推进七天窗口。到期而未同步时，`waiting=true`，新请求返回 `key_weekly_window_waiting`；已用金额及在途结算继续保留。新窗口同步解除等待，但不能绕过日限额或管理员停用。原有人工 `reset_key_budget` 仍只清零指定用量，不推进周窗口，也不能解除等待。
+
+管理员解除接管、插件明确停用、卸载或更换为不再具有预算权限的版本时，宿主自动保留用量和限额，按切换当天上海零点起七天设置原生到期日。退出本身不清零；下次原生到期才清零。退出会推进版本，旧调用不能继续控制。进程重启、刷新失败或临时离线不解除接管。
+
+插件负责保存跟随配置、账号观测及待提交请求。停用后重新启用时，应重新读取状态并用 `clear_used=false` 接管；不要重放首次清零。管理员主动解除后，插件应尊重退出状态，不在常规轮询中自动抢回接管。是否重新启用跟随由插件配置决定。
+
 `key_budgets` 是原生 Key 预算访问域，仅在 `management`、`command_line`、`maintenance` 阶段使用。
 接受该域即允许查询、设置金额上限及清零全部当前及未来 Client Key，包括管理员和其他插件创建的 Key；
 插件配置中的 Key 筛选不构成宿主权限边界。`keys` 只负责插件自有 Key 的创建，不能替代这一预算管理授权。

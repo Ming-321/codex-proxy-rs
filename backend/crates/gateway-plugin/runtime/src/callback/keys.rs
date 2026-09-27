@@ -18,7 +18,7 @@ use gateway_plugin_sdk::{
     CallContext, PluginFault,
     call::{
         host::{ClientKey, KeyListRequest, KeyListResult},
-        key_budgets,
+        key_budgets, weekly_budget,
     },
 };
 
@@ -60,6 +60,50 @@ impl PluginClientKeys {
         }
         let access = self.ports.upgrade()?;
         match method {
+            weekly_budget::GET => {
+                let query: weekly_budget::WeeklyBudgetQuery =
+                    serde_json::from_slice(payload).map_err(|_| invalid())?;
+                let id = ClientApiKeyId::new(query.client_key_id).map_err(|_| invalid())?;
+                weekly_reply(
+                    access
+                        .weekly_budget_control(&id)
+                        .await
+                        .map_err(map_admin_error)?,
+                )
+            }
+            weekly_budget::CHANGE => {
+                use gateway_admin::model::weekly_budget::{ChangeWeeklyBudget, WeeklyBudgetAction};
+                let request: weekly_budget::ChangeWeeklyBudgetRequest =
+                    serde_json::from_slice(payload).map_err(|_| invalid())?;
+                let action = match request.operation {
+                    weekly_budget::WeeklyBudgetAction::Claim {
+                        expires_at_ms,
+                        clear_used,
+                    } => WeeklyBudgetAction::Claim {
+                        expires_at: chrono::DateTime::from_timestamp_millis(expires_at_ms)
+                            .ok_or_else(invalid)?,
+                        clear_used,
+                    },
+                    weekly_budget::WeeklyBudgetAction::Sync { expires_at_ms } => {
+                        WeeklyBudgetAction::Sync {
+                            expires_at: chrono::DateTime::from_timestamp_millis(expires_at_ms)
+                                .ok_or_else(invalid)?,
+                        }
+                    }
+                    weekly_budget::WeeklyBudgetAction::Release => WeeklyBudgetAction::Release,
+                };
+                let command = ChangeWeeklyBudget {
+                    id: ClientApiKeyId::new(request.client_key_id).map_err(|_| invalid())?,
+                    expected_revision: request.expected_revision,
+                    action,
+                };
+                weekly_reply(
+                    access
+                        .change_weekly_budget(&self.owner, command, &mutation_context(context))
+                        .await
+                        .map_err(map_admin_error)?,
+                )
+            }
             key_budgets::GET => {
                 let request: key_budgets::GetKeyBudgetRequest =
                     serde_json::from_slice(payload).map_err(|_| invalid())?;
@@ -129,6 +173,17 @@ impl PluginClientKeys {
 
 pub(crate) struct PluginClientKeyPortSlot {
     access: OnceLock<Weak<dyn PluginClientKeyAccess>>,
+}
+
+fn weekly_reply(
+    control: gateway_admin::model::weekly_budget::WeeklyBudgetControl,
+) -> Result<RpcReply, PluginFault> {
+    encode(&weekly_budget::WeeklyBudgetControl {
+        revision: control.revision,
+        controller: control.controller,
+        expires_at_ms: control.expires_at.map(|t| t.timestamp_millis()),
+        waiting: control.waiting,
+    })
 }
 
 impl PluginClientKeyPortSlot {

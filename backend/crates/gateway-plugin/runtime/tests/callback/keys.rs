@@ -25,6 +25,79 @@ use crate::support::{
 };
 
 #[tokio::test]
+async fn plugin_process_claims_weekly_window_and_retries_without_clearing_again() {
+    use gateway_admin::ports::plugin_management::PluginManagement;
+    let Some(environment) = Environment::create().await else {
+        return;
+    };
+    let key = ClientApiKeyId::new("key_weekly_control").unwrap();
+    environment
+        .client_key(key.as_str(), "sk-weekly-test-only")
+        .await;
+    environment.seed_client_key_budget(key.as_str()).await;
+    let expires = (chrono::Utc::now() + chrono::Duration::days(2)).timestamp_millis();
+    environment.install_plugin(json!({
+        "management_registration":{"routes":[{"method":"POST","path":"weekly","request_content_types":[],"response_content_types":["application/json"]}]},
+        "data_queries":[
+            {"method":"host.keys.weekly_control.change","query":{"client_key_id":key.as_str(),"expected_revision":0,"operation":{"action":"claim","expires_at_ms":expires,"clear_used":true}}},
+            {"method":"host.keys.weekly_control.get","query":{"client_key_id":key.as_str()}}
+        ]
+    }),vec![account_grant("key_budgets")]).await;
+    for retry in [false, true] {
+        let (runtime, core) = environment.runtime().await;
+        let access = gateway_admin::initialize_plugin_client_keys(
+            native::admin_registry(),
+            environment.store.admin_ports().client_keys(),
+            core.snapshot_control(),
+        );
+        runtime.bind_client_key_ports(&access).unwrap();
+        let generation = core
+            .snapshots()
+            .acquire()
+            .unwrap()
+            .extensions()
+            .unwrap()
+            .clone();
+        let view = runtime.views(&generation).await.unwrap().remove(0);
+        let response = runtime
+            .handle(
+                &generation,
+                &view.target,
+                PluginManagementRequest {
+                    method: "POST".into(),
+                    path: "weekly".into(),
+                    query: String::new(),
+                    content_type: None,
+                    body: vec![],
+                    request_id: "weekly-fixture".into(),
+                },
+            )
+            .await
+            .unwrap();
+        let result: Value = serde_json::from_slice(&response.body).unwrap();
+        assert_eq!(result[0]["revision"], 1, "{result}");
+        assert_eq!(result[1]["expires_at_ms"], expires);
+        assert_eq!(result[1]["waiting"], false);
+        let budget = access.budget(&key).await.unwrap();
+        assert_eq!(
+            budget.weekly_used_usd.canonical(),
+            if retry { "4.5" } else { "0" }
+        );
+        if !retry {
+            environment
+                .set_client_key_weekly_used(key.as_str(), "4.5")
+                .await;
+        }
+        drop(generation);
+        runtime.shutdown().await;
+        drop(access);
+        drop(core);
+        drop(runtime);
+    }
+    environment.close().await;
+}
+
+#[tokio::test]
 async fn plugin_process_manages_native_budget_through_client_key_service() {
     for granted in [false, true] {
         let Some(environment) = Environment::create().await else {
@@ -335,6 +408,22 @@ struct HoldCommittedReply {
 
 #[async_trait::async_trait]
 impl PluginClientKeyAccess for HoldCommittedReply {
+    async fn weekly_budget_control(
+        &self,
+        id: &ClientApiKeyId,
+    ) -> Result<gateway_admin::model::weekly_budget::WeeklyBudgetControl, AdminError> {
+        self.inner.weekly_budget_control(id).await
+    }
+    async fn change_weekly_budget(
+        &self,
+        owner: &PluginResourceOwner,
+        command: gateway_admin::model::weekly_budget::ChangeWeeklyBudget,
+        context: &MutationContext,
+    ) -> Result<gateway_admin::model::weekly_budget::WeeklyBudgetControl, AdminError> {
+        self.inner
+            .change_weekly_budget(owner, command, context)
+            .await
+    }
     async fn budget(
         &self,
         id: &ClientApiKeyId,

@@ -162,7 +162,7 @@ watch(
               <ApiKeyScopeCell :api-key="row" />
             </template>
             <template #budget="{ row }">
-              <ApiKeyBudgetCell :api-key="row" />
+              <ApiKeyBudgetCell :api-key="row" @released="loadApiKeys" />
             </template>
             <template #limits="{ row }">
               <dl class="m-0 grid grid-cols-[auto_minmax(0,1fr)] gap-x-2 gap-y-1 text-xs tabular-nums">

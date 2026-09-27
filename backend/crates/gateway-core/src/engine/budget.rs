@@ -23,6 +23,9 @@ impl ClientBudgetLimits {
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct ClientBudgetStatus {
+    pub weekly_controller: Option<String>,
+    pub weekly_control_revision: u64,
+    pub weekly_waiting: bool,
     pub limits: ClientBudgetLimits,
     pub daily_used_usd: Decimal,
     pub weekly_used_usd: Decimal,

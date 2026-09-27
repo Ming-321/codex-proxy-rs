@@ -71,6 +71,14 @@ impl Environment {
         .execute(&self.admin).await.unwrap();
     }
 
+    pub async fn set_client_key_weekly_used(&self, id: &str, amount: &str) {
+        sqlx::query(sqlx::AssertSqlSafe(format!(
+            "update {}.client_key_budget_windows set weekly_used_usd=$2::text::numeric where client_api_key_id=$1",
+            self.schema
+        )))
+        .bind(id).bind(amount).execute(&self.admin).await.unwrap();
+    }
+
     pub async fn client_key_with_limits(
         &self,
         id: &str,

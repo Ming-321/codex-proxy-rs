@@ -296,6 +296,17 @@ pub trait AuthStore: Send + Sync {
 /// Client API Key 资料读取与管理写入。
 #[async_trait]
 pub trait ClientKeyStore: Send + Sync {
+    async fn weekly_budget_control(
+        &self,
+        id: &gateway_core::policy::ClientApiKeyId,
+    ) -> AdminStoreResult<crate::model::weekly_budget::WeeklyBudgetControl>;
+
+    async fn change_weekly_budget(
+        &self,
+        command: crate::model::weekly_budget::ChangeWeeklyBudget,
+        origin: ClientKeyBudgetMutationOrigin,
+        context: &MutationContext,
+    ) -> AdminStoreResult<crate::model::weekly_budget::WeeklyBudgetControl>;
     /// 按已验证的 ID 读取资料，不读取完整明文 Key。
     async fn get_client_key(
         &self,

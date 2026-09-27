@@ -12,6 +12,16 @@ use crate::model::{
 
 #[async_trait]
 pub trait PluginClientKeyAccess: Send + Sync {
+    async fn weekly_budget_control(
+        &self,
+        id: &ClientApiKeyId,
+    ) -> Result<crate::model::weekly_budget::WeeklyBudgetControl, AdminError>;
+    async fn change_weekly_budget(
+        &self,
+        owner: &PluginResourceOwner,
+        command: crate::model::weekly_budget::ChangeWeeklyBudget,
+        context: &MutationContext,
+    ) -> Result<crate::model::weekly_budget::WeeklyBudgetControl, AdminError>;
     async fn budget(&self, id: &ClientApiKeyId) -> Result<ClientBudgetStatus, AdminError>;
 
     async fn update_budget_limits(
