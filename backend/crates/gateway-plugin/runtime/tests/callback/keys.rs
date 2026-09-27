@@ -5,7 +5,7 @@ use gateway_admin::{
     model::{
         AdminError, MutationContext,
         client_keys::ResetClientKeyBudget,
-        plugin_client_keys::{PluginClientKeyListQuery, PluginClientKeyPage},
+        plugin_client_keys::{PluginClientKeyFacts, PluginClientKeyListQuery, PluginClientKeyPage},
         plugin_resources::PluginResourceOwner,
         plugins::management::PluginManagementRequest,
     },
@@ -335,6 +335,10 @@ struct HoldCommittedReply {
 
 #[async_trait::async_trait]
 impl PluginClientKeyAccess for HoldCommittedReply {
+    async fn facts(&self, id: &ClientApiKeyId) -> Result<PluginClientKeyFacts, AdminError> {
+        self.inner.facts(id).await
+    }
+
     async fn budget(
         &self,
         id: &ClientApiKeyId,

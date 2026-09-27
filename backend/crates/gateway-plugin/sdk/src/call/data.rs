@@ -5,6 +5,23 @@ use serde::{Deserialize, Serialize};
 pub const ACCOUNTS_LIST: &str = "host.data.accounts.list";
 pub const QUOTA_REFRESH: &str = "host.quota_observations.refresh";
 pub const QUOTA_GET: &str = "host.data.quota.get";
+pub const KEYS_GET: &str = "host.data.keys.get";
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ClientKeyFactsQuery {
+    pub client_key_id: String,
+}
+
+/// 当前显式分组绑定；空列表不是单账号范围，不包含密钥或凭据。
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ClientKeyFacts {
+    pub schema_version: u32,
+    pub client_key_id: String,
+    pub enabled: bool,
+    pub group_ids: Vec<String>,
+}
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]

@@ -4,14 +4,18 @@ use gateway_admin::model::{
     PageSize, plugins::instances::PluginPermissionGrant,
     provider_credentials::PluginAccountListQuery,
 };
-use gateway_core::{account::ProviderAccountId, routing::ProviderKind};
+use gateway_core::{account::ProviderAccountId, policy::ClientApiKeyId, routing::ProviderKind};
 use gateway_plugin_sdk::{CallContext, PluginFault, Stage, call::data};
 
-use super::{accounts::PluginAccountPortSlot, admin::map_admin_error, denied, invalid};
+use super::{
+    accounts::PluginAccountPortSlot, admin::map_admin_error, denied, invalid,
+    keys::PluginClientKeyPortSlot,
+};
 use crate::RpcReply;
 
 pub(super) struct PluginData {
     accounts: Arc<PluginAccountPortSlot>,
+    keys: Arc<PluginClientKeyPortSlot>,
     data_authorized: bool,
     quota_authorized: bool,
 }
@@ -19,10 +23,12 @@ pub(super) struct PluginData {
 impl PluginData {
     pub(super) fn new(
         accounts: Arc<PluginAccountPortSlot>,
+        keys: Arc<PluginClientKeyPortSlot>,
         grants: &[PluginPermissionGrant],
     ) -> Self {
         Self {
             accounts,
+            keys,
             data_authorized: grants.iter().any(|grant| grant.permission == "data"),
             quota_authorized: grants
                 .iter()
@@ -39,7 +45,7 @@ impl PluginData {
     ) -> Result<RpcReply, PluginFault> {
         // 基础事实读取不隐含上游访问权；管理范围也不继承到客户端请求链。
         let authorized = match method {
-            data::ACCOUNTS_LIST => self.data_authorized,
+            data::ACCOUNTS_LIST | data::KEYS_GET => self.data_authorized,
             data::QUOTA_GET => self.data_authorized || self.quota_authorized,
             data::QUOTA_REFRESH => self.quota_authorized,
             _ => false,
@@ -55,9 +61,30 @@ impl PluginData {
         if params != serde_json::json!({}) {
             return Err(invalid());
         }
-        let accounts = self.accounts.upgrade().map_err(map_admin_error)?;
         let payload = match method {
+            data::KEYS_GET => {
+                let query: data::ClientKeyFactsQuery =
+                    serde_json::from_slice(payload).map_err(|_| invalid())?;
+                let id = ClientApiKeyId::new(query.client_key_id).map_err(|_| invalid())?;
+                let key = self
+                    .keys
+                    .upgrade()?
+                    .facts(&id)
+                    .await
+                    .map_err(map_admin_error)?;
+                serde_json::to_vec(&data::ClientKeyFacts {
+                    schema_version: 1,
+                    client_key_id: key.id.as_str().to_owned(),
+                    enabled: key.enabled,
+                    group_ids: key
+                        .group_ids
+                        .into_iter()
+                        .map(|id| id.as_str().to_owned())
+                        .collect(),
+                })
+            }
             data::ACCOUNTS_LIST => {
+                let accounts = self.accounts.upgrade().map_err(map_admin_error)?;
                 let query: data::AccountFactsQuery =
                     serde_json::from_slice(payload).map_err(|_| invalid())?;
                 let page = accounts
@@ -97,6 +124,7 @@ impl PluginData {
                 })
             }
             data::QUOTA_GET | data::QUOTA_REFRESH => {
+                let accounts = self.accounts.upgrade().map_err(map_admin_error)?;
                 let query: data::QuotaFactsQuery =
                     serde_json::from_slice(payload).map_err(|_| invalid())?;
                 let account_id = ProviderAccountId::new(query.account_id).map_err(|_| invalid())?;

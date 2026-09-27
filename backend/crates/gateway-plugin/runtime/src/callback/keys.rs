@@ -144,7 +144,7 @@ impl PluginClientKeyPortSlot {
             .map_err(|_| AdminError::conflict("插件 Client Key 端口已经绑定"))
     }
 
-    fn upgrade(&self) -> Result<Arc<dyn PluginClientKeyAccess>, PluginFault> {
+    pub(super) fn upgrade(&self) -> Result<Arc<dyn PluginClientKeyAccess>, PluginFault> {
         self.access.get().and_then(Weak::upgrade).ok_or_else(denied)
     }
 

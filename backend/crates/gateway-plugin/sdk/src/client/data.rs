@@ -3,6 +3,18 @@ use crate::{PluginFault, call::data};
 use super::{HostClient, payload_call};
 
 impl HostClient {
+    /// 读取 Key 当前启用状态与显式分组绑定，不返回密钥。
+    ///
+    /// # Errors
+    ///
+    /// 未获得 data 权限、调用阶段不符、Key 不存在或宿主读取失败时返回错误。
+    pub async fn key_facts(
+        &self,
+        query: data::ClientKeyFactsQuery,
+    ) -> Result<data::ClientKeyFacts, PluginFault> {
+        payload_call(self, data::KEYS_GET, query).await
+    }
+
     /// 通过宿主刷新账号额度观测，返回与 quota_facts 相同的非秘密投影。
     /// 需要 quota_observations 权限；不修改上游额度，也不自动重置任何 Key。
     ///
