@@ -183,7 +183,7 @@ Key 明文仍通过宿主管理面查看，插件模型调用使用返回的 Key
 
 | SDK 方法 | 回调 | 用途 |
 | --- | --- | --- |
-| `weekly_budget_control(WeeklyBudgetQuery)` | `host.keys.weekly_control.get` | 查询 `revision`、接管实例 ID `controller`、`expires_at_ms` 和 `waiting` |
+| `weekly_budget_control(WeeklyBudgetQuery)` | `host.keys.weekly_control.get` | 查询 `revision`、接管实例 ID `controller`、`expires_at_ms`、实际计费起点 `accounting_start_at_ms` 和 `waiting` |
 | `change_weekly_budget(ChangeWeeklyBudgetRequest)` | `host.keys.weekly_control.change` | 按 `expected_revision` 执行 `operation` |
 
 `operation` 是带 `action` 的对象：`claim` 需要 `expires_at_ms`，`clear_used` 默认 `false`；`sync`、`align` 需要 `expires_at_ms`；`release` 不需要额外字段。到期时间必须晚于宿主执行时间。`claim` 要求当前无接管者，`sync`、`align` 和插件 `release` 要求当前实例拥有接管权。正常换周、上游提前重置及重置卡共用 `sync`，宿主不猜测账号关联或重置证据。
@@ -201,6 +201,8 @@ Key 明文仍通过宿主管理面查看，插件模型调用使用返回的 Key
 控制插件调用 `release`、插件明确停用、卸载或更换为不再具有预算权限的版本时，宿主自动保留用量和限额，按切换当天上海零点起七天设置原生到期日。退出本身不清零；下次原生到期才清零。退出会推进版本，旧调用不能继续控制。进程重启、刷新失败或临时离线不解除接管。同实例升级状态迁移的技术暂停也保留窗口、接管与去重，迁移失败回滚不会额外退出；暂停期间旧进程不能继续写入。最终失去权限、真正停用或替换为不同实例时仍解除。
 
 插件负责保存跟随配置、账号观测及待提交请求。停用后重新启用时，应重新读取状态并用 `clear_used=false` 接管；不要重放首次清零。用户在插件页面主动停止某个 Key 时，插件应先持久化退出意图，轮询和重启均尊重该意图。宿主原生页面只展示通用预算事实；关联、同步和停止等业务管理由插件页面提供。
+
+宿主不提供管理员单 Key 专用解除接口。插件管理页不可用时，管理员可通过现有插件停用操作释放该实例接管的全部 Key；这不会改变 Key 的启用开关，也不会清零其已用金额。
 
 `key_budgets` 是原生 Key 预算访问域，仅在 `management`、`command_line`、`maintenance` 阶段使用。
 接受该域即允许查询、设置金额上限及清零全部当前及未来 Client Key，包括管理员和其他插件创建的 Key；
