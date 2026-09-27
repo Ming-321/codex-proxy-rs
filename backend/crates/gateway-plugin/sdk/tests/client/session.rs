@@ -130,6 +130,18 @@ impl PluginHandler for TestHandler {
         Box::pin(async move {
             match call.method.as_str() {
                 "echo" => Ok(CallReply::unary(call.params, call.payload)),
+                "key_facts" => {
+                    let result = call
+                        .host
+                        .key_facts(gateway_plugin_sdk::call::data::ClientKeyFactsQuery {
+                            client_key_id: "key_1".into(),
+                        })
+                        .await?;
+                    Ok(CallReply::unary(
+                        serde_json::to_value(result).unwrap(),
+                        vec![],
+                    ))
+                }
                 "get_budget" => {
                     let result = call
                         .host
@@ -1570,8 +1582,14 @@ async fn quiesce_rejects_new_calls_and_shutdown_closes_the_session() {
 }
 
 #[tokio::test]
-async fn typed_budget_and_quota_calls_keep_payloads_and_do_not_retry_failures() {
+async fn typed_key_and_quota_calls_keep_payloads_and_do_not_retry_failures() {
     for (entry, method, request, response) in [
+        (
+            "key_facts",
+            "host.data.keys.get",
+            json!({"client_key_id":"key_1"}),
+            json!({"schema_version":1,"client_key_id":"key_1","enabled":false,"group_ids":["grp_1"]}),
+        ),
         (
             "get_budget",
             "host.keys.get_budget",

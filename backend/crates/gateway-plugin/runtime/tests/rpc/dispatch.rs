@@ -236,9 +236,18 @@ async fn execution_allows_each_declared_callback_permission() {
 }
 
 #[tokio::test]
-async fn data_callbacks_require_independent_grants_and_management_or_command_stage() {
-    for permissions in [vec![Permission::Accounts], vec![Permission::Data]] {
+async fn fact_callbacks_require_independent_grants_and_control_plane_stages() {
+    for permissions in [
+        vec![],
+        vec![Permission::Accounts],
+        vec![Permission::Keys],
+        vec![Permission::Models],
+        vec![Permission::KeyBudgets],
+        vec![Permission::QuotaObservations],
+        vec![Permission::Data],
+    ] {
         let authorized = permissions.contains(&Permission::Data);
+        let quota_authorized = permissions.contains(&Permission::QuotaObservations);
         let callbacks = Arc::new(Callbacks::default());
         let (_cache, session) = session_with_permissions(Arc::clone(&callbacks), permissions).await;
         for stage in [
@@ -254,10 +263,20 @@ async fn data_callbacks_require_independent_grants_and_management_or_command_sta
             Stage::PublicManagement,
             Stage::Management,
             Stage::CommandLine,
+            Stage::Maintenance,
         ] {
-            for method in ["host.data.accounts.list", "host.data.quota.get"] {
+            for method in [
+                "host.data.accounts.list",
+                "host.data.keys.get",
+                "host.data.quota.get",
+            ] {
                 let reply = invoke_callback(&session, stage, method).await;
-                if authorized && matches!(stage, Stage::Management | Stage::CommandLine) {
+                if (authorized || (quota_authorized && method == "host.data.quota.get"))
+                    && matches!(
+                        stage,
+                        Stage::Management | Stage::CommandLine | Stage::Maintenance
+                    )
+                {
                     assert!(reply.is_ok());
                 } else {
                     assert_permission_denied(reply);
@@ -266,7 +285,13 @@ async fn data_callbacks_require_independent_grants_and_management_or_command_sta
         }
         assert_eq!(
             callbacks.called.load(Ordering::Relaxed),
-            if authorized { 4 } else { 0 }
+            if authorized {
+                9
+            } else if quota_authorized {
+                3
+            } else {
+                0
+            }
         );
         session.shutdown(Duration::from_secs(1)).await;
     }
@@ -346,6 +371,7 @@ async fn maintenance_has_data_and_state_access_but_cannot_execute_models_or_read
     let (_cache, session) = session(callbacks).await;
     for method in [
         "host.data.accounts.list",
+        "host.data.keys.get",
         "host.data.quota.get",
         "host.keys.list",
         "host.keys.reset_budget",

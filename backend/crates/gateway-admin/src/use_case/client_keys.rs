@@ -15,8 +15,8 @@ use crate::{
         AdminError, MutationContext,
         client_keys::{
             ClientKeyBudgetMutationOrigin, ClientKeyCursorValue, ClientKeyListQuery,
-            ClientKeyMutation, ClientKeyPage, ClientKeySecret, ClientKeySortField, CreateClientKey,
-            CreatedClientKey, DeleteClientKey, NewClientKey, ResetClientKeyBudget,
+            ClientKeyMutation, ClientKeyPage, ClientKeyRecord, ClientKeySecret, ClientKeySortField,
+            CreateClientKey, CreatedClientKey, DeleteClientKey, NewClientKey, ResetClientKeyBudget,
             SetClientKeyEnabled, UpdateClientKey, UpdateClientKeyBudgetLimits,
         },
     },
@@ -38,6 +38,7 @@ pub trait ClientKeyService: Send + Sync {
         command: crate::model::weekly_budget::ChangeWeeklyBudget,
         origin: ClientKeyBudgetMutationOrigin,
     ) -> Result<crate::model::weekly_budget::WeeklyBudgetControl, AdminError>;
+    async fn get(&self, id: &ClientApiKeyId) -> Result<ClientKeyRecord, AdminError>;
     async fn list(&self, query: ClientKeyListQuery) -> Result<ClientKeyPage, AdminError>;
     async fn reveal(&self, id: &ClientApiKeyId) -> Result<ClientKeySecret, AdminError>;
     async fn create(
@@ -98,6 +99,13 @@ impl DefaultClientKeyService {
 
 #[async_trait]
 impl ClientKeyService for DefaultClientKeyService {
+    async fn get(&self, id: &ClientApiKeyId) -> Result<ClientKeyRecord, AdminError> {
+        self.store
+            .get_client_key(id)
+            .await
+            .map_err(|error| map_store_error(error, "client API key"))?
+            .ok_or_else(|| AdminError::not_found("Client API Key 不存在"))
+    }
     async fn weekly_budget_control(
         &self,
         id: &ClientApiKeyId,

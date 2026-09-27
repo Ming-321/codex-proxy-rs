@@ -408,6 +408,12 @@ struct HoldCommittedReply {
 
 #[async_trait::async_trait]
 impl PluginClientKeyAccess for HoldCommittedReply {
+    async fn facts(
+        &self,
+        id: &ClientApiKeyId,
+    ) -> Result<gateway_admin::model::plugin_client_keys::PluginClientKeyFacts, AdminError> {
+        self.inner.facts(id).await
+    }
     async fn weekly_budget_control(
         &self,
         id: &ClientApiKeyId,

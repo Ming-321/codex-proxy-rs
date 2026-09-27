@@ -14,7 +14,8 @@ use crate::{
             ResetClientKeyBudget, SortDirection, UpdateClientKeyBudgetLimits,
         },
         plugin_client_keys::{
-            PluginClientKey, PluginClientKeyCursor, PluginClientKeyListQuery, PluginClientKeyPage,
+            PluginClientKey, PluginClientKeyCursor, PluginClientKeyFacts, PluginClientKeyListQuery,
+            PluginClientKeyPage,
         },
         plugin_resources::PluginResourceOwner,
     },
@@ -87,6 +88,15 @@ impl PluginClientKeyAccess for DefaultPluginClientKeyAccess {
                 ClientKeyBudgetMutationOrigin::Plugin(owner.clone()),
             )
             .await
+    }
+
+    async fn facts(&self, id: &ClientApiKeyId) -> Result<PluginClientKeyFacts, AdminError> {
+        let key = self.service.get(id).await?;
+        Ok(PluginClientKeyFacts {
+            id: key.id,
+            enabled: key.enabled,
+            group_ids: key.groups.into_iter().map(|group| group.id).collect(),
+        })
     }
 
     async fn list(
