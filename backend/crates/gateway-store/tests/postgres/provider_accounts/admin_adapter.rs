@@ -74,9 +74,9 @@ async fn plugin_account_provider_filter_is_optional_and_applied_before_cursor_pa
         .insert_provider_account(other_provider)
         .await
         .unwrap();
-    sqlx::query("insert into account_groups (id,name,color,created_at,updated_at) values ('grp_plugin','Plugin facts','#2563EBFF',now(),now())")
+    sqlx::query("insert into account_groups (id,name,color,created_at,updated_at) values ('grp_00000000000000000000000000000001','Plugin facts','#2563EBFF',now(),now())")
         .execute(&database.pool).await.unwrap();
-    sqlx::query("insert into account_group_accounts (account_group_id,provider_account_id,created_at) values ('grp_plugin','acct_plugin_a',now()),('grp_plugin','acct_plugin_other',now())")
+    sqlx::query("insert into account_group_accounts (account_group_id,provider_account_id,created_at) values ('grp_00000000000000000000000000000001','acct_plugin_a',now()),('grp_00000000000000000000000000000001','acct_plugin_other',now())")
         .execute(&database.pool).await.unwrap();
     let store = admin_account_store(&database.pool);
     let first = store
@@ -100,7 +100,10 @@ async fn plugin_account_provider_filter_is_optional_and_applied_before_cursor_pa
         Some("acct_plugin_a")
     );
 
-    assert_eq!(first.accounts[0].groups[0].id.as_str(), "grp_plugin");
+    assert_eq!(
+        first.accounts[0].groups[0].id.as_str(),
+        "grp_00000000000000000000000000000001"
+    );
     let second = store
         .list_plugin_accounts(PluginAccountListQuery {
             provider_kind: Some(ProviderKind::new("openai").unwrap()),
@@ -144,7 +147,10 @@ async fn plugin_account_provider_filter_is_optional_and_applied_before_cursor_pa
         ]
     );
     assert!(all.next_cursor.is_none());
-    assert_eq!(all.accounts[3].groups[0].id.as_str(), "grp_plugin");
+    assert_eq!(
+        all.accounts[3].groups[0].id.as_str(),
+        "grp_00000000000000000000000000000001"
+    );
     assert!(!all.accounts[3].enabled);
 
     database.close().await;
