@@ -23,6 +23,10 @@ pub enum WeeklyBudgetAction {
     Sync {
         expires_at_ms: i64,
     },
+    /// 只对齐到期日，保留已用金额、计费起点和接管者；不会发放新预算。
+    Align {
+        expires_at_ms: i64,
+    },
     Release,
 }
 
@@ -40,5 +44,6 @@ pub struct WeeklyBudgetControl {
     pub revision: u64,
     pub controller: Option<String>,
     pub expires_at_ms: Option<i64>,
+    pub accounting_start_at_ms: Option<i64>,
     pub waiting: bool,
 }

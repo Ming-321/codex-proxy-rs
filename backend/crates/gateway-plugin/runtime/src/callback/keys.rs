@@ -90,6 +90,12 @@ impl PluginClientKeys {
                                 .ok_or_else(invalid)?,
                         }
                     }
+                    weekly_budget::WeeklyBudgetAction::Align { expires_at_ms } => {
+                        WeeklyBudgetAction::Align {
+                            expires_at: chrono::DateTime::from_timestamp_millis(expires_at_ms)
+                                .ok_or_else(invalid)?,
+                        }
+                    }
                     weekly_budget::WeeklyBudgetAction::Release => WeeklyBudgetAction::Release,
                 };
                 let command = ChangeWeeklyBudget {
@@ -182,6 +188,7 @@ fn weekly_reply(
         revision: control.revision,
         controller: control.controller,
         expires_at_ms: control.expires_at.map(|t| t.timestamp_millis()),
+        accounting_start_at_ms: control.accounting_start.map(|t| t.timestamp_millis()),
         waiting: control.waiting,
     })
 }

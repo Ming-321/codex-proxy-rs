@@ -28,17 +28,25 @@ pub(super) async fn get(
     pool: &PgPool,
     id: &ClientApiKeyId,
 ) -> AdminStoreResult<WeeklyBudgetControl> {
-    let row = sqlx::query("select coalesce(w.weekly_control_revision,0) as revision, w.weekly_controller, w.weekly_end from client_api_keys k left join client_key_budget_windows w on w.client_api_key_id=k.id where k.id=$1")
+    let row = sqlx::query("select coalesce(w.weekly_control_revision,0) as revision, w.weekly_controller, w.weekly_start, w.weekly_end from client_api_keys k left join client_key_budget_windows w on w.client_api_key_id=k.id where k.id=$1")
         .bind(id.as_str()).fetch_optional(pool).await.map_err(unavailable)?
         .ok_or_else(|| error(AdminStoreErrorKind::NotFound))?;
+    control_from_row(&row, Utc::now())
+}
+
+fn control_from_row(
+    row: &sqlx::postgres::PgRow,
+    now: DateTime<Utc>,
+) -> AdminStoreResult<WeeklyBudgetControl> {
     let controller: Option<String> = row.get("weekly_controller");
     let expires_at: Option<DateTime<Utc>> = row.get("weekly_end");
     Ok(WeeklyBudgetControl {
         revision: u64::try_from(row.get::<i64, _>("revision"))
             .map_err(|_| error(AdminStoreErrorKind::Unavailable))?,
-        waiting: controller.is_some() && expires_at.is_some_and(|end| end <= Utc::now()),
+        waiting: controller.is_some() && expires_at.is_some_and(|end| end <= now),
         controller,
         expires_at,
+        accounting_start: row.get("weekly_start"),
     })
 }
 
@@ -52,8 +60,8 @@ pub(super) async fn change(
         ClientKeyBudgetMutationOrigin::Plugin(owner) => Some(owner.instance_id.as_str()),
         ClientKeyBudgetMutationOrigin::Admin => None,
     };
-    // 管理员只能解除接管；业务窗口由获授权的插件决定。
-    if owner.is_none() && command.action != WeeklyBudgetAction::Release {
+    // 周窗口控制仅接受插件身份；管理员通过插件生命周期操作释放。
+    if owner.is_none() {
         return Err(error(AdminStoreErrorKind::Invalid));
     }
     let mut tx = match &origin {
@@ -75,9 +83,9 @@ pub(super) async fn change(
     super::client_budgets::advance_windows(&mut tx, command.id.as_str(), now)
         .await
         .map_err(unavailable)?;
-    let row = sqlx::query("select weekly_control_revision,weekly_controller,weekly_last_operation,weekly_end from client_key_budget_windows where client_api_key_id=$1")
+    let row = sqlx::query("select weekly_control_revision as revision,weekly_controller,weekly_last_operation,weekly_start,weekly_end from client_key_budget_windows where client_api_key_id=$1")
         .bind(command.id.as_str()).fetch_one(&mut *tx).await.map_err(unavailable)?;
-    let revision: i64 = row.get("weekly_control_revision");
+    let revision: i64 = row.get("revision");
     let controller: Option<String> = row.get("weekly_controller");
     let expected = i64::try_from(command.expected_revision)
         .map_err(|_| error(AdminStoreErrorKind::Invalid))?;
@@ -89,20 +97,15 @@ pub(super) async fn change(
     let previous: Option<serde_json::Value> = row.get("weekly_last_operation");
     if revision == next && previous.as_ref() == Some(&operation) {
         // 返回原子提交的版本；重试不触碰计费起点或已用金额。
-        return Ok(WeeklyBudgetControl {
-            revision: next as u64,
-            waiting: controller.is_some() && row.get::<DateTime<Utc>, _>("weekly_end") <= now,
-            controller,
-            expires_at: Some(row.get("weekly_end")),
-        });
+        return control_from_row(&row, now);
     }
     if revision != expected {
         return Err(error(AdminStoreErrorKind::StaleRevision));
     }
     let expires_at = match command.action {
-        WeeklyBudgetAction::Claim { expires_at, .. } | WeeklyBudgetAction::Sync { expires_at } => {
-            Some(expires_at)
-        }
+        WeeklyBudgetAction::Claim { expires_at, .. }
+        | WeeklyBudgetAction::Sync { expires_at }
+        | WeeklyBudgetAction::Align { expires_at } => Some(expires_at),
         WeeklyBudgetAction::Release => None,
     };
     if expires_at.is_some_and(|end| end <= now) {
@@ -132,6 +135,19 @@ pub(super) async fn change(
             }
             release_key(&mut tx, command.id.as_str(), now).await?;
         }
+        WeeklyBudgetAction::Align { .. } => {
+            if controller.as_deref() != owner || controller.is_none() {
+                return Err(error(AdminStoreErrorKind::Conflict));
+            }
+            sqlx::query(
+                "update client_key_budget_windows set weekly_end=$2 where client_api_key_id=$1",
+            )
+            .bind(command.id.as_str())
+            .bind(expires_at)
+            .execute(&mut *tx)
+            .await
+            .map_err(unavailable)?;
+        }
     }
     sqlx::query("update client_key_budget_windows set weekly_control_revision=$2, weekly_last_operation=$3 where client_api_key_id=$1")
         .bind(command.id.as_str()).bind(next).bind(operation).execute(&mut *tx).await.map_err(unavailable)?;
@@ -148,14 +164,9 @@ pub(super) async fn change(
     )
     .await
     .map_err(|e| crate::admin_store_error("weekly budget control", e))?;
-    let row = sqlx::query("select weekly_controller,weekly_end from client_key_budget_windows where client_api_key_id=$1")
+    let row = sqlx::query("select weekly_control_revision as revision,weekly_controller,weekly_start,weekly_end from client_key_budget_windows where client_api_key_id=$1")
         .bind(command.id.as_str()).fetch_one(&mut *tx).await.map_err(unavailable)?;
-    let result = WeeklyBudgetControl {
-        revision: next as u64,
-        controller: row.get("weekly_controller"),
-        expires_at: Some(row.get("weekly_end")),
-        waiting: false,
-    };
+    let result = control_from_row(&row, now)?;
     tx.commit().await.map_err(unavailable)?;
     Ok(result)
 }

@@ -83,7 +83,7 @@ async fn reset_client_key_budget_in_transaction(
         daily_used_usd = case when $2 then 0 else daily_used_usd end,
         daily_start = case when $2 and daily_end > $4 then $4 else daily_start end,
         weekly_used_usd = case when $3 then 0 else weekly_used_usd end,
-        weekly_start = case when $3 and weekly_end > $4 then $4 else weekly_start end
+        weekly_start = case when $3 and (weekly_end > $4 or weekly_controller is not null) then $4 else weekly_start end
         where client_api_key_id = $1",
     )
     .bind(command.id.as_str())

@@ -22,8 +22,6 @@ export interface ApiKey {
   weeklyLimitUsd: string
   dailyUsedUsd: string
   weeklyUsedUsd: string
-  weeklyController: string | null
-  weeklyControlRevision: number
   weeklyWaiting: boolean
   dailyResetsAt: string | null
   weeklyResetsAt: string | null
@@ -133,14 +131,6 @@ export function deleteApiKey(data: ApiKeyIdParam) {
 export function resetApiKeyBudget(data: ApiKeyIdParam & { period: ApiKeyBudgetPeriod }) {
   return request<ApiKeyMutationResponse>({
     url: '/api/admin/client-keys/reset-budget',
-    method: 'POST',
-    data,
-  })
-}
-
-export function releaseApiKeyWeeklyControl(data: ApiKeyIdParam & { expectedRevision: number }) {
-  return request<ApiKeyMutationResponse>({
-    url: '/api/admin/client-keys/release-weekly-control',
     method: 'POST',
     data,
   })

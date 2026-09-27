@@ -13,6 +13,9 @@ pub enum WeeklyBudgetAction {
     Sync {
         expires_at: DateTime<Utc>,
     },
+    Align {
+        expires_at: DateTime<Utc>,
+    },
     Release,
 }
 
@@ -28,5 +31,6 @@ pub struct WeeklyBudgetControl {
     pub revision: u64,
     pub controller: Option<String>,
     pub expires_at: Option<DateTime<Utc>>,
+    pub accounting_start: Option<DateTime<Utc>>,
     pub waiting: bool,
 }

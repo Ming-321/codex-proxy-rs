@@ -246,7 +246,7 @@ pub(super) async fn save(
     expected: Revision,
     context: &MutationContext,
 ) -> AdminStoreResult<PluginInstanceMutation> {
-    save_inner(pool, instance, expected, None, &[], context).await
+    save_inner(pool, instance, expected, None, &[], false, context).await
 }
 
 pub(super) async fn save_with_state(
@@ -257,7 +257,26 @@ pub(super) async fn save_with_state(
     replacements: &[PluginInstanceReplacement],
     context: &MutationContext,
 ) -> AdminStoreResult<PluginInstanceMutation> {
-    save_inner(pool, instance, expected, Some(state), replacements, context).await
+    save_inner(
+        pool,
+        instance,
+        expected,
+        Some(state),
+        replacements,
+        false,
+        context,
+    )
+    .await
+}
+
+pub(super) async fn pause_for_state_transition(
+    pool: &PgPool,
+    instance: PluginInstance,
+    expected: Revision,
+    state: &PluginStateCommit,
+    context: &MutationContext,
+) -> AdminStoreResult<PluginInstanceMutation> {
+    save_inner(pool, instance, expected, Some(state), &[], true, context).await
 }
 
 async fn save_inner(
@@ -266,11 +285,20 @@ async fn save_inner(
     expected: Revision,
     state: Option<&PluginStateCommit>,
     replacements: &[PluginInstanceReplacement],
+    migration_pause: bool,
     context: &MutationContext,
 ) -> AdminStoreResult<PluginInstanceMutation> {
     let id = uuid::Uuid::parse_str(&instance.id).map_err(|_| conflict())?;
     let mut tx = pool.begin().await.map_err(|_| unavailable())?;
     check_revision(&mut tx, expected).await?;
+    if migration_pause {
+        // 只允许原实例原制品从启用转入暂停，不能借技术暂停入口替换制品或绕过真正停用。
+        let same_enabled_instance: bool = sqlx::query_scalar("select exists(select 1 from plugin_instances where id=$1 and artifact_sha256=$2 and enabled=true)")
+            .bind(id).bind(&instance.artifact_sha256).fetch_one(&mut *tx).await.map_err(|_| unavailable())?;
+        if instance.enabled || !same_enabled_instance {
+            return Err(conflict());
+        }
+    }
     validate_artifact_acceptance(&mut tx, &instance).await?;
     // 停用是损坏配置的恢复路径，必须原样保留绑定；再次启用时才要求引用仍存在。
     if instance.enabled {
@@ -297,11 +325,12 @@ async fn save_inner(
             .bind(id).execute(&mut *tx).await.map_err(|_| unavailable())?;
     }
     let committed_revision = admin_revision(revision)?;
-    if !instance.enabled
-        || !instance
-            .grants
-            .iter()
-            .any(|grant| grant.permission == "key_budgets")
+    if !migration_pause
+        && (!instance.enabled
+            || !instance
+                .grants
+                .iter()
+                .any(|grant| grant.permission == "key_budgets"))
     {
         super::super::weekly_budget::release_owner(&mut tx, &instance.id).await?;
     }

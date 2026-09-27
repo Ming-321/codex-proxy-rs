@@ -34,6 +34,8 @@ use gateway_store::postgres::{
 
 use super::TestDatabase;
 
+mod weekly_recovery;
+
 fn key_id(key: &str) -> ClientApiKeyId {
     ClientApiKeyId::new(key).unwrap()
 }
@@ -232,11 +234,7 @@ async fn weekly_control_initializes_unused_keys_and_release_preserves_spending()
         action: WeeklyBudgetAction::Release,
     };
     admin
-        .change_weekly_budget(
-            release.clone(),
-            ClientKeyBudgetMutationOrigin::Admin,
-            &context(),
-        )
+        .change_weekly_budget(release.clone(), origin.clone(), &context())
         .await
         .unwrap();
     let after = status(&database, "key").await;
@@ -254,7 +252,7 @@ async fn weekly_control_initializes_unused_keys_and_release_preserves_spending()
         AdminStoreErrorKind::StaleRevision
     );
     admin
-        .change_weekly_budget(release, ClientKeyBudgetMutationOrigin::Admin, &context())
+        .change_weekly_budget(release, origin.clone(), &context())
         .await
         .unwrap();
     // 重新接管保留金额，不重放首次清零；明确停用由宿主解除。

@@ -38,54 +38,6 @@ fn reset_budget_requires_an_explicit_supported_period_and_valid_key() {
 }
 
 #[tokio::test]
-async fn weekly_release_requires_admin_and_current_control_revision() {
-    use crate::support::{json_request, key_fixture};
-    use axum::http::{Method, StatusCode, header};
-    use gateway_core::policy::ClientApiKeyId;
-    use tower::ServiceExt as _;
-    let fixture = key_fixture().await;
-    fixture.auth.insert_session("valid-admin");
-    let mut record = fixture
-        .services
-        .client_keys()
-        .reveal(&ClientApiKeyId::new("key-42").unwrap())
-        .await
-        .unwrap()
-        .record;
-    record.budget.weekly_controller = Some("plugin-fixture".into());
-    record.budget.weekly_control_revision = 7;
-    *fixture.client_key.lock().unwrap() = Some(record);
-    let app = crate::openai::api_router_with_admin(fixture.services.clone());
-    for (cookie, revision, expected) in [
-        ("", 7, StatusCode::UNAUTHORIZED),
-        ("cpr_session=valid-admin", 6, StatusCode::CONFLICT),
-        ("cpr_session=valid-admin", 7, StatusCode::OK),
-    ] {
-        let mut request = json_request(
-            Method::POST,
-            "/api/admin/client-keys/release-weekly-control",
-            json!({"id":"key-42","expectedRevision":revision}),
-        );
-        request
-            .headers_mut()
-            .insert(header::COOKIE, cookie.parse().unwrap());
-        let response = app.clone().oneshot(request).await.unwrap();
-        assert_eq!(response.status(), expected);
-    }
-    assert!(
-        fixture
-            .client_key
-            .lock()
-            .unwrap()
-            .as_ref()
-            .unwrap()
-            .budget
-            .weekly_controller
-            .is_none()
-    );
-}
-
-#[tokio::test]
 async fn reset_budget_route_requires_admin_and_maps_missing_keys() {
     use axum::{
         body::Body,

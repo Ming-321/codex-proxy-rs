@@ -908,6 +908,7 @@ impl ClientKeyStore for MemoryClientKeyStore {
             revision: record.budget.weekly_control_revision,
             controller: None,
             expires_at: None,
+            accounting_start: None,
             waiting: false,
         })
     }
