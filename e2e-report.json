@@ -1,0 +1,14 @@
+{
+  "passed": [
+    "unauthorized binding rejected",
+    "A and B share concurrency; unrelated C remains usable",
+    "in-flight X execution survives A-to-Y rebind; X slot released and X/Y charged",
+    "A/B keep distinct client profiles and account-group routing",
+    "cross-key continuation rejected",
+    "A and B share one RPM counter; unrelated C remains usable",
+    "A and B share one postpaid budget; both queries expose shared usage",
+    "member reset does not reset the shared budget",
+    "SSE completes through real Host/Core/PG/Redis and synthetic upstream",
+    "durable charges preserve A/B identity and source; no second anchor request"
+  ]
+}

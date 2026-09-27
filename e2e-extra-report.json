@@ -1,0 +1,7 @@
+{
+  "passed": [
+    "actual WebSocket downstream to HTTP/SSE synthetic upstream completes",
+    "shared queue capacity; queued A keeps X after rebind while fresh A uses Y",
+    "A/B self-service exposes shared limits but only their own request records"
+  ]
+}
