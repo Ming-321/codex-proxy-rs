@@ -1227,6 +1227,7 @@ impl fmt::Debug for ProviderExport {
 #[derive(Debug, Clone, PartialEq)]
 pub struct AccountDirectoryItem {
     pub account: AccountRecord,
+    pub capacity: super::accounts::AccountCapacity,
     pub capabilities: super::accounts::ProviderAccountCapabilities,
     /// Provider 提供的套餐展示名称；未识别到套餐时为空。
     pub plan_type_display: Option<String>,

@@ -77,11 +77,12 @@ function quotaWindowCode(windowSeconds: number | null, role: AccountQuotaWindow[
 </script>
 
 <template>
-  <BasePopover class="w-full" trigger="hover-click" placement="right" :hover-delay="240">
+  <BasePopover class="grid! w-full grid-cols-subgrid" trigger="hover-click" placement="right" :hover-delay="240">
     <template #trigger="{ open }">
       <button
         type="button"
-        class="block w-full cursor-pointer rounded-sm border-0 bg-transparent p-0 text-left outline-none focus-visible:ring-2 focus-visible:ring-cp-control-outline"
+        class="w-full min-w-0 cursor-pointer rounded-sm border-0 bg-transparent p-0 text-left outline-none focus-visible:ring-2 focus-visible:ring-cp-control-outline"
+        :class="hasQuotaWindow ? 'col-span-full grid grid-cols-subgrid' : 'col-start-1 block'"
         :aria-label="`查看${detailTitle}详情`"
         :aria-expanded="open"
         aria-haspopup="dialog"

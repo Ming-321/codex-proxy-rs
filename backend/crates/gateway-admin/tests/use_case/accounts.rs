@@ -1,5 +1,7 @@
 use std::sync::{Arc, Mutex};
 
+mod capacity;
+
 use async_trait::async_trait;
 use chrono::{TimeDelta, Utc};
 use futures::{StreamExt as _, future::BoxFuture};
@@ -668,6 +670,12 @@ impl FakeAccountStore {
             last_error_message: account.last_error_message.clone(),
         };
         AccountPageItem {
+            capacity: gateway_admin::model::accounts::AccountCapacity {
+                used_slots: None,
+                total_slots: account
+                    .concurrency_limit
+                    .map(|limit| u64::from(limit.get())),
+            },
             account,
             projection: resolve_account_status(&facts, std::time::SystemTime::now()),
         }

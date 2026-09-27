@@ -8,6 +8,20 @@ use gateway_core::provider_ports::ProviderCooldownPort;
 use super::*;
 use crate::postgres::ObservabilityQueryBudget;
 
+fn account_capacity(
+    account: &AccountRecord,
+    default_concurrency: u64,
+    in_flight: Option<&BTreeMap<String, u64>>,
+) -> gateway_admin::model::accounts::AccountCapacity {
+    gateway_admin::model::accounts::AccountCapacity {
+        used_slots: in_flight.map(|counts| counts.get(&account.id).copied().unwrap_or(0)),
+        total_slots: account.concurrency_limit.map_or_else(
+            || (default_concurrency > 0).then_some(default_concurrency),
+            |limit| Some(u64::from(limit.get())),
+        ),
+    }
+}
+
 /// Admin 账号用例所需的公共账号、留存观测与 revision 事务能力。
 ///
 /// 三个 PostgreSQL adapter 都保持私有，调用方只能取得 [`AccountStore`] 暴露的领域能力。
@@ -376,6 +390,11 @@ impl AccountStore for PgAdminAccountStore {
                 let mut account = admin_account_record(summary)?;
                 account.groups = groups_by_account.remove(&account_id).unwrap_or_default();
                 Ok(AccountPageItem {
+                    capacity: account_capacity(
+                        &account,
+                        page.default_concurrency,
+                        runtime.in_flight.as_ref(),
+                    ),
                     account,
                     projection,
                 })
@@ -411,7 +430,21 @@ impl AccountStore for PgAdminAccountStore {
             .await?;
         let mut account = admin_account_record(record.summary)?;
         account.groups = groups.remove(&account_id).unwrap_or_default();
+        let default_concurrency: i64 = sqlx::query_scalar(
+            "select max_concurrent_per_account from runtime_settings where id = 1",
+        )
+        .fetch_one(&self.pool)
+        .await
+        .map_err(|_| admin_store_error(ENTITY, postgres_unavailable("load account concurrency")))?;
+        let default_concurrency = u64::try_from(default_concurrency).map_err(|_| {
+            AdminStoreError::new(
+                AdminStoreErrorKind::Invalid,
+                ENTITY,
+                "invalid default account concurrency",
+            )
+        })?;
         Ok(Some(AccountPageItem {
+            capacity: account_capacity(&account, default_concurrency, runtime.in_flight.as_ref()),
             account,
             projection,
         }))

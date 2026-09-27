@@ -60,6 +60,7 @@ pub(super) fn account_models_data(result: ProviderModels) -> AccountModelsData {
 pub(super) fn account_view(item: AccountDirectoryItem, now: DateTime<Utc>) -> AccountView {
     let AccountDirectoryItem {
         account,
+        capacity,
         capabilities,
         plan_type_display,
         projection,
@@ -109,6 +110,10 @@ pub(super) fn account_view(item: AccountDirectoryItem, now: DateTime<Utc>) -> Ac
         error_message: projection.error_message,
         enabled: account.enabled,
         concurrency_limit: account.concurrency_limit.map(|limit| limit.get()),
+        capacity: AccountCapacityView {
+            used_slots: capacity.used_slots,
+            total_slots: capacity.total_slots,
+        },
         weight: account.weight.get(),
         model_access: account.model_access,
         outbound_proxy_endpoint: account

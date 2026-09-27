@@ -127,7 +127,6 @@ const view = computed(() => resolveAccountUsageWindowPresentation({
 
     <div v-else :class="view.classes.header">
       <span class="min-w-0 text-cp-text-secondary">额度待观测</span>
-      <span class="shrink-0 font-mono text-cp-text-quaternary" :class="view.classes.value">—</span>
     </div>
   </div>
 </template>

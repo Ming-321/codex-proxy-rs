@@ -223,6 +223,16 @@ pub struct AccountPage {
 pub struct AccountPageItem {
     pub account: AccountRecord,
     pub projection: AccountStatusProjection,
+    pub capacity: AccountCapacity,
+}
+
+/// 网关配置的账号并发上限与查询时的占用，不包含排队请求或上游隐藏限制。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct AccountCapacity {
+    /// 实时租约读取失败时为 `None`，不能当作空闲。
+    pub used_slots: Option<u64>,
+    /// 应用账号覆盖或全局默认值后的上限；`None` 表示不限。
+    pub total_slots: Option<u64>,
 }
 
 /// 统一账号目录的全局状态计数，不受当前筛选和分页影响。

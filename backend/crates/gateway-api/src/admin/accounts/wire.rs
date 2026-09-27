@@ -290,6 +290,7 @@ pub struct AccountView {
     pub error_message: Option<String>,
     pub enabled: bool,
     pub concurrency_limit: Option<u32>,
+    pub capacity: AccountCapacityView,
     pub weight: u16,
     pub model_access: gateway_core::account::AccountModelAccess,
     pub access_token_expires_at: Option<String>,
@@ -302,6 +303,13 @@ pub struct AccountView {
     pub updated_at_display: String,
     pub quota: AccountQuotaView,
     pub usage: AccountUsageView,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AccountCapacityView {
+    pub used_slots: Option<u64>,
+    pub total_slots: Option<u64>,
 }
 
 #[derive(Debug, Clone, Serialize)]

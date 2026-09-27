@@ -363,6 +363,7 @@ impl DefaultAccountsService {
                     .and_then(|(window, _)| window.local_usage.clone())
             });
         Ok(AccountDirectoryItem {
+            capacity: stored.capacity,
             capabilities: provider
                 .account_capabilities(account_id, &stored.account.authentication_kind),
             plan_type_display: self.providers.resolve_account_plan(
@@ -402,6 +403,18 @@ impl AccountsService for DefaultAccountsService {
             .iter()
             .map(|item| item.account.id.clone())
             .collect::<Vec<_>>();
+        // 只读取当前页的租约占用；观测失败不能把账号误报为空闲或拖垮目录。
+        let in_flight = if ids.is_empty() {
+            None
+        } else {
+            match self.account_runtime.account_runtime(&ids).await {
+                Ok(runtime) => runtime.in_flight,
+                Err(error) => {
+                    tracing::warn!(error = %error, "account capacity projection is unavailable");
+                    None
+                }
+            }
+        };
         let rolling_usage = self
             .accounts
             .load_account_usage(rolling_range, &ids)
@@ -472,6 +485,12 @@ impl AccountsService for DefaultAccountsService {
                         .and_then(|(window, _)| window.local_usage.clone())
                 });
                 Ok(AccountDirectoryItem {
+                    capacity: crate::model::accounts::AccountCapacity {
+                        used_slots: in_flight
+                            .as_ref()
+                            .map(|counts| counts.get(&item.account.id).copied().unwrap_or(0)),
+                        ..item.capacity
+                    },
                     capabilities,
                     plan_type_display: providers.resolve_account_plan(
                         item.account.provider_kind.as_str(),
