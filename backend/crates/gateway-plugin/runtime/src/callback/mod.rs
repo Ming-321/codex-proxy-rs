@@ -133,7 +133,11 @@ impl PluginCallbacks {
         let grants = &instance.grants;
         Ok(Self {
             resources: Arc::new(resources::PluginResources::new(instance, ports.resources)),
-            data: Arc::new(data::PluginData::new(ports.accounts.clone(), grants)),
+            data: Arc::new(data::PluginData::new(
+                ports.accounts.clone(),
+                ports.keys.clone(),
+                grants,
+            )),
             accounts: Arc::new(accounts::PluginAccounts::new(ports.accounts, grants)),
             keys: ports.keys,
             models_authorized: grants.iter().any(|grant| grant.permission == "models"),
@@ -461,6 +465,7 @@ impl CallbackHandler for PluginCallbacks {
             if matches!(
                 method.as_str(),
                 gateway_plugin_sdk::call::data::ACCOUNTS_LIST
+                    | gateway_plugin_sdk::call::data::KEYS_GET
                     | gateway_plugin_sdk::call::data::QUOTA_GET
             ) {
                 return data.call(&context, &method, params, &payload).await;

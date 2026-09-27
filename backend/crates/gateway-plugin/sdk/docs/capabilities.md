@@ -66,7 +66,7 @@ Provider 固定为宿主内置的 OpenAI 与 xAI。插件提供以下扩展能�
 | `network` | 通过 `host.http.*` 使用宿主受管出站网络；仍受统一代理、超时、大小和流控规则约束 |
 | `models` | 列出非秘密 Key、按所选 Key 查询模型，以及通过 `host.model.*` 调用模型；调用可能产生消耗 |
 | `accounts` | 查询账号、读取原始凭据及创建或替换账号；写入仍经过 revision CAS、审计和发布事务 |
-| `data` | 在管理／命令／维护阶段只读全部账号的最小基础信息及已有额度观测，不包含凭据、写入或预测 |
+| `data` | 在管理／命令／维护阶段只读账号、Key 的最小基础信息及已有额度观测，不包含凭据、写入或预测 |
 | `requests` | 参与请求／响应处理、路由、调度、观察及亲和查询 |
 | `public_endpoints` | 提供无需登录即可访问的已声明静态资源或一次性票据回调 |
 | `groups` | 创建本实例分组，允许将所有现有及未来新增账号加入或移出这些分组，保留其他分组关系 |
@@ -89,8 +89,13 @@ Provider 固定为宿主内置的 OpenAI 与 xAI。插件提供以下扩展能�
 | --- | --- | --- |
 | `call.host.account_facts(query)` | `host.data.accounts.list` | `AccountFactsQuery`：可选 `provider_id`、`cursor`，必填 `limit`（1～200）；按账号 ID 升序，`next_cursor=null` 表示本页已结束 |
 | `call.host.quota_facts(query)` | `host.data.quota.get` | `QuotaFactsQuery { account_id }`：读取 Provider 现有观测，不访问上游刷新 |
+| `call.host.key_facts(query)` | `host.data.keys.get` | `ClientKeyFactsQuery { client_key_id }`：读取当前 Key 的启用状态及显式分组 ID，不返回密钥 |
 
 类型在 `call::data`。控制参数为 `{}`，查询和结果使用二进制 JSON；结果固定 `schema_version=1`。
+
+`key_facts` 每次读取当前管理数据，返回 `client_key_id`、`enabled`、`group_ids`；不存在的 Key 沿用事实接口的 `rejected` 错误。它需要 `data` 权限，`keys` 权限不能替代。原有 Key 目录响应保持不变。旧宿主不支持新增方法，插件应将包含该方法的宿主版本声明为最低兼容版本。
+
+验证单账号范围时，先要求 Key 的 `group_ids` 恰好一个，再完整遍历 `account_facts` 的所有分页，统计包含该分组 ID 的账号；不能只统计启用账号或当前页。空绑定不代表单账号。随后读取该账号的 `quota_facts`；无观测时间、未知用量或未知到期时间均不能解释为额度重置。这些调用不构成跨查询事务，管理员修改绑定后应重新检查。主动刷新使用宿主另行提供的额度刷新能力和权限，不由本只读接口触发。
 账号仅返回 `account_id`、`provider_id`、`group_ids`、`enabled` 和 `updated_at_ms`，不附带姓名、邮箱、令牌或代理信息。
 额度仅返回观测时间与窗口的 `key`、`window_seconds`、`used_percent`、`reset_at_ms`。
 时间均为 UTC Unix 毫秒，比例为百分数；未知值保留 `null`，不能解释为 0。`observed_at_ms=null` 表示没有可用观测时间，

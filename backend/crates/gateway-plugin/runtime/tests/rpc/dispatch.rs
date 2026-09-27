@@ -255,7 +255,11 @@ async fn data_callbacks_require_independent_grants_and_management_or_command_sta
             Stage::Management,
             Stage::CommandLine,
         ] {
-            for method in ["host.data.accounts.list", "host.data.quota.get"] {
+            for method in [
+                "host.data.accounts.list",
+                "host.data.quota.get",
+                "host.data.keys.get",
+            ] {
                 let reply = invoke_callback(&session, stage, method).await;
                 if authorized && matches!(stage, Stage::Management | Stage::CommandLine) {
                     assert!(reply.is_ok());
@@ -266,7 +270,7 @@ async fn data_callbacks_require_independent_grants_and_management_or_command_sta
         }
         assert_eq!(
             callbacks.called.load(Ordering::Relaxed),
-            if authorized { 4 } else { 0 }
+            if authorized { 6 } else { 0 }
         );
         session.shutdown(Duration::from_secs(1)).await;
     }

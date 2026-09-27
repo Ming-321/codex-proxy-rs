@@ -14,9 +14,9 @@ use crate::{
         AdminError, MutationContext,
         client_keys::{
             ClientKeyCursorValue, ClientKeyListQuery, ClientKeyMutation, ClientKeyPage,
-            ClientKeySecret, ClientKeySortField, CreateClientKey, CreatedClientKey,
-            DeleteClientKey, NewClientKey, ResetClientKeyBudget, SetClientKeyEnabled,
-            UpdateClientKey,
+            ClientKeyRecord, ClientKeySecret, ClientKeySortField, CreateClientKey,
+            CreatedClientKey, DeleteClientKey, NewClientKey, ResetClientKeyBudget,
+            SetClientKeyEnabled, UpdateClientKey,
         },
     },
     ports::store::{AdminStoreError, AdminStoreErrorKind, ClientKeyStore},
@@ -27,6 +27,7 @@ use super::{map_store_error, publish_committed};
 /// API 消费的 Client Key 管理服务。
 #[async_trait]
 pub trait ClientKeyService: Send + Sync {
+    async fn get(&self, id: &ClientApiKeyId) -> Result<ClientKeyRecord, AdminError>;
     async fn list(&self, query: ClientKeyListQuery) -> Result<ClientKeyPage, AdminError>;
     async fn reveal(&self, id: &ClientApiKeyId) -> Result<ClientKeySecret, AdminError>;
     async fn create(
@@ -79,6 +80,14 @@ impl DefaultClientKeyService {
 
 #[async_trait]
 impl ClientKeyService for DefaultClientKeyService {
+    async fn get(&self, id: &ClientApiKeyId) -> Result<ClientKeyRecord, AdminError> {
+        self.store
+            .get_client_key(id)
+            .await
+            .map_err(|error| map_store_error(error, "client API key"))?
+            .ok_or_else(|| AdminError::not_found("Client API Key 不存在"))
+    }
+
     async fn reset_budget(
         &self,
         context: &MutationContext,

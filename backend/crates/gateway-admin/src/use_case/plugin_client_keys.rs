@@ -3,6 +3,7 @@
 use std::sync::Arc;
 
 use async_trait::async_trait;
+use gateway_core::policy::ClientApiKeyId;
 
 use crate::{
     model::{
@@ -12,7 +13,8 @@ use crate::{
             ClientKeySort, ClientKeySortField, SortDirection,
         },
         plugin_client_keys::{
-            PluginClientKey, PluginClientKeyCursor, PluginClientKeyListQuery, PluginClientKeyPage,
+            PluginClientKey, PluginClientKeyCursor, PluginClientKeyFacts, PluginClientKeyListQuery,
+            PluginClientKeyPage,
         },
     },
     ports::plugin_client_keys::PluginClientKeyAccess,
@@ -31,6 +33,15 @@ impl DefaultPluginClientKeyAccess {
 
 #[async_trait]
 impl PluginClientKeyAccess for DefaultPluginClientKeyAccess {
+    async fn facts(&self, id: &ClientApiKeyId) -> Result<PluginClientKeyFacts, AdminError> {
+        let key = self.service.get(id).await?;
+        Ok(PluginClientKeyFacts {
+            id: key.id,
+            enabled: key.enabled,
+            group_ids: key.groups.into_iter().map(|group| group.id).collect(),
+        })
+    }
+
     async fn list(
         &self,
         query: PluginClientKeyListQuery,

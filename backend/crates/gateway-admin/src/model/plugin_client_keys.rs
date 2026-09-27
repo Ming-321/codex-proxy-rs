@@ -1,6 +1,15 @@
 //! 插件可见的 Client Key 非秘密资源投影。
 
 use gateway_core::policy::ClientApiKeyId;
+use gateway_core::routing::AccountGroupId;
+
+/// 插件可读取的当前 Key 范围，不含密钥或配置秘密。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PluginClientKeyFacts {
+    pub id: ClientApiKeyId,
+    pub enabled: bool,
+    pub group_ids: Vec<AccountGroupId>,
+}
 
 use super::PageSize;
 

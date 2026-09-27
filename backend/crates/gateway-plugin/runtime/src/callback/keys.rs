@@ -24,6 +24,10 @@ pub(crate) struct PluginClientKeyPortSlot {
 }
 
 impl PluginClientKeyPortSlot {
+    pub(super) fn upgrade(&self) -> Result<Arc<dyn PluginClientKeyAccess>, PluginFault> {
+        self.access.get().and_then(Weak::upgrade).ok_or_else(denied)
+    }
+
     pub(crate) const fn new() -> Self {
         Self {
             access: OnceLock::new(),
