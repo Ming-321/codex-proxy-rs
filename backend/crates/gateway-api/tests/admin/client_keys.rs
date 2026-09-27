@@ -38,6 +38,63 @@ fn reset_budget_requires_an_explicit_supported_period_and_valid_key() {
 }
 
 #[tokio::test]
+async fn limit_binding_routes_reject_unauthorized_callers_and_missing_source() {
+    use axum::{
+        body::Body,
+        http::{Request, StatusCode, header},
+    };
+    use tower::ServiceExt as _;
+    let fixture = AdminTestFixture::new().await;
+    fixture.auth.insert_session("valid-session");
+    for (method, uri, cookie, body, expected) in [
+        (
+            "GET",
+            "/api/admin/client-keys/limit-binding?id=a",
+            "",
+            "",
+            StatusCode::UNAUTHORIZED,
+        ),
+        (
+            "POST",
+            "/api/admin/client-keys/limit-binding",
+            "",
+            r#"{"id":"a","sourceKeyId":"x","expectedRevision":0}"#,
+            StatusCode::UNAUTHORIZED,
+        ),
+        (
+            "POST",
+            "/api/admin/client-keys/limit-binding",
+            "cpr_session=valid-session",
+            r#"{"id":"a","expectedRevision":0}"#,
+            StatusCode::UNPROCESSABLE_ENTITY,
+        ),
+        (
+            "POST",
+            "/api/admin/client-keys/limit-binding",
+            "cpr_session=valid-session",
+            r#"{"id":"a","sourceKeyId":null,"expectedRevision":0}"#,
+            StatusCode::SERVICE_UNAVAILABLE,
+        ),
+    ] {
+        let response = client_keys::router::<AdminTestState>()
+            .with_state(fixture.state())
+            .oneshot(
+                Request::builder()
+                    .method(method)
+                    .uri(uri)
+                    .header(header::COOKIE, cookie)
+                    .header("x-request-id", "req_binding")
+                    .header(header::CONTENT_TYPE, "application/json")
+                    .body(Body::from(body))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), expected);
+    }
+}
+
+#[tokio::test]
 async fn reset_budget_route_requires_admin_and_maps_missing_keys() {
     use axum::{
         body::Body,
@@ -432,6 +489,8 @@ fn client_key_responses_should_keep_shape_and_redact_creation_debug() {
         .single()
         .expect("valid time");
     let view = ClientKeyView::from(gateway_admin::model::client_keys::ClientKeyRecord {
+        local_budget_limits: Default::default(),
+        limit_source: None,
         request_profile_overrides: Default::default(),
         budget: Default::default(),
         id: gateway_core::policy::ClientApiKeyId::new("key_visible").expect("Client Key ID"),

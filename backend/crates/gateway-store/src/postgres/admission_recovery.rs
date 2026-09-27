@@ -64,10 +64,10 @@ impl ClientAdmissionRecoveryRepository for PgClientAdmissionRecoveryRepository {
         window_started_at: DateTime<Utc>,
     ) -> StoreResult<Vec<ClientAdmissionRecovery>> {
         let rows = sqlx::query_as::<_, (String, String, DateTime<Utc>, DateTime<Utc>, String)>(
-            "select client_api_key_ref, id, started_at, deadline_at, outcome
+            "select limit_source_key_ref, id, started_at, deadline_at, outcome
              from model_requests
-             where started_at >= $1 or outcome = 'running'
-             order by client_api_key_ref, started_at, id",
+             where client_admission_acquired and (started_at >= $1 or outcome = 'running')
+             order by limit_source_key_ref, started_at, id",
         )
         .bind(window_started_at)
         .fetch_all(&self.pool)

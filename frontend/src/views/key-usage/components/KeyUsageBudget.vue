@@ -19,6 +19,9 @@ const windows = computed(() => [
 
 <template>
   <BaseCard title="额度概览">
+    <p v-if="budget.limitSourceKeyId" class="mb-3 break-all text-cp-xs text-cp-text-secondary">
+      共享限额来源：{{ budget.limitSourceKeyId }}
+    </p>
     <div class="flex flex-1 flex-col justify-between gap-6">
       <div class="grid flex-1 gap-6 sm:grid-cols-2">
         <div v-for="window in windows" :key="window.label" class="flex min-w-0 flex-col justify-between gap-4">

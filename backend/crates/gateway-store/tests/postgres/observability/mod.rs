@@ -1849,7 +1849,7 @@ async fn seed_observability_facts(
     .await?;
     sqlx::query(
         "insert into model_requests (
-           id, client_api_key_ref, config_revision, protocol, operation, endpoint,
+           id, client_api_key_ref, limit_source_key_ref, client_admission_acquired, config_revision, protocol, operation, endpoint,
            client_transport, requested_model_id,
            provider_kind, provider_account_id,
            provider_account_ref, upstream_model_id, upstream_transport,
@@ -1860,7 +1860,7 @@ async fn seed_observability_facts(
            started_at, deadline_at, completed_at,
            routing_scope, routing_group_refs, routing_group_names_snapshot
          ) values (
-           'req_observe_uncommitted', 'key_observe', 1, 'openai', 'responses', '/v1/responses',
+           'req_observe_uncommitted', 'key_observe', 'key_observe', true, 1, 'openai', 'responses', '/v1/responses',
            'http_sse', 'public-model', 'openai', 'acct_observe',
            'acct_observe', 'upstream-model', 'http_sse',
            'primary', 'account@example.invalid', 'oauth',
@@ -1875,7 +1875,7 @@ async fn seed_observability_facts(
     .await?;
     sqlx::query(
         "insert into model_requests (
-           id, client_api_key_ref, config_revision, protocol, operation, endpoint,
+           id, client_api_key_ref, limit_source_key_ref, client_admission_acquired, config_revision, protocol, operation, endpoint,
            client_transport, requested_model_id,
            provider_kind, provider_account_id,
            provider_account_ref, upstream_model_id, upstream_transport, websocket_pool,
@@ -1892,7 +1892,7 @@ async fn seed_observability_facts(
            started_at, deadline_at, completed_at,
            routing_scope, routing_group_refs, routing_group_names_snapshot
          ) values (
-           'req_observe_success', 'key_observe', 1, 'openai', 'responses', '/v1/responses',
+           'req_observe_success', 'key_observe', 'key_observe', true, 1, 'openai', 'responses', '/v1/responses',
            'http_sse', 'public-model', 'openai', 'acct_observe',
            'acct_observe', 'upstream-model',
            'http_sse', 'reuse', 'priority',
@@ -1910,7 +1910,7 @@ async fn seed_observability_facts(
     .await?;
     sqlx::query(
         "insert into model_requests (
-           id, client_api_key_ref, config_revision, protocol, operation, endpoint,
+           id, client_api_key_ref, limit_source_key_ref, client_admission_acquired, config_revision, protocol, operation, endpoint,
            client_transport, requested_model_id, service_tier,
            provider_kind, provider_account_id,
            provider_account_ref, upstream_model_id, upstream_transport, attempt_count,
@@ -1925,7 +1925,7 @@ async fn seed_observability_facts(
            started_at, deadline_at, completed_at,
            routing_scope, routing_group_refs, routing_group_names_snapshot
          ) values (
-           'req_observe_failed', 'key_observe', 1, 'openai', 'responses', '/v1/responses',
+           'req_observe_failed', 'key_observe', 'key_observe', true, 1, 'openai', 'responses', '/v1/responses',
            'http_sse', 'public-model', 'priority', 'openai', 'acct_observe',
            'acct_observe', 'upstream-model',
            'http_sse', 2,
@@ -1970,7 +1970,7 @@ async fn seed_calculated_billing_facts(
 ) -> Result<(), sqlx::Error> {
     sqlx::query(
         "insert into model_requests (
-           id, client_api_key_ref, config_revision, protocol, operation, endpoint,
+           id, client_api_key_ref, limit_source_key_ref, client_admission_acquired, config_revision, protocol, operation, endpoint,
            client_transport, requested_model_id, provider_kind, provider_account_id,
            provider_account_ref, upstream_model_id, upstream_transport, attempt_count,
            provider_account_name_snapshot, provider_account_email_snapshot,
@@ -1980,7 +1980,7 @@ async fn seed_calculated_billing_facts(
            cost_source, cost_amount, cost_currency, started_at, deadline_at, completed_at,
            routing_scope, routing_group_refs, routing_group_names_snapshot
          ) values (
-           'req_observe_calculated', 'key_observe', 1, 'openai', 'responses', '/v1/responses',
+           'req_observe_calculated', 'key_observe', 'key_observe', true, 1, 'openai', 'responses', '/v1/responses',
            'http_sse', 'public-model', 'openai', 'acct_observe', 'acct_observe', 'gpt-5.5',
            'http_sse', 1,
            'primary', 'account@example.invalid', 'oauth',
@@ -1995,7 +1995,7 @@ async fn seed_calculated_billing_facts(
     .await?;
     sqlx::query(
         "insert into model_requests (
-           id, client_api_key_ref, config_revision, protocol, operation, endpoint,
+           id, client_api_key_ref, limit_source_key_ref, client_admission_acquired, config_revision, protocol, operation, endpoint,
            client_transport, requested_model_id, provider_kind, provider_account_id,
            provider_account_ref, upstream_model_id, upstream_transport, attempt_count,
            provider_account_name_snapshot, provider_account_email_snapshot,
@@ -2004,7 +2004,7 @@ async fn seed_calculated_billing_facts(
            total_tokens, cost_source, cost_amount, cost_currency, started_at, deadline_at,
            completed_at, routing_scope, routing_group_refs, routing_group_names_snapshot
          ) values (
-           'req_observe_calculated_uncommitted', 'key_observe', 1, 'openai', 'responses',
+           'req_observe_calculated_uncommitted', 'key_observe', 'key_observe', true, 1, 'openai', 'responses',
            '/v1/responses', 'http_sse', 'public-model', 'openai', 'acct_observe',
            'acct_observe', 'gpt-5.5', 'http_sse', 1,
            'primary', 'account@example.invalid', 'oauth',

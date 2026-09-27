@@ -183,6 +183,7 @@ async fn overview_scopes_every_query_and_projects_only_key_visible_fields() {
     assert_fields(
         &data["key"],
         &[
+            "limitSourceKeyId",
             "name",
             "prefix",
             "maxConcurrency",

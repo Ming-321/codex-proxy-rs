@@ -71,8 +71,8 @@ export function useApiKeyMutations(options: {
       groupIds: key.groups.map(group => group.id),
       maxConcurrency: limitInputValue(key.maxConcurrency),
       requestsPerMinute: limitInputValue(key.requestsPerMinute),
-      dailyLimitUsd: limitInputValue(key.dailyLimitUsd),
-      weeklyLimitUsd: limitInputValue(key.weeklyLimitUsd),
+      dailyLimitUsd: limitInputValue(key.localDailyLimitUsd),
+      weeklyLimitUsd: limitInputValue(key.localWeeklyLimitUsd),
     }
     showFormModal.value = true
   }

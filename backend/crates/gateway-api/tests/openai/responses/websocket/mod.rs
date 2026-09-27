@@ -958,7 +958,10 @@ impl ClientAdmissionPort for SettlementPorts {
 }
 
 impl ClientBudgetPort for SettlementPorts {
-    fn admit(&self, _: ClientApiKeyId) -> BoxFuture<'_, Result<(), GatewayError>> {
+    fn admit(
+        &self,
+        _: gateway_core::engine::budget::ClientBudgetAdmission,
+    ) -> BoxFuture<'_, Result<(), GatewayError>> {
         Box::pin(async { Ok(()) })
     }
 

@@ -25,6 +25,7 @@ function amount(value: string) {
         :aria-expanded="open"
         aria-haspopup="dialog"
       >
+        <span v-if="apiKey.limitSourceKeyId" class="text-cp-text-tertiary">共享限额</span>
         <span v-for="window in windows" :key="window.label" class="flex min-w-0 items-center gap-1.5">
           <span class="shrink-0 text-cp-text-tertiary">{{ window.label }}</span>
           <span class="truncate" :class="Number(window.limit) > 0 && Number(window.used) >= Number(window.limit) ? 'text-cp-error' : 'text-cp-text'">
@@ -35,6 +36,10 @@ function amount(value: string) {
     </template>
 
     <section class="grid min-w-56 max-w-[calc(100vw-1rem)] gap-3 p-3" role="dialog" aria-label="费用用量详情（美元）">
+      <p v-if="apiKey.limitSourceKeyId" class="m-0 break-all text-cp-xs text-cp-text-secondary">
+        限额来源：{{ apiKey.limitSourceKeyId }}<br>
+        本地限额暂不生效，重置预算需操作来源 Key
+      </p>
       <div v-for="window in windows" :key="window.label" class="grid gap-1">
         <div class="flex items-baseline justify-between gap-6 text-cp-sm">
           <span class="shrink-0 text-cp-text-secondary">{{ window.heading }}</span>

@@ -793,6 +793,9 @@ pub struct NewModelRequest {
     pub id: ModelRequestId,
     pub client_api_key_id: Option<ClientApiKeyId>,
     pub client_api_key_ref: ClientApiKeyId,
+    pub limit_source_key_ref: ClientApiKeyId,
+    /// 子执行可以承担费用而不独立取得客户端名额。
+    pub client_admission_acquired: bool,
     pub config_revision: ConfigRevision,
     pub routing: crate::routing::AccountRoutingSnapshot,
     pub protocol: String,

@@ -296,6 +296,17 @@ pub trait AuthStore: Send + Sync {
 /// Client API Key 资料读取与管理写入。
 #[async_trait]
 pub trait ClientKeyStore: Send + Sync {
+    async fn get_limit_binding(
+        &self,
+        id: &gateway_core::policy::ClientApiKeyId,
+    ) -> AdminStoreResult<crate::model::client_keys::ClientLimitBinding>;
+
+    async fn change_limit_binding(
+        &self,
+        command: crate::model::client_keys::ChangeClientLimitBinding,
+        context: &MutationContext,
+    ) -> AdminStoreResult<crate::model::client_keys::ClientLimitBinding>;
+
     /// 按已验证的 ID 读取资料，不读取完整明文 Key。
     async fn get_client_key(
         &self,

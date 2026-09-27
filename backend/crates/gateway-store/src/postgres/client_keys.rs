@@ -53,6 +53,7 @@ const CLIENT_API_KEY_LAST_USED_SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ClientApiKeySnapshot {
+    pub limit_source: Option<gateway_core::policy::NativeLimitSource>,
     pub request_profiles: std::collections::BTreeMap<
         gateway_core::routing::ProviderKind,
         gateway_core::account::OpaqueProviderData,
@@ -73,6 +74,7 @@ impl ClientApiKeySnapshot {
     ) -> StoreResult<Self> {
         Ok(Self {
             request_profiles: std::collections::BTreeMap::new(),
+            limit_source: None,
             id: ClientApiKeyId::new(id).map_err(|_| invalid("persisted key ID is invalid"))?,
             plaintext_key: PlaintextClientApiKey::new(key)
                 .map_err(|_| invalid("persisted plaintext key is invalid"))?,
@@ -112,6 +114,8 @@ impl fmt::Debug for ClientApiKeySecret {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ClientApiKeyRecord {
+    pub local_budget_limits: ClientBudgetLimits,
+    pub limit_source: Option<gateway_core::policy::NativeLimitSource>,
     pub request_profile_overrides: BTreeMap<ProviderKind, OpaqueProviderData>,
     pub id: String,
     pub name: String,
@@ -708,6 +712,21 @@ impl PgAdminClientKeyStore {
 
 #[async_trait]
 impl ClientKeyStore for PgAdminClientKeyStore {
+    async fn get_limit_binding(
+        &self,
+        id: &ClientApiKeyId,
+    ) -> AdminStoreResult<gateway_admin::model::client_keys::ClientLimitBinding> {
+        super::client_limit_bindings::get(&self.keys.pool, id).await
+    }
+
+    async fn change_limit_binding(
+        &self,
+        command: gateway_admin::model::client_keys::ChangeClientLimitBinding,
+        context: &MutationContext,
+    ) -> AdminStoreResult<gateway_admin::model::client_keys::ClientLimitBinding> {
+        super::client_limit_bindings::change(&self.keys.pool, command, context).await
+    }
+
     async fn update_client_key_budget_limits(
         &self,
         command: gateway_admin::model::client_keys::UpdateClientKeyBudgetLimits,
@@ -1078,6 +1097,8 @@ fn admin_client_key_cursor(cursor: ClientApiKeyCursor) -> AdminStoreResult<Admin
 
 fn admin_client_key_record(record: ClientApiKeyRecord) -> AdminStoreResult<AdminClientKeyRecord> {
     Ok(AdminClientKeyRecord {
+        local_budget_limits: record.local_budget_limits,
+        limit_source: record.limit_source,
         request_profile_overrides: record.request_profile_overrides,
         id: ClientApiKeyId::new(record.id)
             .map_err(|_| admin_store_error(ENTITY, invalid("invalid client key id")))?,
@@ -1258,6 +1279,19 @@ pub(crate) async fn delete_client_api_key_in_transaction(
     id: &str,
 ) -> StoreResult<()> {
     require_nonempty(ENTITY, "id", id)?;
+    let anchor: Option<bool> =
+        sqlx::query_scalar("select limit_anchor from client_api_keys where id=$1 for update")
+            .bind(id)
+            .fetch_optional(&mut **transaction)
+            .await
+            .map_err(|_| postgres_unavailable("lock limit anchor deletion"))?;
+    if anchor == Some(true) {
+        return Err(StoreError::Conflict {
+            entity: "retained limit anchor",
+            id: id.to_owned(),
+            kind: crate::ConflictKind::InvalidTransition,
+        });
+    }
     let result = sqlx::query("delete from client_api_keys where id = $1")
         .bind(id)
         .execute(&mut **transaction)
@@ -1396,6 +1430,8 @@ fn client_record_from_row(row: &sqlx::postgres::PgRow) -> StoreResult<ClientApiK
         .map_err(|_| invalid("invalid groups"))?;
     Ok(
         ClientApiKeyRecord {
+            local_budget_limits: ClientBudgetLimits::default(),
+            limit_source: None,
             request_profile_overrides:
                 decode_request_profiles(
                     row.try_get::<sqlx::types::Json<

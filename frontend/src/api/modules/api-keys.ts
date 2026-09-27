@@ -7,6 +7,11 @@ export type ApiKeyRoutingScope = 'all' | 'groups'
 export type ApiKeyBudgetPeriod = 'daily' | 'weekly' | 'all'
 
 export interface ApiKey {
+  localDailyLimitUsd: string
+  localWeeklyLimitUsd: string
+  limitSourceKeyId: string | null
+  effectiveMaxConcurrency: number
+  effectiveRequestsPerMinute: number
   providerRequestProfileOverrides: ProviderRequestProfiles
   openaiClientProfileOverride: ClientProfileSelection | null
   xaiClientProfileOverride: XaiClientProfileSelection | null

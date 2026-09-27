@@ -11,12 +11,11 @@ use gateway_admin::model::{
 use gateway_admin::ports::store::AdminStoreResult;
 use gateway_core::{
     engine::budget::{
-        ClientBudgetCharge, ClientBudgetError, ClientBudgetLimits, ClientBudgetPort,
-        ClientBudgetStatus,
+        ClientBudgetAdmission, ClientBudgetCharge, ClientBudgetError, ClientBudgetLimits,
+        ClientBudgetPort, ClientBudgetStatus,
     },
     error::{GatewayError, GatewayErrorKind},
     metering::Decimal,
-    policy::ClientApiKeyId,
 };
 use sqlx::{PgPool, Postgres, Row, Transaction};
 
@@ -66,6 +65,15 @@ async fn reset_client_key_budget_in_transaction(
         return Err(StoreError::NotFound {
             entity: "client API key",
             id: command.id.as_str().to_owned(),
+        });
+    }
+    let bound: bool = sqlx::query_scalar("select exists(select 1 from client_key_limit_bindings where client_api_key_id=$1 and source_key_id is not null)")
+        .bind(command.id.as_str()).fetch_one(&mut **tx).await.map_err(|_| postgres_unavailable("check budget reset binding"))?;
+    if bound {
+        return Err(StoreError::Conflict {
+            entity: "shared budget reset",
+            id: command.id.to_string(),
+            kind: crate::ConflictKind::InvalidTransition,
         });
     }
     let daily = matches!(
@@ -129,7 +137,8 @@ impl PgClientBudgetStore {
         }
     }
 
-    async fn admit_inner(&self, key_id: ClientApiKeyId) -> Result<(), GatewayError> {
+    async fn admit_inner(&self, request: ClientBudgetAdmission) -> Result<(), GatewayError> {
+        let key_id = request.source_key_id;
         // 短暂存储故障后按原金额重试；进程退出丢失的费用不转成人工核账或阻断 Key。
         let retries = self
             .retry
@@ -143,35 +152,39 @@ impl PgClientBudgetStore {
             self.settle(charge).await.map_err(|_| unavailable())?;
         }
         let mut tx = self.pool.begin().await.map_err(|_| unavailable())?;
-        let row = sqlx::query(
-            "select daily_limit_usd::text, weekly_limit_usd::text, enabled
-            from client_api_keys where id = $1 for update",
+        // 身份有效性与预算归属分开；按稳定顺序锁定二者，不读取当前绑定重定向旧请求。
+        let keys = vec![request.client_key_id.as_str(), key_id.as_str()];
+        let states = sqlx::query_as::<_, (String, bool, String, String)>(
+            "select id, enabled, daily_limit_usd::text, weekly_limit_usd::text from client_api_keys where id = any($1) order by id for update",
         )
-        .bind(key_id.as_str())
-        .fetch_optional(&mut *tx)
+        .bind(&keys)
+        .fetch_all(&mut *tx)
         .await
-        .map_err(|_| unavailable())?
-        .ok_or_else(|| {
-            GatewayError::new(
-                GatewayErrorKind::Unauthorized,
-                "client API key no longer exists",
-            )
-        })?;
-        if !row.get::<bool, _>("enabled") {
-            return Err(GatewayError::new(
-                GatewayErrorKind::PolicyDenied,
-                "client API key is disabled",
-            ));
+        .map_err(|_| unavailable())?;
+        for id in keys {
+            match states.iter().find(|(key, ..)| key == id) {
+                Some((_, true, ..)) => {}
+                Some((_, false, ..)) => {
+                    return Err(GatewayError::new(
+                        GatewayErrorKind::PolicyDenied,
+                        "client API key or limit source is disabled",
+                    ));
+                }
+                None => {
+                    return Err(GatewayError::new(
+                        GatewayErrorKind::Unauthorized,
+                        "client API key or limit source no longer exists",
+                    ));
+                }
+            }
         }
+        let (_, _, daily, weekly) = states
+            .iter()
+            .find(|(id, ..)| id == key_id.as_str())
+            .ok_or_else(unavailable)?;
         let limits = ClientBudgetLimits {
-            daily_usd: row
-                .get::<String, _>("daily_limit_usd")
-                .parse()
-                .map_err(|_| unavailable())?,
-            weekly_usd: row
-                .get::<String, _>("weekly_limit_usd")
-                .parse()
-                .map_err(|_| unavailable())?,
+            daily_usd: daily.parse().map_err(|_| unavailable())?,
+            weekly_usd: weekly.parse().map_err(|_| unavailable())?,
         };
         let now = Utc::now();
         advance_windows(&mut tx, key_id.as_str(), now)
@@ -246,14 +259,15 @@ async fn settle_in_transaction(
     advance_windows(tx, key, Utc::now()).await?;
     // 仅在请求结束时写入费用；请求 ID 冲突时不重复累计。
     let changed = sqlx::query(
-        "insert into client_key_charge_events (request_id, client_api_key_id, amount_usd, completed_at)
-            values ($1, $2, $3::text::numeric, $4)
+        "insert into client_key_charge_events (request_id, client_api_key_id, amount_usd, completed_at, client_key_ref)
+            values ($1, $2, $3::text::numeric, $4, $5)
             on conflict (request_id) do nothing",
     )
     .bind(charge.request_id.as_str())
     .bind(key)
     .bind(charge.amount_usd.canonical())
     .bind(DateTime::<Utc>::from(charge.completed_at))
+    .bind(charge.client_key_ref.as_str())
     .execute(&mut **tx)
     .await?
     .rows_affected();
@@ -269,8 +283,8 @@ async fn settle_in_transaction(
 }
 
 impl ClientBudgetPort for PgClientBudgetStore {
-    fn admit(&self, key_id: ClientApiKeyId) -> BoxFuture<'_, Result<(), GatewayError>> {
-        Box::pin(async move { self.admit_inner(key_id).await })
+    fn admit(&self, request: ClientBudgetAdmission) -> BoxFuture<'_, Result<(), GatewayError>> {
+        Box::pin(async move { self.admit_inner(request).await })
     }
 
     fn settle(&self, charge: ClientBudgetCharge) -> BoxFuture<'_, Result<(), ClientBudgetError>> {
@@ -319,12 +333,17 @@ pub(super) async fn load_client_key_budgets(
         .map(|record| record.id.as_str())
         .collect::<Vec<_>>();
     let rows = sqlx::query(
-        "select k.id, k.daily_limit_usd::text, k.weekly_limit_usd::text,
+        "select k.id, x.daily_limit_usd::text, x.weekly_limit_usd::text,
+        k.daily_limit_usd::text as local_daily, k.weekly_limit_usd::text as local_weekly,
+        b.source_key_id, b.revision, x.enabled as source_enabled, x.max_concurrency, x.requests_per_minute,
         (case when w.daily_end > now() then w.daily_used_usd else 0 end)::text as daily_used,
         (case when w.weekly_end > now() then w.weekly_used_usd else 0 end)::text as weekly_used,
         case when w.daily_end > now() then w.daily_end end as daily_end,
         case when w.weekly_end > now() then w.weekly_end end as weekly_end
-        from client_api_keys k left join client_key_budget_windows w on w.client_api_key_id = k.id
+        from client_api_keys k
+        left join client_key_limit_bindings b on b.client_api_key_id=k.id
+        join client_api_keys x on x.id=coalesce(b.source_key_id,k.id)
+        left join client_key_budget_windows w on w.client_api_key_id = x.id
         where k.id = any($1)",
     )
     .bind(ids)
@@ -340,26 +359,56 @@ pub(super) async fn load_client_key_budgets(
         };
         budgets.insert(
             row.get::<String, _>("id"),
-            ClientBudgetStatus {
-                limits: ClientBudgetLimits {
-                    daily_usd: parse("daily_limit_usd")?,
-                    weekly_usd: parse("weekly_limit_usd")?,
+            (
+                ClientBudgetLimits {
+                    daily_usd: parse("local_daily")?,
+                    weekly_usd: parse("local_weekly")?,
                 },
-                daily_used_usd: parse("daily_used")?,
-                weekly_used_usd: parse("weekly_used")?,
-                daily_resets_at: row
-                    .get::<Option<DateTime<Utc>>, _>("daily_end")
-                    .map(Into::into),
-                weekly_resets_at: row
-                    .get::<Option<DateTime<Utc>>, _>("weekly_end")
-                    .map(Into::into),
-            },
+                row.get::<Option<String>, _>("source_key_id")
+                    .map(|id| -> StoreResult<_> {
+                        Ok(gateway_core::policy::NativeLimitSource {
+                            key_id: gateway_core::policy::ClientApiKeyId::new(id)
+                                .map_err(|_| postgres_unavailable("decode source ID"))?,
+                            binding_revision: u64::try_from(row.get::<i64, _>("revision"))
+                                .map_err(|_| postgres_unavailable("decode binding revision"))?,
+                            enabled: row.get("source_enabled"),
+                            limits: gateway_core::policy::RateLimits {
+                                max_concurrency: u64::try_from(
+                                    row.get::<i64, _>("max_concurrency"),
+                                )
+                                .map_err(|_| postgres_unavailable("decode source concurrency"))?,
+                                requests_per_minute: u64::try_from(
+                                    row.get::<i64, _>("requests_per_minute"),
+                                )
+                                .map_err(|_| postgres_unavailable("decode source RPM"))?,
+                            },
+                        })
+                    })
+                    .transpose()?,
+                ClientBudgetStatus {
+                    limits: ClientBudgetLimits {
+                        daily_usd: parse("daily_limit_usd")?,
+                        weekly_usd: parse("weekly_limit_usd")?,
+                    },
+                    daily_used_usd: parse("daily_used")?,
+                    weekly_used_usd: parse("weekly_used")?,
+                    daily_resets_at: row
+                        .get::<Option<DateTime<Utc>>, _>("daily_end")
+                        .map(Into::into),
+                    weekly_resets_at: row
+                        .get::<Option<DateTime<Utc>>, _>("weekly_end")
+                        .map(Into::into),
+                },
+            ),
         );
     }
     for record in records {
-        record.budget = budgets
+        let (local, source, budget) = budgets
             .remove(&record.id)
             .ok_or_else(|| postgres_unavailable("load client budget policy"))?;
+        record.local_budget_limits = local;
+        record.limit_source = source;
+        record.budget = budget;
     }
     Ok(())
 }

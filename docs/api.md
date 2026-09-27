@@ -462,7 +462,7 @@ OpenAI 选号阶段确认本次可选账号全部额度耗尽时，HTTP 返回 `
 `kind` 为 `success`（默认）或 `error`。分页响应为 `{ items, currentPage, pageSize, total }`。
 
 overview 返回 `asOf`、`startTime`、`endTime`、`key`、`summary`、`trend`、`healthTimeline`。
-`key` 仅包含名称、掩码前缀、并发/RPM、日与周限额、已用 USD 及重置时间；零限额表示不限，
+`key` 仅包含名称、掩码前缀、有效并发/RPM、日与周限额、已用 USD、重置时间及 `limitSourceKeyId`（未共享为 null）；零限额表示不限，
 未启动窗口的重置时间为 null。额度使用现有结算账本，不受日志日期或模型筛选影响。
 健康时间线沿用管理端的 96 个北京时间日内桶与可用性语义，不受历史范围和模型筛选影响。
 
@@ -1074,6 +1074,8 @@ HTTP 请求头及新建 WS 的握手提示按当时的最终出站档位构造�
 | `POST` | `/api/admin/client-keys/enable` | `{ id }` | 启用 |
 | `POST` | `/api/admin/client-keys/disable` | `{ id }` | 禁用 |
 | `POST` | `/api/admin/client-keys/delete` | `{ id }` | 删除 |
+| `GET` | `/api/admin/client-keys/limit-binding` | `id` | 查询关系版本、有效来源及共享限额 |
+| `POST` | `/api/admin/client-keys/limit-binding` | `{ id, sourceKeyId, expectedRevision }` | 绑定、换源或解绑，要求管理员权限 |
 
 创建字段为 `name`、可选 `label`、`groupIds`、`maxConcurrency`、`requestsPerMinute`、可选
 `dailyLimitUsd`、`weeklyLimitUsd`、`customKey` 和 `providerRequestProfileOverrides`。更新请求携带 `id`，不接受 `customKey`。
@@ -1123,6 +1125,9 @@ HTTP 请求头及新建 WS 的握手提示按当时的最终出站档位构造�
 
 列表返回 `dailyLimitUsd`、`weeklyLimitUsd`、`dailyUsedUsd`、`weeklyUsedUsd`（均为字符串）、
 `dailyResetsAt`、`weeklyResetsAt`（RFC3339 或 `null`）。
+金额展示为有效来源的预算。列表另返回 `limitSourceKeyId`（未绑定为 `null`）、
+`effectiveMaxConcurrency`、`effectiveRequestsPerMinute`；`maxConcurrency`、`requestsPerMinute`、
+`localDailyLimitUsd`、`localWeeklyLimitUsd` 是编辑使用的本地配置，绑定期间不参与限额执行。
 记账和限额比较保留完整精度。
 日窗口按北京时间零点重置；周窗口从首次准入当天零点起持续七天，到期后在下一次使用时重新开启。
 手动重置仅清零所选周期的已用金额，保留限额上限、原到期时间和历史费用，返回 `{ id }`。
@@ -1151,6 +1156,38 @@ HTTP 返回 `429`，`error.code` 为 `key_daily_budget_exceeded` 或 `key_weekly
 
 自动结算按网关请求 ID 幂等执行。账本独立于使用统计日志，记录保留至删除 Key，
 不受 `usageRetentionDays` 影响。
+
+### 原生限额共享
+
+管理员先创建一把独立来源 Key X，再将设备 Key A、B 绑定到 X。来源仍是普通 Key，不向客户端分发其凭据。
+A、B 的预算、并发、RPM 和等待队列共用 X；认证、画像、账号范围、continuation 与请求明细仍属于各自 Key。
+未绑定使用自身，不叠加本地限额，不支持链式关系或循环。已经承载共享限额的来源不能再作为成员绑定到其他来源。
+
+读取 `GET /api/admin/client-keys/limit-binding?id=A`，再以返回的 `revision` 修改：
+
+```json
+{ "id": "A", "sourceKeyId": "X", "expectedRevision": 0 }
+```
+
+换源同样提交目标 ID；解绑必须显式提交 `sourceKeyId: null`，不能省略该字段。关系版本首次为零，
+每次提交递增（包括目标未变的操作），解绑不重置。过期版本返回 `409`。
+同一管理身份、原版本、完整参数与最近一次已提交操作一致时作为重试返回，不重复推进版本或写审计；
+已有后续提交则旧操作不能重放。未知结果时先读取关系；配置通知失败不回滚已经提交的事务。
+
+GET/POST 均返回 `id`、`sourceKeyId`（未绑定时为自身 ID）、`revision`、`configRevision`、`bindingConfigRevision`、
+`loadedConfigRevision`（本实例尚未加载快照时为 `null`）、`sourceEnabled`、`maxConcurrency`、
+`requestsPerMinute` 及上述预算字段。`configRevision` 表示当前持久配置版本，限额与余额按当前数据库查询；
+`bindingConfigRevision` 为最近一次关系提交的配置版本，从未修改关系时为 `null`。
+`loadedConfigRevision` 是本实例已加载版本，不代表其他实例已同步。数据面按已加载快照建立新执行；
+排队及在途执行保留原来源，完成时不重新读取绑定。绑定变更不转移、清零或退款历史消费。
+
+设备或来源停用均拒绝新准入，旧费用仍向原来源结算，租约仍向原来源释放。
+绑定期间对设备重置预算返回 `409`，须显式操作来源 Key；修改设备本地配置仍允许，但解绑前不生效。
+删除设备不删除共享消费。曾作为共享来源的 Key 永久保留，删除返回 `409`，全部解绑也不例外；
+首版不支持物理删除或自动回收来源。Key 自助余额为共享余额，请求明细仍仅包含自身。
+
+此接口仅暴露 Host 通用能力，不提供插件权限、控制权或共享业务流程。升级限制见
+[启用原生限额共享](../deploy/README.md#启用原生限额共享)。
 
 ## 8. 运行设置
 
@@ -1219,7 +1256,7 @@ accountWarmupModel
 无限并发仍统计在途请求，并遵守最小请求间隔、账号可用性与 Client Key 限制。
 
 `maxWaitingPerKey` 与 `maxWaitingPerAccount` 是全局统一的排队容量，取值 0～1,000，默认 0（关闭）；
-每个 Key、每个账号各自独立计数，没有单对象覆盖字段。执行并发为 5、最大排队数为 5 时，
+每个有效限额来源、每个账号各自独立计数，共享成员共用来源队列，没有单对象覆盖字段。执行并发为 5、最大排队数为 5 时，
 该对象最多容纳 5 个执行请求与 5 个等待请求。Key 并发为 0（不限）时跳过 Key 排队。
 `concurrencyWaitTimeoutSeconds` 取值 1～120，默认 30，从首次入队开始计时，密钥与账号两层共享该等待时限；
 切换账号或内部重试不重新计时，等待同时计入请求总超时。该时限不用于中断已开始的上游生成。

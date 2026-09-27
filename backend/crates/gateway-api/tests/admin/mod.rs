@@ -863,6 +863,32 @@ fn mutation(
 
 #[async_trait]
 impl ClientKeyStore for MemoryClientKeyStore {
+    async fn get_limit_binding(
+        &self,
+        _: &gateway_core::policy::ClientApiKeyId,
+    ) -> gateway_admin::ports::store::AdminStoreResult<
+        gateway_admin::model::client_keys::ClientLimitBinding,
+    > {
+        Err(gateway_admin::ports::store::AdminStoreError::new(
+            gateway_admin::ports::store::AdminStoreErrorKind::Unavailable,
+            "client limit binding",
+            "unused",
+        ))
+    }
+    async fn change_limit_binding(
+        &self,
+        _: gateway_admin::model::client_keys::ChangeClientLimitBinding,
+        _: &MutationContext,
+    ) -> gateway_admin::ports::store::AdminStoreResult<
+        gateway_admin::model::client_keys::ClientLimitBinding,
+    > {
+        Err(gateway_admin::ports::store::AdminStoreError::new(
+            gateway_admin::ports::store::AdminStoreErrorKind::Unavailable,
+            "client limit binding",
+            "unused",
+        ))
+    }
+
     async fn update_client_key_budget_limits(
         &self,
         _: gateway_admin::model::client_keys::UpdateClientKeyBudgetLimits,
@@ -937,6 +963,8 @@ impl ClientKeyStore for MemoryClientKeyStore {
         let now = Utc::now();
         Ok(Some(ClientKeySecret::new(
             ClientKeyRecord {
+                local_budget_limits: Default::default(),
+                limit_source: None,
                 request_profile_overrides: Default::default(),
                 budget: Default::default(),
                 id: id.clone(),

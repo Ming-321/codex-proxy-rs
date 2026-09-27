@@ -38,8 +38,16 @@ fn key_id(key: &str) -> ClientApiKeyId {
     ClientApiKeyId::new(key).unwrap()
 }
 
+fn admission(key: &str) -> gateway_core::engine::budget::ClientBudgetAdmission {
+    gateway_core::engine::budget::ClientBudgetAdmission {
+        client_key_id: key_id(key),
+        source_key_id: key_id(key),
+    }
+}
+
 fn charge(key: &str, request: &str, amount: &str) -> ClientBudgetCharge {
     ClientBudgetCharge {
+        client_key_ref: key_id(key),
         key_id: key_id(key),
         request_id: ModelRequestId::new(format!("req_{request}")).unwrap(),
         amount_usd: amount.parse().unwrap(),
@@ -95,10 +103,10 @@ async fn manual_reset_clears_only_selected_budget_and_preserves_policy_history_a
         ("all", ClientKeyBudgetPeriod::All, "0", "0"),
     ] {
         seed(&database, key, "1", "2").await;
-        store.admit(key_id(key)).await.unwrap();
+        store.admit(admission(key)).await.unwrap();
         let billed = charge(key, key, "2.5");
         store.settle(billed.clone()).await.unwrap();
-        assert!(store.admit(key_id(key)).await.is_err());
+        assert!(store.admit(admission(key)).await.is_err());
         let before = status(&database, key).await;
         admin
             .reset_client_key_budget(
@@ -120,7 +128,7 @@ async fn manual_reset_clears_only_selected_budget_and_preserves_policy_history_a
         assert_eq!(after.daily_resets_at, before.daily_resets_at);
         assert_eq!(after.weekly_resets_at, before.weekly_resets_at);
         assert_eq!(
-            store.admit(key_id(key)).await.is_ok(),
+            store.admit(admission(key)).await.is_ok(),
             period == ClientKeyBudgetPeriod::All
         );
     }
@@ -141,7 +149,7 @@ async fn manual_reset_excludes_old_completions_but_counts_inflight_requests_afte
     seed(&database, "key", "1", "5").await;
     let store = PgClientBudgetStore::new(database.pool.clone());
     let admin = PgAdminClientKeyStore::new(database.pool.clone());
-    store.admit(key_id("key")).await.unwrap();
+    store.admit(admission("key")).await.unwrap();
     store
         .settle(charge("key", "before-reset", "1.2"))
         .await
@@ -185,7 +193,7 @@ async fn manual_reset_leaves_unused_and_expired_windows_inactive_and_reports_mis
     for key in ["unused", "expired"] {
         seed(&database, key, "1", "5").await;
     }
-    store.admit(key_id("expired")).await.unwrap();
+    store.admit(admission("expired")).await.unwrap();
     store.settle(charge("expired", "old", "2")).await.unwrap();
     sqlx::query("update client_key_budget_windows set daily_end = now() - interval '1 second', weekly_end = now() - interval '1 second'")
         .execute(&database.pool).await.unwrap();
@@ -315,7 +323,7 @@ async fn budgets_settle_exactly_once_and_enforce_each_threshold_across_store_ins
     for (key, prefix, amount) in [("day", "d", "0.1"), ("week", "w", "0.1")] {
         for _ in 0..3 {
             // 已准入请求可完成并超过限额，不预占估算费用。
-            first.admit(key_id(key)).await.unwrap();
+            first.admit(admission(key)).await.unwrap();
         }
         for index in 0..3 {
             let id = format!("{prefix}-{index}");
@@ -330,14 +338,14 @@ async fn budgets_settle_exactly_once_and_enforce_each_threshold_across_store_ins
     let day = status(&database, "day").await;
     assert_eq!(day.daily_used_usd.canonical(), "0.3");
     assert_eq!(day.weekly_used_usd.canonical(), "0.3");
-    let day_error = second.admit(key_id("day")).await.unwrap_err();
+    let day_error = second.admit(admission("day")).await.unwrap_err();
     assert_eq!(day_error.kind(), GatewayErrorKind::RateLimited);
     assert_eq!(
         day_error.client_error_code(),
         Some("key_daily_budget_exceeded")
     );
     assert!(day_error.retry_after().is_some());
-    let week_error = first.admit(key_id("week")).await.unwrap_err();
+    let week_error = first.admit(admission("week")).await.unwrap_err();
     assert_eq!(
         week_error.client_error_code(),
         Some("key_weekly_budget_exceeded")
@@ -357,7 +365,7 @@ async fn window_rollover_is_shanghai_midnight_and_seven_days_with_late_settlemen
     };
     seed(&database, "key", "1", "2").await;
     let store = PgClientBudgetStore::new(database.pool.clone());
-    store.admit(key_id("key")).await.unwrap();
+    store.admit(admission("key")).await.unwrap();
     let (day_start, day_end, week_end): (DateTime<Utc>, DateTime<Utc>, DateTime<Utc>) =
         sqlx::query_as("select daily_start, daily_end, weekly_end from client_key_budget_windows where client_api_key_id = 'key'")
             .fetch_one(&database.pool).await.unwrap();
@@ -367,7 +375,7 @@ async fn window_rollover_is_shanghai_midnight_and_seven_days_with_late_settlemen
     store.settle(charge("key", "first", "1")).await.unwrap();
     sqlx::query("update client_key_budget_windows set daily_start = daily_start - interval '1 day', daily_end = daily_start")
         .execute(&database.pool).await.unwrap();
-    store.admit(key_id("key")).await.unwrap();
+    store.admit(admission("key")).await.unwrap();
     assert_eq!(
         status(&database, "key").await.daily_used_usd.canonical(),
         "0"
@@ -382,7 +390,7 @@ async fn window_rollover_is_shanghai_midnight_and_seven_days_with_late_settlemen
     let virtual_reset = status(&database, "key").await;
     assert_eq!(virtual_reset.daily_used_usd.canonical(), "0");
     assert_eq!(virtual_reset.weekly_used_usd.canonical(), "0");
-    store.admit(key_id("key")).await.unwrap();
+    store.admit(admission("key")).await.unwrap();
     let old = ClientBudgetCharge {
         completed_at: (day_start - chrono::Duration::seconds(1)).into(),
         ..charge("key", "after-reset", "0.9")
@@ -402,12 +410,12 @@ async fn zero_cost_and_interrupted_requests_never_block_limited_keys() {
     };
     seed(&database, "key", "1", "5").await;
     let store = PgClientBudgetStore::new(database.pool.clone());
-    store.admit(key_id("key")).await.unwrap();
+    store.admit(admission("key")).await.unwrap();
     store.settle(charge("key", "no-cost", "0")).await.unwrap();
     // 模拟准入后进程退出，没有费用可结算；重启后仍应允许同一 Key 使用。
-    store.admit(key_id("key")).await.unwrap();
+    store.admit(admission("key")).await.unwrap();
     let restarted = PgClientBudgetStore::new(database.pool.clone());
-    restarted.admit(key_id("key")).await.unwrap();
+    restarted.admit(admission("key")).await.unwrap();
     let events: i64 = sqlx::query_scalar("select count(*) from client_key_charge_events")
         .fetch_one(&database.pool)
         .await
@@ -435,7 +443,7 @@ async fn transient_settlement_failure_rolls_back_and_retries_exact_cost_before_a
     };
     seed(&database, "key", "1", "5").await;
     let store = PgClientBudgetStore::new(database.pool.clone());
-    store.admit(key_id("key")).await.unwrap();
+    store.admit(admission("key")).await.unwrap();
     // 在费用事件插入后让窗口写入失败，验证整个事务回滚。
     sqlx::raw_sql(
         "create function reject_budget_update() returns trigger language plpgsql as $$
@@ -463,7 +471,7 @@ async fn transient_settlement_failure_rolls_back_and_retries_exact_cost_before_a
         .execute(&database.pool)
         .await
         .unwrap();
-    let error = store.admit(key_id("key")).await.unwrap_err();
+    let error = store.admit(admission("key")).await.unwrap_err();
     assert_eq!(error.client_error_code(), Some("key_daily_budget_exceeded"));
     store.settle(charge("key", "retry", "1.25")).await.unwrap();
     assert_eq!(
@@ -481,7 +489,7 @@ async fn budget_updates_preserve_omitted_limits_and_do_not_clear_usage() {
     seed(&database, "key", "0", "0").await;
     let store = PgClientBudgetStore::new(database.pool.clone());
     let admin = PgAdminClientKeyStore::new(database.pool.clone());
-    store.admit(key_id("key")).await.unwrap();
+    store.admit(admission("key")).await.unwrap();
     store
         .settle(charge("key", "unlimited", "2.75"))
         .await
@@ -521,7 +529,7 @@ async fn budget_updates_preserve_omitted_limits_and_do_not_clear_usage() {
     assert_eq!(current.daily_used_usd.canonical(), "2.75");
     assert_eq!(
         store
-            .admit(key_id("key"))
+            .admit(admission("key"))
             .await
             .unwrap_err()
             .client_error_code(),
@@ -539,13 +547,13 @@ async fn budget_updates_preserve_omitted_limits_and_do_not_clear_usage() {
         )
         .await
         .unwrap();
-    store.admit(key_id("key")).await.unwrap();
+    store.admit(admission("key")).await.unwrap();
     sqlx::query("update client_api_keys set enabled = false where id = 'key'")
         .execute(&database.pool)
         .await
         .unwrap();
     assert_eq!(
-        store.admit(key_id("key")).await.unwrap_err().kind(),
+        store.admit(admission("key")).await.unwrap_err().kind(),
         GatewayErrorKind::PolicyDenied
     );
     sqlx::query("delete from client_api_keys where id = 'key'")
@@ -553,7 +561,7 @@ async fn budget_updates_preserve_omitted_limits_and_do_not_clear_usage() {
         .await
         .unwrap();
     assert_eq!(
-        store.admit(key_id("key")).await.unwrap_err().kind(),
+        store.admit(admission("key")).await.unwrap_err().kind(),
         GatewayErrorKind::Unauthorized
     );
     store.settle(charge("key", "allowed", "1")).await.unwrap();
@@ -569,7 +577,7 @@ async fn budget_database_outage_fails_closed() {
     database.pool.close().await;
     assert_eq!(
         store
-            .admit(key_id("key"))
+            .admit(admission("key"))
             .await
             .unwrap_err()
             .client_error_code(),
@@ -898,7 +906,7 @@ async fn plugin_budget_limits_preserve_consumption_and_unrelated_configuration_a
         )
     );
     assert_eq!(
-        budgets.admit(key_id("key")).await.unwrap_err().kind(),
+        budgets.admit(admission("key")).await.unwrap_err().kind(),
         GatewayErrorKind::RateLimited
     );
     assert!(
@@ -923,7 +931,7 @@ async fn plugin_budget_limits_preserve_consumption_and_unrelated_configuration_a
         )
         .await
         .unwrap();
-    budgets.admit(key_id("key")).await.unwrap();
+    budgets.admit(admission("key")).await.unwrap();
     let mutation = context();
     let (updated, settled) = tokio::join!(
         store.update_client_key_budget_limits(
@@ -939,7 +947,7 @@ async fn plugin_budget_limits_preserve_consumption_and_unrelated_configuration_a
     assert_eq!(after.daily_used_usd.canonical(), "6");
     assert_eq!(after.weekly_used_usd.canonical(), "6");
     assert!(!after.limits.is_limited());
-    budgets.admit(key_id("key")).await.unwrap();
+    budgets.admit(admission("key")).await.unwrap();
     database.close().await;
 }
 
