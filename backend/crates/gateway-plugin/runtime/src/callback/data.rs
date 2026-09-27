@@ -7,10 +7,7 @@ use gateway_admin::model::{
 use gateway_core::{account::ProviderAccountId, routing::ProviderKind};
 use gateway_plugin_sdk::{CallContext, PluginFault, Stage, call::data};
 
-use super::{
-    accounts::{PluginAccountPortSlot, map_admin_error},
-    denied, invalid,
-};
+use super::{accounts::PluginAccountPortSlot, admin::map_admin_error, denied, invalid};
 use crate::RpcReply;
 
 pub(super) struct PluginData {

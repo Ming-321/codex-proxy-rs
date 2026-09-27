@@ -711,11 +711,11 @@ impl ClientKeyStore for PgAdminClientKeyStore {
     async fn reset_client_key_budget(
         &self,
         command: ResetClientKeyBudget,
+        origin: gateway_admin::model::client_keys::ClientKeyBudgetResetOrigin,
         context: &MutationContext,
     ) -> AdminStoreResult<()> {
-        super::client_budgets::reset_client_key_budget(&self.keys.pool, command, context)
+        super::client_budgets::reset_client_key_budget(&self.keys.pool, command, origin, context)
             .await
-            .map_err(|error| admin_store_error(ENTITY, error))
     }
 
     async fn get_client_key(

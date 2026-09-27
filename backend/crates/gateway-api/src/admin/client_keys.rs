@@ -977,6 +977,7 @@ where
         .reset_budget(
             &auth.context().mutation_context(),
             payload.into_command().map_err(map_wire_error)?,
+            gateway_admin::model::client_keys::ClientKeyBudgetResetOrigin::Admin,
         )
         .await
         .map_err(map_service_error)?;

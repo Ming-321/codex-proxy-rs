@@ -96,7 +96,8 @@ fn assert_exhaustive_permission(permission: Permission) {
         | Permission::Data
         | Permission::PublicEndpoints
         | Permission::Groups
-        | Permission::Keys => {}
+        | Permission::Keys
+        | Permission::KeyBudgets => {}
     }
 }
 

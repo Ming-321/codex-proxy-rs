@@ -228,9 +228,18 @@ fn callback_allowed(method: &str, stage: Stage, permissions: &[Permission]) -> b
                 | "host.groups.ensure"
                 | "host.groups.change_members"
                 | "host.keys.ensure"
+                | "host.keys.list"
+                | "host.keys.reset_budget"
         )
     {
         return false;
+    }
+    if method == "host.keys.list" {
+        return (stage != Stage::Maintenance && permissions.contains(&Permission::Models))
+            || (matches!(
+                stage,
+                Stage::Management | Stage::CommandLine | Stage::Maintenance
+            ) && permissions.contains(&Permission::KeyBudgets));
     }
     let permission = match method {
         "host.http.do"
@@ -241,8 +250,7 @@ fn callback_allowed(method: &str, stage: Stage, permissions: &[Permission]) -> b
         | "host.model.execute_stream"
         | "host.model.stream_read"
         | "host.model.stream_close"
-        | "host.models.list"
-        | "host.keys.list" => Permission::Models,
+        | "host.models.list" => Permission::Models,
         "host.auth.list" | "host.auth.get_runtime" | "host.auth.get" | "host.auth.save" => {
             Permission::Accounts
         }
@@ -270,6 +278,14 @@ fn callback_allowed(method: &str, stage: Stage, permissions: &[Permission]) -> b
             ) =>
         {
             Permission::Keys
+        }
+        "host.keys.reset_budget"
+            if matches!(
+                stage,
+                Stage::Management | Stage::CommandLine | Stage::Maintenance
+            ) =>
+        {
+            Permission::KeyBudgets
         }
         _ => return false,
     };

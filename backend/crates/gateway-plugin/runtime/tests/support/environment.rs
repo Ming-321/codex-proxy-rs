@@ -52,6 +52,25 @@ impl Environment {
             .await;
     }
 
+    pub async fn seed_client_key_budget(&self, id: &str) {
+        sqlx::query(sqlx::AssertSqlSafe(format!(
+            "update {}.client_api_keys set daily_limit_usd=10, weekly_limit_usd=20 where id=$1",
+            self.schema
+        )))
+        .bind(id)
+        .execute(&self.admin)
+        .await
+        .unwrap();
+        sqlx::query(sqlx::AssertSqlSafe(format!(
+            "insert into {}.client_key_budget_windows
+             (client_api_key_id, daily_start, daily_end, daily_used_usd, weekly_start, weekly_end, weekly_used_usd)
+             values ($1, now(), now()+interval '1 day', 3, now(), now()+interval '7 days', 4)",
+            self.schema
+        )))
+        .bind(id)
+        .execute(&self.admin).await.unwrap();
+    }
+
     pub async fn client_key_with_limits(
         &self,
         id: &str,

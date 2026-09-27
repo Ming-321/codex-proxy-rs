@@ -13,10 +13,10 @@ use crate::{
     model::{
         AdminError, MutationContext,
         client_keys::{
-            ClientKeyCursorValue, ClientKeyListQuery, ClientKeyMutation, ClientKeyPage,
-            ClientKeySecret, ClientKeySortField, CreateClientKey, CreatedClientKey,
-            DeleteClientKey, NewClientKey, ResetClientKeyBudget, SetClientKeyEnabled,
-            UpdateClientKey,
+            ClientKeyBudgetResetOrigin, ClientKeyCursorValue, ClientKeyListQuery,
+            ClientKeyMutation, ClientKeyPage, ClientKeySecret, ClientKeySortField, CreateClientKey,
+            CreatedClientKey, DeleteClientKey, NewClientKey, ResetClientKeyBudget,
+            SetClientKeyEnabled, UpdateClientKey,
         },
     },
     ports::store::{AdminStoreError, AdminStoreErrorKind, ClientKeyStore},
@@ -53,6 +53,7 @@ pub trait ClientKeyService: Send + Sync {
         &self,
         context: &MutationContext,
         command: ResetClientKeyBudget,
+        origin: ClientKeyBudgetResetOrigin,
     ) -> Result<ClientApiKeyId, AdminError>;
 }
 
@@ -83,10 +84,11 @@ impl ClientKeyService for DefaultClientKeyService {
         &self,
         context: &MutationContext,
         command: ResetClientKeyBudget,
+        origin: ClientKeyBudgetResetOrigin,
     ) -> Result<ClientApiKeyId, AdminError> {
         let id = command.id.clone();
         self.store
-            .reset_client_key_budget(command, context)
+            .reset_client_key_budget(command, origin, context)
             .await
             .map_err(|error| map_store_error(error, "client API key"))?;
         Ok(id)

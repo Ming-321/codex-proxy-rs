@@ -296,6 +296,7 @@ async fn managed_resources_require_their_domains_and_control_plane_stages() {
         ("host.groups.ensure", Permission::Groups),
         ("host.groups.change_members", Permission::Groups),
         ("host.keys.ensure", Permission::Keys),
+        ("host.keys.reset_budget", Permission::KeyBudgets),
     ] {
         for granted in [false, true] {
             let callbacks = Arc::new(Callbacks::default());
@@ -338,6 +339,8 @@ async fn maintenance_has_data_and_state_access_but_cannot_execute_models_or_read
     for method in [
         "host.data.accounts.list",
         "host.data.quota.get",
+        "host.keys.list",
+        "host.keys.reset_budget",
         "host.state.put",
         "host.log",
     ] {
@@ -352,9 +355,74 @@ async fn maintenance_has_data_and_state_access_but_cannot_execute_models_or_read
         "host.auth.save",
         "host.http.do",
         "host.model.execute",
-        "host.keys.list",
     ] {
         assert_permission_denied(invoke_callback(&session, Stage::Maintenance, method).await);
     }
     session.shutdown(Duration::from_secs(1)).await;
+}
+
+#[tokio::test]
+async fn budget_access_does_not_grant_models_or_key_provisioning_and_models_do_not_grant_reset() {
+    for permission in [Permission::KeyBudgets, Permission::Models, Permission::Keys] {
+        let callbacks = Arc::new(Callbacks::default());
+        let (_cache, session) = session_with_permissions(callbacks, vec![permission]).await;
+        for stage in [
+            Stage::Management,
+            Stage::CommandLine,
+            Stage::Maintenance,
+            Stage::Request,
+            Stage::Attempt,
+            Stage::Observation,
+            Stage::Routing,
+            Stage::Scheduling,
+            Stage::Authentication,
+            Stage::Retry,
+            Stage::Registration,
+            Stage::Configuration,
+            Stage::PublicManagement,
+        ] {
+            let reply = invoke_callback(&session, stage, "host.keys.list").await;
+            let allowed = match permission {
+                Permission::KeyBudgets => matches!(
+                    stage,
+                    Stage::Management | Stage::CommandLine | Stage::Maintenance
+                ),
+                Permission::Models => matches!(
+                    stage,
+                    Stage::Management
+                        | Stage::CommandLine
+                        | Stage::Request
+                        | Stage::Attempt
+                        | Stage::Observation
+                        | Stage::Routing
+                        | Stage::Scheduling
+                        | Stage::Authentication
+                ),
+                _ => false,
+            };
+            if allowed {
+                assert!(reply.is_ok());
+            } else {
+                assert_permission_denied(reply);
+            }
+            if permission != Permission::KeyBudgets {
+                assert_permission_denied(
+                    invoke_callback(&session, stage, "host.keys.reset_budget").await,
+                );
+            }
+        }
+        if permission == Permission::KeyBudgets {
+            for method in [
+                "host.model.execute",
+                "host.models.list",
+                "host.keys.ensure",
+                "host.auth.get",
+            ] {
+                assert_permission_denied(
+                    invoke_callback(&session, Stage::Management, method).await,
+                );
+            }
+        }
+        session.shutdown(Duration::from_secs(1)).await;
+    }
 }

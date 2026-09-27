@@ -1,12 +1,23 @@
-use std::time::SystemTime;
+use std::{collections::BTreeMap, time::SystemTime};
 
 use chrono::{DateTime, Utc};
 use gateway_admin::{
     model::{
-        MutationActor, MutationContext,
-        client_keys::{ClientKeyBudgetPeriod, ResetClientKeyBudget, UpdateClientKey},
+        MutationActor, MutationContext, Revision,
+        client_keys::{
+            ClientKeyBudgetPeriod, ClientKeyBudgetResetOrigin, ResetClientKeyBudget,
+            UpdateClientKey,
+        },
+        plugin_resources::PluginResourceOwner,
+        plugins::{
+            PluginSource,
+            instances::{PluginInstance, PluginPermissionGrant},
+        },
     },
-    ports::store::ClientKeyStore as _,
+    ports::{
+        plugins::PluginStore as _,
+        store::{AdminStoreErrorKind, ClientKeyStore as _},
+    },
 };
 use gateway_core::{
     engine::{
@@ -18,7 +29,7 @@ use gateway_core::{
 };
 use gateway_store::postgres::{
     ClientApiKeyRepository as _, PgAdminClientKeyStore, PgClientApiKeyRepository,
-    PgClientBudgetStore,
+    PgClientBudgetStore, PgPluginStore,
 };
 
 use super::TestDatabase;
@@ -95,6 +106,7 @@ async fn manual_reset_clears_only_selected_budget_and_preserves_policy_history_a
                     id: key_id(key),
                     period,
                 },
+                ClientKeyBudgetResetOrigin::Admin,
                 &context(),
             )
             .await
@@ -143,6 +155,7 @@ async fn manual_reset_excludes_old_completions_but_counts_inflight_requests_afte
                 id: key_id("key"),
                 period: ClientKeyBudgetPeriod::Daily
             },
+            ClientKeyBudgetResetOrigin::Admin,
             &reset_context
         ),
         store.settle(delayed),
@@ -183,6 +196,7 @@ async fn manual_reset_leaves_unused_and_expired_windows_inactive_and_reports_mis
                     id: key_id(key),
                     period: ClientKeyBudgetPeriod::All,
                 },
+                ClientKeyBudgetResetOrigin::Admin,
                 &context(),
             )
             .await
@@ -203,6 +217,7 @@ async fn manual_reset_leaves_unused_and_expired_windows_inactive_and_reports_mis
                 id: key_id("missing"),
                 period: ClientKeyBudgetPeriod::All,
             },
+            ClientKeyBudgetResetOrigin::Admin,
             &context(),
         )
         .await
@@ -240,6 +255,7 @@ async fn manual_reset_rolls_back_when_audit_cannot_be_written() {
                     id: key_id("key"),
                     period: ClientKeyBudgetPeriod::All
                 },
+                ClientKeyBudgetResetOrigin::Admin,
                 &context()
             )
             .await
@@ -560,5 +576,252 @@ async fn budget_database_outage_fails_closed() {
         Some("key_budget_unavailable")
     );
     assert!(store.settle(charge("key", "offline", "1")).await.is_err());
+    database.close().await;
+}
+
+async fn plugin_reset_owner(database: &TestDatabase) -> PluginResourceOwner {
+    super::plugins::artifacts::initialize_revision(database).await;
+    let store = PgPluginStore::new(database.pool.clone());
+    let mut package = super::plugins::artifacts::artifact('b', &["linux-x86_64"]);
+    package.metadata.requested_permissions = vec!["key_budgets".into()];
+    let installed = store
+        .install_artifact(package, PluginSource::Upload, &context())
+        .await
+        .unwrap();
+    let accepted = store
+        .accept_artifact(&installed.artifact.metadata.sha256, &context())
+        .await
+        .unwrap();
+    let instance = store
+        .save_instance(
+            PluginInstance {
+                id: uuid::Uuid::now_v7().to_string(),
+                name: "budget reset".into(),
+                artifact_sha256: installed.artifact.metadata.sha256,
+                enabled: true,
+                trusted_process: true,
+                configuration: serde_json::json!({}),
+                secrets: BTreeMap::new(),
+                grants: vec![PluginPermissionGrant {
+                    permission: "key_budgets".into(),
+                }],
+                bindings: vec![],
+                revision: Revision::new(1).unwrap(),
+            },
+            accepted.config_revision,
+            &context(),
+        )
+        .await
+        .unwrap()
+        .instance;
+    PluginResourceOwner {
+        instance_id: instance.id,
+        artifact_sha256: instance.artifact_sha256,
+        revision: instance.revision,
+    }
+}
+
+#[tokio::test]
+async fn plugin_resets_share_the_native_ledger_and_each_call_resets_again() {
+    let Some(database) = TestDatabase::create("plugin_budget_reset").await else {
+        return;
+    };
+    let owner = plugin_reset_owner(&database).await;
+    seed(&database, "key", "10", "20").await;
+    let budgets = PgClientBudgetStore::new(database.pool.clone());
+    budgets.settle(charge("key", "before", "3")).await.unwrap();
+    let before = status(&database, "key").await;
+    let revision: i64 =
+        sqlx::query_scalar("select config_revision from runtime_settings where id=1")
+            .fetch_one(&database.pool)
+            .await
+            .unwrap();
+    let store = PgAdminClientKeyStore::new(database.pool.clone());
+    let command = ResetClientKeyBudget {
+        id: key_id("key"),
+        period: ClientKeyBudgetPeriod::Weekly,
+    };
+    store
+        .reset_client_key_budget(
+            command.clone(),
+            ClientKeyBudgetResetOrigin::Plugin(owner.clone()),
+            &context(),
+        )
+        .await
+        .unwrap();
+    let after = status(&database, "key").await;
+    assert_eq!(after.daily_used_usd.canonical(), "3");
+    assert_eq!(after.weekly_used_usd.canonical(), "0");
+    assert_eq!(after.limits, before.limits);
+    assert_eq!(after.daily_resets_at, before.daily_resets_at);
+    assert_eq!(after.weekly_resets_at, before.weekly_resets_at);
+
+    budgets.settle(charge("key", "after", "2")).await.unwrap();
+    assert_eq!(
+        status(&database, "key").await.weekly_used_usd.canonical(),
+        "2"
+    );
+    store
+        .reset_client_key_budget(
+            command,
+            ClientKeyBudgetResetOrigin::Plugin(owner),
+            &context(),
+        )
+        .await
+        .unwrap();
+    let after = status(&database, "key").await;
+    assert_eq!(after.daily_used_usd.canonical(), "5");
+    assert_eq!(after.weekly_used_usd.canonical(), "0");
+    let (audits, charges, current_revision): (i64, i64, i64) = sqlx::query_as(
+        "select (select count(*) from admin_audit_events where action='reset_budget' and config_revision is null),
+                (select count(*) from client_key_charge_events),
+                (select config_revision from runtime_settings where id=1)"
+    ).fetch_one(&database.pool).await.unwrap();
+    assert_eq!((audits, charges, current_revision), (2, 2, revision));
+    database.close().await;
+}
+
+#[tokio::test]
+async fn plugin_reset_revalidates_current_authorization_without_changing_the_ledger() {
+    let Some(database) = TestDatabase::create("plugin_budget_authorization").await else {
+        return;
+    };
+    let owner = plugin_reset_owner(&database).await;
+    seed(&database, "key", "10", "20").await;
+    PgClientBudgetStore::new(database.pool.clone())
+        .settle(charge("key", "before", "4"))
+        .await
+        .unwrap();
+    let before = status(&database, "key").await;
+    let store = PgAdminClientKeyStore::new(database.pool.clone());
+    for sql in [
+        "update plugin_instances set revision=revision+1",
+        "update plugin_instances set revision=revision-1, enabled=false",
+        "update plugin_instances set enabled=true; update plugin_artifacts set accepted_at=null",
+        "update plugin_artifacts set accepted_at=now(), metadata_json=jsonb_set(metadata_json,'{requestedPermissions}','[]'::jsonb)",
+    ] {
+        sqlx::raw_sql(sql).execute(&database.pool).await.unwrap();
+        assert_eq!(
+            store
+                .reset_client_key_budget(
+                    ResetClientKeyBudget {
+                        id: key_id("key"),
+                        period: ClientKeyBudgetPeriod::All
+                    },
+                    ClientKeyBudgetResetOrigin::Plugin(owner.clone()),
+                    &context()
+                )
+                .await
+                .unwrap_err()
+                .kind(),
+            AdminStoreErrorKind::Conflict
+        );
+        assert_eq!(status(&database, "key").await, before);
+    }
+    sqlx::query("update plugin_artifacts set metadata_json=jsonb_set(metadata_json,'{requestedPermissions}','[\"key_budgets\"]'::jsonb)")
+        .execute(&database.pool).await.unwrap();
+    let wrong_artifact = PluginResourceOwner {
+        artifact_sha256: "c".repeat(64),
+        ..owner.clone()
+    };
+    assert_eq!(
+        store
+            .reset_client_key_budget(
+                ResetClientKeyBudget {
+                    id: key_id("key"),
+                    period: ClientKeyBudgetPeriod::All
+                },
+                ClientKeyBudgetResetOrigin::Plugin(wrong_artifact),
+                &context()
+            )
+            .await
+            .unwrap_err()
+            .kind(),
+        AdminStoreErrorKind::Conflict
+    );
+    assert_eq!(status(&database, "key").await, before);
+    assert_eq!(
+        store
+            .reset_client_key_budget(
+                ResetClientKeyBudget {
+                    id: key_id("missing"),
+                    period: ClientKeyBudgetPeriod::All
+                },
+                ClientKeyBudgetResetOrigin::Plugin(owner.clone()),
+                &context()
+            )
+            .await
+            .unwrap_err()
+            .kind(),
+        AdminStoreErrorKind::NotFound
+    );
+    // 验证拒绝后的事务和锁已释放，当前身份仍可正常执行。
+    store
+        .reset_client_key_budget(
+            ResetClientKeyBudget {
+                id: key_id("key"),
+                period: ClientKeyBudgetPeriod::All,
+            },
+            ClientKeyBudgetResetOrigin::Plugin(owner),
+            &context(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(
+        status(&database, "key").await.daily_used_usd.canonical(),
+        "0"
+    );
+    database.close().await;
+}
+
+#[tokio::test]
+async fn plugin_reset_rolls_back_with_audit_and_serializes_with_late_settlement() {
+    let Some(database) = TestDatabase::create("plugin_budget_atomicity").await else {
+        return;
+    };
+    let owner = plugin_reset_owner(&database).await;
+    seed(&database, "key", "10", "20").await;
+    let budgets = PgClientBudgetStore::new(database.pool.clone());
+    budgets.settle(charge("key", "before", "4")).await.unwrap();
+    let before = status(&database, "key").await;
+    let store = PgAdminClientKeyStore::new(database.pool.clone());
+    let command = ResetClientKeyBudget {
+        id: key_id("key"),
+        period: ClientKeyBudgetPeriod::Weekly,
+    };
+    sqlx::raw_sql("create function reject_budget_audit() returns trigger language plpgsql as $$ begin raise exception 'test rollback'; end $$;
+        create trigger reject_budget_audit before insert on admin_audit_events for each row execute function reject_budget_audit()")
+        .execute(&database.pool).await.unwrap();
+    assert!(
+        store
+            .reset_client_key_budget(
+                command.clone(),
+                ClientKeyBudgetResetOrigin::Plugin(owner.clone()),
+                &context()
+            )
+            .await
+            .is_err()
+    );
+    assert_eq!(status(&database, "key").await, before);
+    sqlx::query("drop trigger reject_budget_audit on admin_audit_events")
+        .execute(&database.pool)
+        .await
+        .unwrap();
+    let mutation = context();
+    // 完成时间在重置前，无论谁先拿到行锁，周用量都不能被迟到结算重新扣回。
+    let delayed = charge("key", "delayed", "1");
+    let (reset, settlement) = tokio::join!(
+        store.reset_client_key_budget(
+            command,
+            ClientKeyBudgetResetOrigin::Plugin(owner),
+            &mutation
+        ),
+        budgets.settle(delayed),
+    );
+    reset.unwrap();
+    settlement.unwrap();
+    let after = status(&database, "key").await;
+    assert_eq!(after.daily_used_usd.canonical(), "5");
+    assert_eq!(after.weekly_used_usd.canonical(), "0");
     database.close().await;
 }

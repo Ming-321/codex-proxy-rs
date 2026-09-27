@@ -62,42 +62,6 @@ fn validate_resource_key(key: &str) -> AdminStoreResult<()> {
     Ok(())
 }
 
-impl PgPluginStore {
-    async fn resource_transaction(
-        &self,
-        owner: &PluginResourceOwner,
-        permission: &str,
-    ) -> AdminStoreResult<Transaction<'_, Postgres>> {
-        let mut tx = self.pool.begin().await.map_err(|_| unavailable())?;
-        // 与全部管理写入保持相同锁顺序；无变化的对账只锁定，不递增 revision。
-        sqlx::query("select config_revision from runtime_settings where id=1 for update")
-            .execute(&mut *tx)
-            .await
-            .map_err(|_| unavailable())?;
-        let id = uuid::Uuid::parse_str(&owner.instance_id).map_err(|_| denied())?;
-        let revision = i64::try_from(owner.revision.get()).map_err(|_| denied())?;
-        let allowed: bool = sqlx::query_scalar(
-            "select exists(
-                select 1 from plugin_instances i
-                join plugin_artifacts a on a.sha256=i.artifact_sha256
-                where i.id=$1 and i.enabled and i.revision=$2 and i.artifact_sha256=$3
-                  and a.accepted_at is not null and a.metadata_json->'requestedPermissions' ? $4
-            )",
-        )
-        .bind(id)
-        .bind(revision)
-        .bind(&owner.artifact_sha256)
-        .bind(permission)
-        .fetch_one(&mut *tx)
-        .await
-        .map_err(|_| unavailable())?;
-        if !allowed {
-            return Err(denied());
-        }
-        Ok(tx)
-    }
-}
-
 async fn finish<T>(
     mut tx: Transaction<'_, Postgres>,
     context: &MutationContext,
@@ -146,7 +110,7 @@ impl PluginResourceStore for PgPluginStore {
         context: &MutationContext,
     ) -> AdminStoreResult<ResourceMutation<ManagedResource>> {
         validate_resource_key(&resource_key)?;
-        let mut tx = self.resource_transaction(owner, "groups").await?;
+        let mut tx = super::begin_authorized_mutation(&self.pool, owner, "groups").await?;
         let instance = uuid::Uuid::parse_str(&owner.instance_id).map_err(|_| denied())?;
         if let Some(row) = sqlx::query(
             "select g.id,g.name,g.enabled from plugin_group_resources r
@@ -204,7 +168,7 @@ impl PluginResourceStore for PgPluginStore {
         for group in &groups {
             validate_resource_key(group)?;
         }
-        let mut tx = self.resource_transaction(owner, "keys").await?;
+        let mut tx = super::begin_authorized_mutation(&self.pool, owner, "keys").await?;
         let instance = uuid::Uuid::parse_str(&owner.instance_id).map_err(|_| denied())?;
         if let Some(row) = sqlx::query(
             "select k.id,k.name,k.enabled from plugin_key_resources r
@@ -274,7 +238,7 @@ impl PluginResourceStore for PgPluginStore {
         {
             return Err(invalid());
         }
-        let mut tx = self.resource_transaction(owner, "groups").await?;
+        let mut tx = super::begin_authorized_mutation(&self.pool, owner, "groups").await?;
         let instance = uuid::Uuid::parse_str(&owner.instance_id).map_err(|_| denied())?;
         let group: String = sqlx::query_scalar(
             "select group_id from plugin_group_resources where instance_id=$1 and resource_key=$2",

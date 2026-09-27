@@ -1,5 +1,5 @@
 use super::{
-    accounts::{encode, map_admin_error, mutation_context},
+    admin::{encode, map_admin_error, mutation_context},
     denied, invalid,
 };
 use crate::RpcReply;

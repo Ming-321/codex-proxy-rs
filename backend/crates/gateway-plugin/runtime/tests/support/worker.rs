@@ -81,6 +81,43 @@ struct Peer {
 }
 
 impl Peer {
+    async fn data_queries(&self, id: u64) -> Option<Vec<Value>> {
+        let queries = self.configuration["data_queries"].as_array()?;
+        let mut results = Vec::new();
+        for query in queries {
+            let metadata_query = query["method"] == "host.keys.list";
+            let result = self
+                .callback_payload(
+                    id,
+                    query["method"].as_str().unwrap(),
+                    if metadata_query {
+                        query["query"].clone()
+                    } else {
+                        json!({})
+                    },
+                    if metadata_query {
+                        vec![]
+                    } else {
+                        serde_json::to_vec(&query["query"]).unwrap()
+                    },
+                )
+                .await;
+            results.push(match result {
+                Ok((metadata, payload)) => {
+                    if metadata_query {
+                        assert!(payload.is_empty());
+                        metadata
+                    } else {
+                        assert_eq!(metadata, json!({}));
+                        serde_json::from_slice::<Value>(&payload).unwrap()
+                    }
+                }
+                Err(error) => json!({"error":error.code}),
+            });
+        }
+        Some(results)
+    }
+
     async fn resource_fixture(
         &self,
         id: u64,
@@ -360,7 +397,15 @@ impl Peer {
         }
         match method.as_str() {
             "plugin.reconcile" => {
-                let result = self.reconcile_fixture(id).await;
+                let result = if let Some(results) = self.data_queries(id).await {
+                    self.append_observation_marker(
+                        "maintenance_marker",
+                        &json!({"phase":"done", "results":results}),
+                    );
+                    Ok(())
+                } else {
+                    self.reconcile_fixture(id).await
+                };
                 match result {
                     Ok(()) => {
                         self.send(
@@ -470,25 +515,7 @@ impl Peer {
                     "management_marker",
                     &json!({"method":request.method,"path":request.path}),
                 );
-                if let Some(queries) = self.configuration["data_queries"].as_array() {
-                    let mut results = vec![];
-                    for query in queries {
-                        let result = self
-                            .callback_payload(
-                                id,
-                                query["method"].as_str().unwrap(),
-                                json!({}),
-                                serde_json::to_vec(&query["query"]).unwrap(),
-                            )
-                            .await;
-                        results.push(match result {
-                            Ok((metadata, payload)) => {
-                                assert_eq!(metadata, json!({}));
-                                serde_json::from_slice::<Value>(&payload).unwrap()
-                            }
-                            Err(error) => json!({"error":error.code}),
-                        });
-                    }
+                if let Some(results) = self.data_queries(id).await {
                     self.send(
                         Message::Result {
                             id,
@@ -608,7 +635,9 @@ impl Peer {
                     .await;
                     return;
                 }
-                let result = if self.configuration["command_echo"] == true {
+                let result = if let Some(results) = self.data_queries(id).await {
+                    json!({"stdout":serde_json::to_string(&results).unwrap(),"stderr":"","exit_code":0})
+                } else if self.configuration["command_echo"] == true {
                     json!({"stdout":serde_json::to_string(&invocation).unwrap(),"stderr":"typed command\n","exit_code":0})
                 } else {
                     self.configuration["command_result"].clone()

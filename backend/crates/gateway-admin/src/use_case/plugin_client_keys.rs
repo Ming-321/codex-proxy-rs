@@ -1,19 +1,22 @@
-//! 插件 Client Key 目录；复用管理服务并收窄为非秘密投影。
+//! 插件 Client Key 管理；复用管理服务，只开放非秘密目录与预算重置。
 
 use std::sync::Arc;
 
 use async_trait::async_trait;
+use gateway_core::policy::ClientApiKeyId;
 
 use crate::{
     model::{
-        AdminError,
+        AdminError, MutationContext,
         client_keys::{
-            ClientKeyCursor, ClientKeyCursorValue, ClientKeyListQuery, ClientKeyPageSize,
-            ClientKeySort, ClientKeySortField, SortDirection,
+            ClientKeyBudgetResetOrigin, ClientKeyCursor, ClientKeyCursorValue, ClientKeyListQuery,
+            ClientKeyPageSize, ClientKeySort, ClientKeySortField, ResetClientKeyBudget,
+            SortDirection,
         },
         plugin_client_keys::{
             PluginClientKey, PluginClientKeyCursor, PluginClientKeyListQuery, PluginClientKeyPage,
         },
+        plugin_resources::PluginResourceOwner,
     },
     ports::plugin_client_keys::PluginClientKeyAccess,
     use_case::client_keys::ClientKeyService,
@@ -31,6 +34,21 @@ impl DefaultPluginClientKeyAccess {
 
 #[async_trait]
 impl PluginClientKeyAccess for DefaultPluginClientKeyAccess {
+    async fn reset_budget(
+        &self,
+        owner: &PluginResourceOwner,
+        command: ResetClientKeyBudget,
+        context: &MutationContext,
+    ) -> Result<ClientApiKeyId, AdminError> {
+        self.service
+            .reset_budget(
+                context,
+                command,
+                ClientKeyBudgetResetOrigin::Plugin(owner.clone()),
+            )
+            .await
+    }
+
     async fn list(
         &self,
         query: PluginClientKeyListQuery,

@@ -1,4 +1,5 @@
 mod accounts;
+mod admin;
 mod affinity;
 mod data;
 mod http;
@@ -70,8 +71,7 @@ pub(crate) struct PluginCallbacks {
     accounts: Arc<accounts::PluginAccounts>,
     resources: Arc<resources::PluginResources>,
     data: Arc<data::PluginData>,
-    keys: Arc<PluginClientKeyPortSlot>,
-    models_authorized: bool,
+    keys: Arc<keys::PluginClientKeys>,
     affinity: Arc<affinity::PluginAffinity>,
     log: Arc<log::PluginLog>,
     models: Arc<model::PluginModels>,
@@ -135,8 +135,7 @@ impl PluginCallbacks {
             resources: Arc::new(resources::PluginResources::new(instance, ports.resources)),
             data: Arc::new(data::PluginData::new(ports.accounts.clone(), grants)),
             accounts: Arc::new(accounts::PluginAccounts::new(ports.accounts, grants)),
-            keys: ports.keys,
-            models_authorized: grants.iter().any(|grant| grant.permission == "models"),
+            keys: Arc::new(keys::PluginClientKeys::new(instance, ports.keys)),
             affinity: Arc::new(affinity::PluginAffinity::new(ports.affinity, grants)),
             log: Arc::new(
                 log::PluginLog::new(manifest, log_slots)
@@ -385,7 +384,6 @@ impl CallbackHandler for PluginCallbacks {
         let resources = self.resources.clone();
         let data = self.data.clone();
         let keys = self.keys.clone();
-        let models_authorized = self.models_authorized;
         let models = self.models.clone();
         let affinity = self.affinity.clone();
         Box::pin(async move {
@@ -434,11 +432,11 @@ impl CallbackHandler for PluginCallbacks {
             ) {
                 return resources.call(&context, &method, params, &payload).await;
             }
-            if method == "host.keys.list" {
-                if !models_authorized {
-                    return Err(denied());
-                }
-                return keys.list(params, &payload).await;
+            if matches!(
+                method.as_str(),
+                "host.keys.list" | gateway_plugin_sdk::call::key_budgets::RESET
+            ) {
+                return keys.call(&context, &method, params, &payload).await;
             }
             if method == "host.models.list" {
                 return models.call(&context, &call, &method, params, payload).await;

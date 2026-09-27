@@ -6,8 +6,9 @@ use chrono::{DateTime, Utc};
 use futures::future::BoxFuture;
 use gateway_admin::model::{
     MutationContext,
-    client_keys::{ClientKeyBudgetPeriod, ResetClientKeyBudget},
+    client_keys::{ClientKeyBudgetPeriod, ClientKeyBudgetResetOrigin, ResetClientKeyBudget},
 };
+use gateway_admin::ports::store::AdminStoreResult;
 use gateway_core::{
     engine::budget::{
         ClientBudgetCharge, ClientBudgetError, ClientBudgetLimits, ClientBudgetPort,
@@ -24,17 +25,41 @@ use crate::{StoreError, StoreResult, mutation_audit, postgres_unavailable};
 pub(super) async fn reset_client_key_budget(
     pool: &PgPool,
     command: ResetClientKeyBudget,
+    origin: ClientKeyBudgetResetOrigin,
+    context: &MutationContext,
+) -> AdminStoreResult<()> {
+    let mut tx = match &origin {
+        ClientKeyBudgetResetOrigin::Admin => pool.begin().await.map_err(|_| {
+            crate::admin_store_error(
+                "client API key budget",
+                postgres_unavailable("begin budget reset"),
+            )
+        })?,
+        ClientKeyBudgetResetOrigin::Plugin(owner) => {
+            super::plugins::begin_authorized_mutation(pool, owner, "key_budgets").await?
+        }
+    };
+    reset_client_key_budget_in_transaction(&mut tx, &command, context)
+        .await
+        .map_err(|error| crate::admin_store_error("client API key budget", error))?;
+    tx.commit().await.map_err(|_| {
+        crate::admin_store_error(
+            "client API key budget",
+            postgres_unavailable("commit budget reset"),
+        )
+    })
+}
+
+async fn reset_client_key_budget_in_transaction(
+    tx: &mut Transaction<'_, Postgres>,
+    command: &ResetClientKeyBudget,
     context: &MutationContext,
 ) -> StoreResult<()> {
-    let mut tx = pool
-        .begin()
-        .await
-        .map_err(|_| postgres_unavailable("begin budget reset"))?;
     // 与准入、结算共用 Key 行锁，重置边界必须在取得锁之后确定。
     let exists =
         sqlx::query_scalar::<_, String>("select id from client_api_keys where id = $1 for update")
             .bind(command.id.as_str())
-            .fetch_optional(&mut *tx)
+            .fetch_optional(&mut **tx)
             .await
             .map_err(|_| postgres_unavailable("lock budget reset key"))?;
     if exists.is_none() {
@@ -65,7 +90,7 @@ pub(super) async fn reset_client_key_budget(
     .bind(daily)
     .bind(weekly)
     .bind(reset_at)
-    .execute(&mut *tx)
+    .execute(&mut **tx)
     .await
     .map_err(|_| postgres_unavailable("reset client budget"))?;
     let mut fields = Vec::new();
@@ -76,7 +101,7 @@ pub(super) async fn reset_client_key_budget(
         fields.extend(["weekly_used_usd".to_owned(), "weekly_start".to_owned()]);
     }
     super::append_admin_audit_event_in_transaction(
-        &mut tx,
+        tx,
         mutation_audit(
             context,
             "reset_budget",
@@ -87,9 +112,7 @@ pub(super) async fn reset_client_key_budget(
         None,
     )
     .await?;
-    tx.commit()
-        .await
-        .map_err(|_| postgres_unavailable("commit budget reset"))
+    Ok(())
 }
 
 pub struct PgClientBudgetStore {

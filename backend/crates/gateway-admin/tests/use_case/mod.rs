@@ -647,6 +647,7 @@ impl ClientKeyStore for UnavailableStore {
     async fn reset_client_key_budget(
         &self,
         _: gateway_admin::model::client_keys::ResetClientKeyBudget,
+        _: gateway_admin::model::client_keys::ClientKeyBudgetResetOrigin,
         _: &MutationContext,
     ) -> AdminStoreResult<()> {
         Err(unavailable("client key budget reset"))

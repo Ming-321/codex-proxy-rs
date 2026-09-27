@@ -866,6 +866,7 @@ impl ClientKeyStore for MemoryClientKeyStore {
     async fn reset_client_key_budget(
         &self,
         command: gateway_admin::model::client_keys::ResetClientKeyBudget,
+        _: gateway_admin::model::client_keys::ClientKeyBudgetResetOrigin,
         _: &MutationContext,
     ) -> AdminStoreResult<()> {
         use gateway_admin::model::client_keys::ClientKeyBudgetPeriod;

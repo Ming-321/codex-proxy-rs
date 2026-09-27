@@ -1,4 +1,4 @@
-//! Key 目录只传递非秘密身份，模型规则仍由 Core 在执行时复核。
+//! Key 目录与预算回调；实例身份由宿主冻结，写入授权在存储事务复验。
 
 use std::sync::{Arc, OnceLock, Weak};
 
@@ -6,18 +6,82 @@ use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD};
 use gateway_admin::{
     model::{
         AdminError, PageSize,
+        client_keys::{ClientKeyBudgetPeriod, ResetClientKeyBudget},
         plugin_client_keys::{PluginClientKeyCursor, PluginClientKeyListQuery},
+        plugin_resources::PluginResourceOwner,
+        plugins::instances::PluginInstance,
     },
     ports::plugin_client_keys::PluginClientKeyAccess,
 };
 use gateway_core::policy::ClientApiKeyId;
 use gateway_plugin_sdk::{
-    PluginFault,
-    call::host::{ClientKey, KeyListRequest, KeyListResult},
+    CallContext, PluginFault,
+    call::{
+        host::{ClientKey, KeyListRequest, KeyListResult},
+        key_budgets,
+    },
 };
 
-use super::{denied, invalid};
+use super::{
+    admin::{encode, map_admin_error, mutation_context},
+    denied, invalid,
+};
 use crate::RpcReply;
+
+pub(super) struct PluginClientKeys {
+    owner: PluginResourceOwner,
+    ports: Arc<PluginClientKeyPortSlot>,
+}
+
+impl PluginClientKeys {
+    pub(super) fn new(instance: &PluginInstance, ports: Arc<PluginClientKeyPortSlot>) -> Self {
+        Self {
+            owner: PluginResourceOwner {
+                instance_id: instance.id.clone(),
+                artifact_sha256: instance.artifact_sha256.clone(),
+                revision: instance.revision,
+            },
+            ports,
+        }
+    }
+
+    pub(super) async fn call(
+        &self,
+        context: &CallContext,
+        method: &str,
+        params: serde_json::Value,
+        payload: &[u8],
+    ) -> Result<RpcReply, PluginFault> {
+        if method == "host.keys.list" {
+            return self.ports.list(params, payload).await;
+        }
+        if method != key_budgets::RESET {
+            return Err(denied());
+        }
+        if params != serde_json::json!({}) {
+            return Err(invalid());
+        }
+        let request: key_budgets::ResetKeyBudgetRequest =
+            serde_json::from_slice(payload).map_err(|_| invalid())?;
+        let command = ResetClientKeyBudget {
+            id: ClientApiKeyId::new(request.client_key_id).map_err(|_| invalid())?,
+            period: match request.period {
+                key_budgets::BudgetPeriod::Daily => ClientKeyBudgetPeriod::Daily,
+                key_budgets::BudgetPeriod::Weekly => ClientKeyBudgetPeriod::Weekly,
+                key_budgets::BudgetPeriod::All => ClientKeyBudgetPeriod::All,
+            },
+        };
+        let result = self
+            .ports
+            .upgrade()?
+            .reset_budget(&self.owner, command, &mutation_context(context))
+            .await
+            .map_err(map_admin_error)?;
+        encode(&key_budgets::ResetKeyBudgetResult {
+            client_key_id: result.as_str().to_owned(),
+        })
+    }
+}
 
 pub(crate) struct PluginClientKeyPortSlot {
     access: OnceLock<Weak<dyn PluginClientKeyAccess>>,
@@ -33,7 +97,11 @@ impl PluginClientKeyPortSlot {
     pub(crate) fn bind(&self, access: &Arc<dyn PluginClientKeyAccess>) -> Result<(), AdminError> {
         self.access
             .set(Arc::downgrade(access))
-            .map_err(|_| AdminError::conflict("插件 Key 目录端口已经绑定"))
+            .map_err(|_| AdminError::conflict("插件 Client Key 端口已经绑定"))
+    }
+
+    fn upgrade(&self) -> Result<Arc<dyn PluginClientKeyAccess>, PluginFault> {
+        self.access.get().and_then(Weak::upgrade).ok_or_else(denied)
     }
 
     pub(super) async fn list(
@@ -61,15 +129,11 @@ impl PluginClientKeyPortSlot {
                 })
             })
             .transpose()?;
-        let access = self
-            .access
-            .get()
-            .and_then(Weak::upgrade)
-            .ok_or_else(denied)?;
+        let access = self.upgrade()?;
         let page = access
             .list(PluginClientKeyListQuery { cursor, limit })
             .await
-            .map_err(super::accounts::map_admin_error)?;
+            .map_err(map_admin_error)?;
         let next_cursor = page
             .next_cursor
             .map(|cursor| {
