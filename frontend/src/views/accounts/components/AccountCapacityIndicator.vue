@@ -17,7 +17,7 @@ const label = computed(() => `账号并发占用 ${props.capacity.usedSlots ?? '
   <span
     role="img"
     :aria-label="label"
-    class="inline-flex h-3 shrink-0 items-center gap-1 whitespace-nowrap px-1 font-mono text-[9px] leading-none tabular-nums relative top-px"
+    class="inline-flex shrink-0 items-center gap-1 whitespace-nowrap font-mono text-[9px] leading-none tabular-nums relative top-0.75"
     :class="full ? 'text-cp-warning' : 'text-cp-text-tertiary'"
   >
     <Grid2X2 class="size-2.5 shrink-0" :stroke-width="1.8" aria-hidden="true" />

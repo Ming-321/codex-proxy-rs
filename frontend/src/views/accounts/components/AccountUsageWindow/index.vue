@@ -83,6 +83,7 @@ const view = computed(() => resolveAccountUsageWindowPresentation({
         </span>
       </div>
       <div
+        class="col-span-full"
         :class="[view.classes.track, view.classes.trackOffset]"
         role="progressbar"
         :aria-label="window.labelDisplay"
@@ -118,6 +119,7 @@ const view = computed(() => resolveAccountUsageWindowPresentation({
         </strong>
       </div>
       <AccountRequestTimeline
+        class="col-span-full"
         :bars="view.local.requestBars"
         :label="view.local.timelineTitle"
         :show-native-tooltip="showNativeTooltip"

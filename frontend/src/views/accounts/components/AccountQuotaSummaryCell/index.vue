@@ -40,7 +40,7 @@ const additionalEntryCount = computed(() => Math.max(summaryEntries.value.length
         <span class="shrink-0 text-[9px] font-emphasis tracking-[0.02em] text-cp-text-quaternary">Tokens</span>
       </span>
       <div class="grid min-w-0 gap-1.5">
-        <div class="flex min-w-0 items-center justify-between gap-2 leading-3">
+        <div class="flex min-w-0 items-start justify-between gap-2 leading-3">
           <span class="truncate text-[10px] font-bold text-cp-text-quaternary">{{ account.usage.windowLabelDisplay }}</span>
           <AccountCapacityIndicator :capacity="account.capacity" />
         </div>
@@ -64,6 +64,7 @@ const additionalEntryCount = computed(() => Math.max(summaryEntries.value.length
           </span>
         </span>
         <span
+          v-if="currentUsageWindow"
           class="flex shrink-0 items-baseline gap-1 text-[9px] font-emphasis text-cp-text-quaternary"
           title="最近使用额度的当前已用比例"
         >

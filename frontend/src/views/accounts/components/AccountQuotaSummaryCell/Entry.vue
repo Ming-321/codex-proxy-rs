@@ -81,8 +81,7 @@ function quotaWindowCode(windowSeconds: number | null, role: AccountQuotaWindow[
     <template #trigger="{ open }">
       <button
         type="button"
-        class="w-full min-w-0 cursor-pointer rounded-sm border-0 bg-transparent p-0 text-left outline-none focus-visible:ring-2 focus-visible:ring-cp-control-outline"
-        :class="hasQuotaWindow ? 'col-span-full grid grid-cols-subgrid' : 'col-start-1 block'"
+        class="col-span-full grid w-full min-w-0 grid-cols-subgrid cursor-pointer rounded-sm border-0 bg-transparent p-0 text-left outline-none focus-visible:ring-2 focus-visible:ring-cp-control-outline"
         :aria-label="`查看${detailTitle}详情`"
         :aria-expanded="open"
         aria-haspopup="dialog"
@@ -95,9 +94,10 @@ function quotaWindowCode(windowSeconds: number | null, role: AccountQuotaWindow[
         />
         <AccountUsageWindow
           v-else
+          class="col-span-full grid! grid-cols-subgrid"
           :window="windows[0]"
           variant="compact"
-          :show-local-value="true"
+          :show-local-value="false"
           :show-percentage="false"
           :show-native-tooltip="false"
         />
