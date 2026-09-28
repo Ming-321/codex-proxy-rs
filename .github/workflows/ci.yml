@@ -38,14 +38,19 @@ jobs:
         id: filter
         uses: dorny/paths-filter@ceb8a2b8f2d89434be7ff52d3de7ec3738c5cc9d # v4.0.3
         with:
+          # 目录规则取并集，再统一排除说明文档，保留隐藏配置与子模块指针
+          predicate-quantifier: some-with-excludes
           filters: |
             backend:
               - 'backend/**'
               - 'release/version.yaml'
               - '.github/workflows/**'
+              - '!**/*.md'
             frontend:
               - 'frontend/**'
+              - '.github/actions/build-frontend/**'
               - '.github/workflows/**'
+              - '!**/*.md'
             source:
               - '.gitmodules'
               - 'modules/ui'
@@ -53,6 +58,7 @@ jobs:
               - 'frontend/**'
               - 'backend/crates/gateway-plugin/sdk/**'
               - '.github/workflows/ci.yml'
+              - '!**/*.md'
             container:
               - 'backend/**'
               - 'frontend/**'
@@ -62,6 +68,7 @@ jobs:
               - '.github/actions/**'
               - '.github/workflows/_container.yml'
               - '.github/workflows/ci.yml'
+              - '!**/*.md'
 
   quality:
     needs: changes

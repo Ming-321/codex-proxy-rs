@@ -170,7 +170,24 @@ jobs:
     uses: ./.github/workflows/_quality.yml
     with:
       ref: ${{ needs.release-info.outputs.git_sha }}
-      upload_frontend: true
+      run_frontend: false
+
+  frontend:
+    needs: release-info
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    env:
+      CI: 'true'
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ needs.release-info.outputs.git_sha }}
+
+      - name: Validate and build frontend
+        uses: ./.github/actions/build-frontend
+        with:
+          upload-artifact: 'true'
 
   build-docker-binary:
     name: build-docker-binary (${{ matrix.os }}-${{ matrix.arch }})
@@ -194,10 +211,10 @@ jobs:
             ~/.cargo/registry
             ~/.cargo/git
             backend/target
-          key: cargo-v2-${{ runner.os }}-${{ matrix.target }}-${{ hashFiles('backend/Cargo.lock', 'backend/rust-toolchain.toml', 'backend/**/Cargo.toml', 'backend/.cargo/config.toml') }}-${{ needs.release-info.outputs.git_sha }}
+          # 按目标、工具链和依赖保存，不为每个发行提交复制整个 target
+          key: cargo-v3-${{ runner.os }}-${{ matrix.target }}-${{ hashFiles('backend/Cargo.lock', 'backend/rust-toolchain.toml', 'backend/**/Cargo.toml', 'backend/.cargo/config.toml', '.github/workflows/release.yml') }}
           restore-keys: |
-            cargo-v2-${{ runner.os }}-${{ matrix.target }}-${{ hashFiles('backend/Cargo.lock', 'backend/rust-toolchain.toml', 'backend/**/Cargo.toml', 'backend/.cargo/config.toml') }}
-            cargo-v2-${{ runner.os }}-${{ matrix.target }}-
+            cargo-v3-${{ runner.os }}-${{ matrix.target }}-
 
       - name: Build binary
         shell: bash
@@ -260,10 +277,9 @@ jobs:
             ~/.cargo/registry
             ~/.cargo/git
             backend/target
-          key: cargo-v2-${{ runner.os }}-${{ matrix.target }}-${{ hashFiles('backend/Cargo.lock', 'backend/rust-toolchain.toml', 'backend/**/Cargo.toml', 'backend/.cargo/config.toml') }}-${{ needs.release-info.outputs.git_sha }}
+          key: cargo-v3-${{ runner.os }}-${{ matrix.target }}-${{ hashFiles('backend/Cargo.lock', 'backend/rust-toolchain.toml', 'backend/**/Cargo.toml', 'backend/.cargo/config.toml', '.github/workflows/release.yml') }}
           restore-keys: |
-            cargo-v2-${{ runner.os }}-${{ matrix.target }}-${{ hashFiles('backend/Cargo.lock', 'backend/rust-toolchain.toml', 'backend/**/Cargo.toml', 'backend/.cargo/config.toml') }}
-            cargo-v2-${{ runner.os }}-${{ matrix.target }}-
+            cargo-v3-${{ runner.os }}-${{ matrix.target }}-
 
       - name: Build binary
         shell: bash
@@ -287,7 +303,7 @@ jobs:
           retention-days: 1
 
   package-assets:
-    needs: [release-info, quality, build-docker-binary, build-binary]
+    needs: [release-info, frontend, build-docker-binary, build-binary]
     runs-on: ubuntu-latest
     timeout-minutes: 20
     permissions:
@@ -443,7 +459,7 @@ jobs:
 
   build-docker-image:
     name: build-docker-image (${{ matrix.dockerPlatform }})
-    needs: [release-info, quality, build-docker-binary, package-assets]
+    needs: [release-info, build-docker-binary, package-assets]
     strategy:
       fail-fast: false
       matrix: ${{ fromJson(needs.release-info.outputs.docker_matrix) }}
@@ -601,7 +617,8 @@ jobs:
           retention-days: 1
 
   publish:
-    needs: [release-info, package-assets, build-docker-image]
+    # 产物准备可与测试重叠，版本标签和 GitHub Release 必须等全部质量与镜像验证通过
+    needs: [release-info, quality, package-assets, build-docker-image]
     runs-on: ubuntu-latest
     timeout-minutes: 20
     permissions:

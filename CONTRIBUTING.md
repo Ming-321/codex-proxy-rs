@@ -62,7 +62,14 @@ PR 正文说明提交者是否使用 AI。使用 AI 参与方案、代码、文�
 
 ### 规则文件保护
 
-PR 不接受根目录或子目录中 `AGENTS.md` 的新增、修改、删除或重命名。调整这些文件时先提交 Issue 说明原因和建议，由维护者处理；[规则保护工作流](.github/workflows/agents-md-guard.yml) 会提示并关闭包含此类变更的 PR。撤销相关变更后可以重新打开 PR，继续正常检查
+PR 不接受以下协作规则文件的新增、修改、删除或重命名：
+
+- 根目录及任意子目录的 `AGENTS.md`
+- 根目录的 `CONTRIBUTING.md`
+- `.agents/skills/` 中的所有文件，包括技能入口、引用文档、配置和脚本
+- `.github/` 中的所有文件，包括工作流、Actions、Issue／PR 模板和依赖更新配置
+
+调整这些文件时先提交 Issue 说明原因和建议，由维护者处理；[规则保护工作流](.github/workflows/rules.yml) 会提示并关闭包含此类变更的 PR。撤销相关变更后可以重新打开 PR，继续正常检查
 
 源码变更遵守现有架构边界与迁移冻结规则，由对应 CI 检查执行；不额外设立整块业务目录的 PR 禁改清单。构建、测试和安全扫描复用现有工作流
 
@@ -184,13 +191,17 @@ git diff --check
 
 `build` 已包含类型检查；不维护独立前端测试代码。后端的工具链、命令与线程栈设置统一见 [修改与验收](docs/architecture.md#12-修改与验收)
 
-依赖 PostgreSQL / Redis 的测试使用 [专用测试环境](backend/migrations/README.md#本地测试库)，未配置导致跳过时明确记录。CI 中已有对应服务和检查，见 [质量工作流](.github/workflows/_quality.yml) 与 [安全扫描](.github/workflows/security-scan.yml)
+依赖 PostgreSQL / Redis 的测试使用 [专用测试环境](backend/migrations/README.md#本地测试库)，未配置导致跳过时明确记录。CI 中已有对应服务和检查，见 [质量工作流](.github/workflows/_quality.yml) 与 [安全扫描](.github/workflows/security.yml)
 
 集成变更应验证实际业务路径及结果，不能只凭健康检查或探测成功认定全链路正常。协议和网络改动按需核对认证、证书、代理、流式交付及客户端结果；记录影响复现的环境条件。缺少运行条件时说明缺口，不用模拟结果代替真实集成结论
 
 ## 自动检查与合并条件
 
-[CI](.github/workflows/ci.yml) 已按变更范围调用现有质量检查。新增自动规则优先使用现有工具，要求依据明确、结果稳定、误报可控；无法可靠判定的设计与视觉问题保留审查判断，避免把具体源码写法锁成测试
+[CI](.github/workflows/ci.yml) 按变更范围调用质量检查，Markdown 不触发后端、前端、容器和源码联调任务，工作流语法检查独立执行
+
+后端 CI 使用 nextest 执行 `main` 集成测试，默认 Redis 密码模式执行完整测试集，ACL 用户模式复用同一批构建产物执行 Store 的 Redis 测试；本地验证命令见 [架构文档](docs/architecture.md#验证命令)
+
+新增自动规则优先使用现有工具，要求依据明确、结果稳定、误报可控；无法可靠判定的设计与视觉问题保留审查判断，避免把具体源码写法锁成测试
 
 AI 自动审查需要在所用工具中单独启用。其支持的检查范围和优先级过滤以工具说明为准；即使能读取 `AGENTS.md`，也不能保证所有可维护性和视觉问题都会被报告。配置参考 [Codex GitHub 审查文档](https://learn.chatgpt.com/docs/third-party/github)
 
