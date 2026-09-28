@@ -68,6 +68,7 @@ capability 固定并由工具生成：
 | `groups` | 创建本实例分组并管理所有当前及未来账号在这些分组中的成员关系 |
 | `keys` | 创建绑定本实例分组的 Key，不读取密钥明文 |
 | `key_budgets` | 查询全部 Client Key 的预算、修改日／周金额上限及重置用量，不读取密钥或修改其他配置 |
+| `key_limit_bindings` | 读取和修改全部 Client Key 的共享限额来源，影响预算、并发、RPM 和等待队列；不读取密钥，停用插件不解除共享 |
 | `quota_observations` | 查询和刷新全部账号的额度观测，不暴露凭据或执行上游额度重置 |
 | `public_endpoints` | 提供无需登录即可访问的资源或回调 |
 

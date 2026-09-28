@@ -38,6 +38,63 @@ const MAX_CURSOR_BYTES: usize = 512;
 const MAX_SEARCH_BYTES: usize = 256;
 const DEFAULT_PAGE_SIZE: u16 = 50;
 
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct ChangeLimitBindingRequest {
+    id: String,
+    #[serde(deserialize_with = "required_source")]
+    source_key_id: Option<String>,
+    expected_revision: u64,
+}
+
+fn required_source<'de, D: serde::Deserializer<'de>>(
+    deserializer: D,
+) -> Result<Option<String>, D::Error> {
+    Option::<String>::deserialize(deserializer)
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct LimitBindingView {
+    id: String,
+    source_key_id: String,
+    revision: u64,
+    config_revision: u64,
+    binding_config_revision: Option<u64>,
+    loaded_config_revision: Option<u64>,
+    source_enabled: bool,
+    max_concurrency: u64,
+    requests_per_minute: u64,
+    daily_limit_usd: String,
+    weekly_limit_usd: String,
+    daily_used_usd: String,
+    weekly_used_usd: String,
+    daily_resets_at: Option<DateTime<Utc>>,
+    weekly_resets_at: Option<DateTime<Utc>>,
+}
+
+impl From<gateway_admin::model::client_keys::ClientLimitBinding> for LimitBindingView {
+    fn from(binding: gateway_admin::model::client_keys::ClientLimitBinding) -> Self {
+        Self {
+            id: binding.id.to_string(),
+            source_key_id: binding.source_key_id.to_string(),
+            revision: binding.revision,
+            config_revision: binding.config_revision.get(),
+            binding_config_revision: binding.binding_config_revision,
+            loaded_config_revision: binding.loaded_config_revision,
+            source_enabled: binding.source_enabled,
+            max_concurrency: binding.limits.max_concurrency,
+            requests_per_minute: binding.limits.requests_per_minute,
+            daily_limit_usd: binding.budget.limits.daily_usd.canonical(),
+            weekly_limit_usd: binding.budget.limits.weekly_usd.canonical(),
+            daily_used_usd: binding.budget.daily_used_usd.canonical(),
+            weekly_used_usd: binding.budget.weekly_used_usd.canonical(),
+            daily_resets_at: binding.budget.daily_resets_at.map(DateTime::from),
+            weekly_resets_at: binding.budget.weekly_resets_at.map(DateTime::from),
+        }
+    }
+}
+
 type ProviderRequestProfileOverrides = BTreeMap<String, serde_json::Map<String, serde_json::Value>>;
 type ProviderRequestProfileOverrideUpdates =
     BTreeMap<String, Option<serde_json::Map<String, serde_json::Value>>>;
@@ -333,6 +390,11 @@ impl ClientKeyMutationRequest {
 #[derive(Debug, Clone, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ClientKeyView {
+    local_daily_limit_usd: String,
+    local_weekly_limit_usd: String,
+    limit_source_key_id: Option<String>,
+    effective_max_concurrency: u64,
+    effective_requests_per_minute: u64,
     provider_request_profile_overrides: ProviderRequestProfileOverrides,
     /// 固定兼容字段；值始终从 provider_request_profile_overrides 派生。
     openai_client_profile_override: Option<serde_json::Map<String, serde_json::Value>>,
@@ -382,6 +444,24 @@ impl From<ClientKeyRecord> for ClientKeyView {
             .map(|(provider, profile)| (provider.as_str().to_owned(), profile.into_inner()))
             .collect::<ProviderRequestProfileOverrides>();
         Self {
+            local_daily_limit_usd: record.local_budget_limits.daily_usd.canonical(),
+            local_weekly_limit_usd: record.local_budget_limits.weekly_usd.canonical(),
+            limit_source_key_id: record
+                .limit_source
+                .as_ref()
+                .map(|source| source.key_id.to_string()),
+            effective_max_concurrency: record
+                .limit_source
+                .as_ref()
+                .map_or(record.limits.max_concurrency, |source| {
+                    source.limits.max_concurrency
+                }),
+            effective_requests_per_minute: record
+                .limit_source
+                .as_ref()
+                .map_or(record.limits.requests_per_minute, |source| {
+                    source.limits.requests_per_minute
+                }),
             openai_client_profile_override: provider_request_profile_overrides
                 .get("openai")
                 .cloned(),
@@ -854,6 +934,10 @@ where
     S: SessionState + Clone + Send + Sync + 'static,
 {
     Router::new()
+        .route(
+            "/api/admin/client-keys/limit-binding",
+            get(get_limit_binding::<S>).post(change_limit_binding::<S>),
+        )
         .route("/api/admin/client-keys", get(list_client_keys::<S>))
         .route(
             "/api/admin/client-keys/create",
@@ -880,6 +964,61 @@ where
             "/api/admin/client-keys/delete",
             post(delete_client_key::<S>),
         )
+}
+
+async fn get_limit_binding<S>(
+    _auth: AdminAuth,
+    State(state): State<S>,
+    AdminQuery(query): AdminQuery<ClientKeyMutationRequest>,
+) -> Result<impl IntoResponse, AdminError>
+where
+    S: SessionState + Send + Sync,
+{
+    let id = query.into_domain_id().map_err(map_wire_error)?;
+    let binding = state
+        .admin_services()
+        .client_keys()
+        .limit_binding(&id)
+        .await
+        .map_err(map_service_error)?;
+    Ok(AdminResponse::new(
+        StatusCode::OK,
+        AdminEnvelope::ok(LimitBindingView::from(binding)),
+    ))
+}
+
+async fn change_limit_binding<S>(
+    auth: AdminAuth,
+    State(state): State<S>,
+    AdminJson(payload): AdminJson<ChangeLimitBindingRequest>,
+) -> Result<impl IntoResponse, AdminError>
+where
+    S: SessionState + Send + Sync,
+{
+    let command = gateway_admin::model::client_keys::ChangeClientLimitBinding {
+        id: ClientApiKeyId::new(payload.id)
+            .map_err(|_| map_wire_error(WireValidationError::new("id")))?,
+        source_key_id: payload
+            .source_key_id
+            .map(ClientApiKeyId::new)
+            .transpose()
+            .map_err(|_| map_wire_error(WireValidationError::new("sourceKeyId")))?,
+        expected_revision: payload.expected_revision,
+    };
+    let binding = state
+        .admin_services()
+        .client_keys()
+        .change_limit_binding(
+            &auth.context().mutation_context(),
+            command,
+            gateway_admin::model::client_keys::ClientLimitBindingMutationOrigin::Admin,
+        )
+        .await
+        .map_err(map_service_error)?;
+    Ok(AdminResponse::new(
+        StatusCode::OK,
+        AdminEnvelope::ok(LimitBindingView::from(binding)),
+    ))
 }
 
 async fn list_client_keys<S>(

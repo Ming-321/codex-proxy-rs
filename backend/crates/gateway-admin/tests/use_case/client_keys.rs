@@ -55,6 +55,33 @@ impl ClientKeyStore for TestClientKeyStore {
             "unused",
         ))
     }
+    async fn get_limit_binding(
+        &self,
+        _: &gateway_core::policy::ClientApiKeyId,
+    ) -> gateway_admin::ports::store::AdminStoreResult<
+        gateway_admin::model::client_keys::ClientLimitBinding,
+    > {
+        Err(gateway_admin::ports::store::AdminStoreError::new(
+            gateway_admin::ports::store::AdminStoreErrorKind::Unavailable,
+            "client limit binding",
+            "unused",
+        ))
+    }
+    async fn change_limit_binding(
+        &self,
+        _: gateway_admin::model::client_keys::ChangeClientLimitBinding,
+        _: &MutationContext,
+        _: gateway_admin::model::client_keys::ClientLimitBindingMutationOrigin,
+    ) -> gateway_admin::ports::store::AdminStoreResult<
+        gateway_admin::model::client_keys::ClientLimitBinding,
+    > {
+        Err(gateway_admin::ports::store::AdminStoreError::new(
+            gateway_admin::ports::store::AdminStoreErrorKind::Unavailable,
+            "client limit binding",
+            "unused",
+        ))
+    }
+
     async fn update_client_key_budget_limits(
         &self,
         _: gateway_admin::model::client_keys::UpdateClientKeyBudgetLimits,
@@ -116,6 +143,8 @@ impl ClientKeyStore for TestClientKeyStore {
         }
         self.plaintexts.lock().unwrap().push(key.plaintext);
         let record = ClientKeyRecord {
+            local_budget_limits: Default::default(),
+            limit_source: None,
             request_profile_overrides: Default::default(),
             id: key.id,
             name: key.name,
@@ -254,6 +283,8 @@ async fn plugin_client_key_list_projects_only_public_identity_and_uses_stable_na
         list_response: Mutex::new(Some(ClientKeyPage {
             config_revision: Revision::new(7).expect("revision"),
             items: vec![ClientKeyRecord {
+                local_budget_limits: Default::default(),
+                limit_source: None,
                 request_profile_overrides: Default::default(),
                 id: key_id.clone(),
                 name: "Public identity".to_owned(),

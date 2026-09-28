@@ -72,6 +72,7 @@ Provider 固定为宿主内置的 OpenAI 与 xAI。插件提供以下扩展能�
 | `groups` | 创建本实例分组，允许将所有现有及未来新增账号加入或移出这些分组，保留其他分组关系 |
 | `keys` | 创建仅绑定本实例分组的 Key，返回非秘密身份；不授予其他 Key 的修改或明文读取权限 |
 | `key_budgets` | 在管理／命令／维护阶段查询全部 Client Key 的预算、修改日／周金额上限及重置用量，不读取密钥或修改其他 Key 配置 |
+| `key_limit_bindings` | 在管理／命令／维护阶段读取和修改全部 Client Key 的共享限额来源，不读取密钥；停用插件不解除共享 |
 | `quota_observations` | 在管理／命令／维护阶段读取及刷新全部账号的额度观测，不暴露凭据或执行上游额度重置 |
 
 `host.log` 和本插件声明的 `host.state.*` 是基础设施，不需要额外 permission。公开调用阶段不开放任何
@@ -157,7 +158,7 @@ Provider 不支持刷新（如 OpenAI URL + Key 账号）返回 `invalid_input`�
 每个实例串行执行，不同实例相互独立；调用限时 30 秒，失败后等待 5 秒重试。维护失败不回滚已经提交的资源，
 下一次对账继续补齐。只读校验、准备候选与 CLI 帮助不会启动维护；停用、替换和宿主关闭时取消旧任务。
 
-维护阶段允许日志、私有状态，以及已授权的 `data`、`groups`、`keys`、`key_budgets`、`quota_observations` 回调；不开放任意网络、凭据或模型执行。
+维护阶段允许日志、私有状态，以及已授权的 `data`、`groups`、`keys`、`key_budgets`、`key_limit_bindings`、`quota_observations` 回调；不开放任意网络、凭据或模型执行。
 其他管理／命令入口也可使用下列资源方法：
 
 | SDK 方法 | 参数与行为 |
@@ -227,6 +228,10 @@ Key 明文仍通过宿主管理面查看，插件模型调用使用返回的 Key
 `daily_limit_usd`、`weekly_limit_usd`、`daily_used_usd`、`weekly_used_usd`、`daily_resets_at_ms`、`weekly_resets_at_ms`；
 时间为 UTC Unix 毫秒，`null` 表示尚未使用或窗口已过期。读取不触发准入、开启窗口或清零，停用的 Key 仍可管理。
 
+共享成员的预算查询返回当前有效来源的限额、用量与窗口，返回的 `client_key_id` 仍是被查询的成员。
+对已绑定成员调用 `update_key_budget_limits` 或 `reset_key_budget` 返回 `conflict`，即使提供的上限与本地值相同；
+调用者必须显式指定来源 Key，不会自动重定向写入整个共享预算。管理员完整 Key 编辑仍可修改成员的本地限额，解绑后才生效。
+
 上限更新仅写入提供的日／周金额；省略或 `null` 的项保持不变。它保留已用金额、窗口到期时间、费用历史及其他 Key 配置。
 写入复用 Key 行锁，与结算串行；实际变化时授权、修改、配置 revision 和审计在同一事务提交，并通知原生配置发布。
 相同值再次赋值不产生新 revision 或审计；并发更新按事务顺序生效，同一字段由后提交的值覆盖，接口不提供调用去重或比较交换。
@@ -239,6 +244,38 @@ Key 明文仍通过宿主管理面查看，插件模型调用使用返回的 Key
 SDK 不自动重试。超时或断连不能证明写入未提交；重试上限赋值也可能覆盖期间其他调用的修改。
 不存在的 Key 返回 `rejected`，无权限或阶段不符返回 `permission_denied`；写入事务复验发现实例停用、版本或授权变化时返回 `conflict`，
 非法输入返回 `invalid_input`。账号关联、预算分配和重置触发由插件决定，宿主不自动串联上述接口。
+
+### 共享限额关系
+
+`key_limit_bindings` 独立授权所有当前及未来 Client Key 的原生限额关系，包括管理员和其他插件创建的 Key。
+它影响预算、并发、RPM 和等待队列，不是逐 Key 委托或独占控制权；`keys`、`key_budgets`、`data` 等权限不能替代。
+仅允许 `management`、`command_line`、`maintenance` 阶段调用。它不授予 Key 明文、目录、创建、预算写入或周窗口控制能力。
+
+类型位于 `call::key_limit_bindings`；控制参数为 `{}`，输入输出为二进制 JSON：
+
+| SDK 方法 / 回调 | 输入 |
+| --- | --- |
+| `get_key_limit_binding` / `host.keys.get_limit_binding` | `{client_key_id}` |
+| `change_key_limit_binding` / `host.keys.change_limit_binding` | `{client_key_id, source_key_id, expected_revision}`；来源必须显式传入，`null` 表示解绑 |
+
+两者返回 `KeyLimitBinding`：真实 `client_key_id`、有效 `source_key_id`（未绑定时为自身）、关系 `revision`、
+当前持久配置 `config_revision`、最近关系提交的 `binding_config_revision`、本宿主实例的 `loaded_config_revision`、`source_enabled`。
+从未修改的关系 revision 为 0、关系提交版本为 null；加载版本未知保留 null。提交成功不保证所有节点已加载。
+预算数值通过另行授权的 `key_budgets` 查询，不在这里重复返回。新增响应允许未知扩展字段；旧方法响应不变。
+
+绑定、换源和解绑使用同一修改方法，不迁历史消费、不重置用量，不替换真实身份或路由权限；在途请求仍结算和释放原来源。
+禁止显式自引用、链式和循环关系；来源沿用原生启用及删除保护。不存在的 Key 返回 `rejected`；非法参数返回 `invalid_input`；
+权限或阶段不符返回 `permission_denied`；关系版本过期、关系约束违反或事务中发现实例授权变化返回 `conflict`。
+
+写入在同一事务中检查宿主签发的插件实例 ID、版本、产物及当前授权，并复用原生修改和审计。
+只有同一实例代次、同一产物、原 expected_revision 与完整参数匹配最近一次操作时，重试不再修改关系或追加审计；
+中间发生其他操作后不保证去重。重试仍检查授权，升级后的实例不能冒充旧调用。返回当前关系事实及加载状态，不缓存原回包。
+SDK 不自动重试，也不在冲突后重新查询并强制写入。业务插件应核对实际状态，遇到外部修改进入待确认状态，
+由管理员选择接受宿主现状或重新应用插件配置，避免自动覆盖循环。
+
+插件崩溃、停用、撤权、升级或删除均不自动解绑；该关系是宿主持久事实，不随插件资源清理。
+撤权与写入按控制面事务锁顺序串行：先提交的写入保留，撤权先提交则旧实例写入（包括重试）被拒绝。
+使用新方法的插件须声明支持 `key_limit_bindings` 的宿主版本范围；旧宿主不能执行它，不能失败后静默恢复为各 Key 独立限额。
 
 ### Key、模型与模型调用
 

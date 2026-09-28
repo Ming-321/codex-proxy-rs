@@ -307,6 +307,18 @@ pub trait ClientKeyStore: Send + Sync {
         origin: ClientKeyBudgetMutationOrigin,
         context: &MutationContext,
     ) -> AdminStoreResult<crate::model::weekly_budget::WeeklyBudgetControl>;
+    async fn get_limit_binding(
+        &self,
+        id: &gateway_core::policy::ClientApiKeyId,
+    ) -> AdminStoreResult<crate::model::client_keys::ClientLimitBinding>;
+
+    async fn change_limit_binding(
+        &self,
+        command: crate::model::client_keys::ChangeClientLimitBinding,
+        context: &MutationContext,
+        origin: crate::model::client_keys::ClientLimitBindingMutationOrigin,
+    ) -> AdminStoreResult<crate::model::client_keys::ClientLimitBinding>;
+
     /// 按已验证的 ID 读取资料，不读取完整明文 Key。
     async fn get_client_key(
         &self,

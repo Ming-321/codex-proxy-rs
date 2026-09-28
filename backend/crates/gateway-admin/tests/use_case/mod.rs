@@ -666,6 +666,33 @@ impl ClientKeyStore for UnavailableStore {
             "unused",
         ))
     }
+    async fn get_limit_binding(
+        &self,
+        _: &gateway_core::policy::ClientApiKeyId,
+    ) -> gateway_admin::ports::store::AdminStoreResult<
+        gateway_admin::model::client_keys::ClientLimitBinding,
+    > {
+        Err(gateway_admin::ports::store::AdminStoreError::new(
+            gateway_admin::ports::store::AdminStoreErrorKind::Unavailable,
+            "client limit binding",
+            "unused",
+        ))
+    }
+    async fn change_limit_binding(
+        &self,
+        _: gateway_admin::model::client_keys::ChangeClientLimitBinding,
+        _: &MutationContext,
+        _: gateway_admin::model::client_keys::ClientLimitBindingMutationOrigin,
+    ) -> gateway_admin::ports::store::AdminStoreResult<
+        gateway_admin::model::client_keys::ClientLimitBinding,
+    > {
+        Err(gateway_admin::ports::store::AdminStoreError::new(
+            gateway_admin::ports::store::AdminStoreErrorKind::Unavailable,
+            "client limit binding",
+            "unused",
+        ))
+    }
+
     async fn update_client_key_budget_limits(
         &self,
         _: gateway_admin::model::client_keys::UpdateClientKeyBudgetLimits,

@@ -22,6 +22,9 @@ const windows = computed(() => [
     <p v-if="budget.weeklyWaiting" class="text-cp-sm text-cp-error" role="status">
       周预算周期已结束，暂不可请求
     </p>
+    <p v-if="budget.limitSourceKeyId" class="mb-3 break-all text-cp-xs text-cp-text-secondary">
+      共享限额来源：{{ budget.limitSourceKeyId }}
+    </p>
     <div class="flex flex-1 flex-col justify-between gap-6">
       <div class="grid flex-1 gap-6 sm:grid-cols-2">
         <div v-for="window in windows" :key="window.label" class="flex min-w-0 flex-col justify-between gap-4">

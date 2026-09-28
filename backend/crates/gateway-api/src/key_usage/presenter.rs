@@ -61,6 +61,7 @@ pub(super) struct OverviewView {
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
 struct KeyView {
+    limit_source_key_id: Option<String>,
     name: String,
     prefix: String,
     max_concurrency: u64,
@@ -122,10 +123,24 @@ pub(super) fn overview(value: KeyUsageOverview) -> OverviewView {
         start_time: value.overview.range.start,
         end_time: value.overview.range.end,
         key: KeyView {
+            limit_source_key_id: key
+                .limit_source
+                .as_ref()
+                .map(|source| source.key_id.to_string()),
             name: key.name,
             prefix: key.prefix,
-            max_concurrency: key.limits.max_concurrency,
-            requests_per_minute: key.limits.requests_per_minute,
+            max_concurrency: key
+                .limit_source
+                .as_ref()
+                .map_or(key.limits.max_concurrency, |source| {
+                    source.limits.max_concurrency
+                }),
+            requests_per_minute: key
+                .limit_source
+                .as_ref()
+                .map_or(key.limits.requests_per_minute, |source| {
+                    source.limits.requests_per_minute
+                }),
             daily_limit_usd: key.budget.limits.daily_usd.canonical(),
             daily_used_usd: key.budget.daily_used_usd.canonical(),
             daily_resets_at: key.budget.daily_resets_at.map(DateTime::from),

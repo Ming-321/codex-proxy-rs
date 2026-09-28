@@ -38,6 +38,16 @@ pub trait ClientKeyService: Send + Sync {
         command: crate::model::weekly_budget::ChangeWeeklyBudget,
         origin: ClientKeyBudgetMutationOrigin,
     ) -> Result<crate::model::weekly_budget::WeeklyBudgetControl, AdminError>;
+    async fn limit_binding(
+        &self,
+        id: &ClientApiKeyId,
+    ) -> Result<crate::model::client_keys::ClientLimitBinding, AdminError>;
+    async fn change_limit_binding(
+        &self,
+        context: &MutationContext,
+        command: crate::model::client_keys::ChangeClientLimitBinding,
+        origin: crate::model::client_keys::ClientLimitBindingMutationOrigin,
+    ) -> Result<crate::model::client_keys::ClientLimitBinding, AdminError>;
     async fn get(&self, id: &ClientApiKeyId) -> Result<ClientKeyRecord, AdminError>;
     async fn list(&self, query: ClientKeyListQuery) -> Result<ClientKeyPage, AdminError>;
     async fn reveal(&self, id: &ClientApiKeyId) -> Result<ClientKeySecret, AdminError>;
@@ -99,6 +109,41 @@ impl DefaultClientKeyService {
 
 #[async_trait]
 impl ClientKeyService for DefaultClientKeyService {
+    async fn limit_binding(
+        &self,
+        id: &ClientApiKeyId,
+    ) -> Result<crate::model::client_keys::ClientLimitBinding, AdminError> {
+        let mut binding = self
+            .store
+            .get_limit_binding(id)
+            .await
+            .map_err(|error| map_store_error(error, "client limit binding"))?;
+        binding.loaded_config_revision = self
+            .snapshot
+            .loaded_revision()
+            .map(|revision| revision.get());
+        Ok(binding)
+    }
+
+    async fn change_limit_binding(
+        &self,
+        context: &MutationContext,
+        command: crate::model::client_keys::ChangeClientLimitBinding,
+        origin: crate::model::client_keys::ClientLimitBindingMutationOrigin,
+    ) -> Result<crate::model::client_keys::ClientLimitBinding, AdminError> {
+        let mut binding = self
+            .store
+            .change_limit_binding(command, context, origin)
+            .await
+            .map_err(|error| map_store_error(error, "client limit binding"))?;
+        publish_committed(self.snapshot.as_ref(), binding.config_revision).await?;
+        binding.loaded_config_revision = self
+            .snapshot
+            .loaded_revision()
+            .map(|revision| revision.get());
+        Ok(binding)
+    }
+
     async fn get(&self, id: &ClientApiKeyId) -> Result<ClientKeyRecord, AdminError> {
         self.store
             .get_client_key(id)

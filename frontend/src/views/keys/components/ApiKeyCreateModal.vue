@@ -12,6 +12,7 @@ const props = defineProps<{
   groups: AccountGroup[]
   groupLoading: boolean
   editing: boolean
+  limitSourceKeyId?: string | null
   createdKey: string
   saving: boolean
 }>()
@@ -40,6 +41,9 @@ const title = computed(() => props.editing ? '编辑密钥' : '创建 API Key')
     </template>
 
     <BaseForm class="grid gap-6">
+      <p v-if="limitSourceKeyId" class="m-0 text-cp-sm text-cp-text-secondary">
+        正在使用共享限额，此处修改的本地限额在解绑后生效
+      </p>
       <BaseFormItem label="名称" required>
         <BaseInput
           v-model="form.name"

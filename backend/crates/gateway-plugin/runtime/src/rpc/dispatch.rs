@@ -236,6 +236,8 @@ fn callback_allowed(method: &str, stage: Stage, permissions: &[Permission]) -> b
                 | "host.keys.weekly_control.get"
                 | "host.keys.weekly_control.change"
                 | "host.keys.update_budget_limits"
+                | "host.keys.get_limit_binding"
+                | "host.keys.change_limit_binding"
         )
     {
         return false;
@@ -311,6 +313,14 @@ fn callback_allowed(method: &str, stage: Stage, permissions: &[Permission]) -> b
             ) =>
         {
             Permission::KeyBudgets
+        }
+        "host.keys.get_limit_binding" | "host.keys.change_limit_binding"
+            if matches!(
+                stage,
+                Stage::Management | Stage::CommandLine | Stage::Maintenance
+            ) =>
+        {
+            Permission::KeyLimitBindings
         }
         _ => return false,
     };

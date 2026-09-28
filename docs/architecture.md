@@ -141,12 +141,15 @@ flowchart LR
   正文按需读取，透传无需额外读取权限；转换和改写不能绕过 Core 的交付、取消与结算边界。
   数据面插件通过受管 HTTP 已发送或无法证明未发送时，Runtime 把该事实并入 Core 的请求副作用水位，后续不能按
   Provider 的 `not_sent` 结果透明重放。
-- **访问域不跨调用。** `network`、`models`、`accounts`、`data`、`requests`、`public_endpoints`、`groups`、`keys`、`key_budgets`、`quota_observations` 只开放对应资源域；
+- **访问域不跨调用。** `network`、`models`、`accounts`、`data`、`requests`、`public_endpoints`、`groups`、`keys`、`key_budgets`、`key_limit_bindings`、`quota_observations` 只开放对应资源域；
   账号、HTTP、模型、私有状态和日志回调仍绑定有效父调用与阶段。管理页和 CLI 不预绑定 Client Key，模型调用按次
   选择当前 Key；页面 Responses 桥还复核精确实例目标和 `models` 域，并在等待与交付期间持续撤销检查。
   `frontend_authentication` 必须显式配置 principal 到 Key 的映射；公开登录回调使用一次性票据且不继承宿主回调权限。
   `data` 仅向管理、命令和维护阶段提供账号、Key 基础投影与已有额度观测，不提供凭据、预测或 SQL，不进入客户端请求链。
   `key_budgets` 在这三个阶段管理所有 Client Key 的预算查询、日／周金额上限和用量重置，不授予其他 Key 配置、密钥或模型执行权限。
+  `key_limit_bindings` 在这三个阶段管理所有 Client Key 的共享限额关系，无逐 Key 所有权。复用原生绑定事务，
+  通过插件写入来源复验实例、代次、产物及授权；审计与最近操作去重区分插件身份，重试不能绕过撤权。
+  绑定事实独立于插件生命周期，停用或删除插件不解绑；冲突处理与业务确认由插件负责。
   `quota_observations` 在这三个阶段读取及刷新账号额度观测，复用 Provider 管理路径；不暴露凭据或执行上游额度重置。
   两个域分别作用于本地预算和上游观测，不建立账号到 Key 的自动同步关系；`data` 仍仅提供已有事实。
 - **维护只作用于已发布实例。** `maintenance` 由 Host 监督的 Runtime worker 调用，启用、恢复、配置发布和周期补偿共用对账入口。
@@ -522,6 +525,14 @@ Key 的 RPM 在成功准入时才计数，金额限制在入队前及成功准�
 
 日金额、七天金额、并发和 RPM 按 Client Key 跨账号、跨 Provider 合计，零表示不限；修改限额不重置已用金额。
 Core 负责准入与结算时序，Store 持久化费用账本，Admin 负责限额配置。
+原生共享关系由 `client_key_limit_bindings` 持久化，管理用例通过配置事务完成单层约束、关系 revision、
+最近操作去重与审计，提交后复用快照发布。请求身份与限额来源分别冻结：`ClientPolicy` 保留真实 Key 的
+画像和授权范围，仅从来源读取限额事实；预算、客户端准入、排队与释放使用同一来源。
+`model_requests.limit_source_key_ref` 保存历史来源，`client_admission_acquired` 标明是否实际取得独立名额，
+恢复不重新解释当前绑定，也不为继承名额的嵌套执行重复计数。费用事件另存真实 `client_key_ref`，
+删除设备不级联删除来源的费用。来源首次被使用时设为保留状态，解绑不回收，避免在途及迟到费用失去承载者。
+来源的认证、secret、group、enabled 均沿用普通 Key 语义：不绕过启用检查，不向来源重新发起请求，
+停用只阻止新准入，不阻止既有费用结算。共享变更不迁账；首版不提供来源物理删除。
 Admin 的手动重置复用同一账本与 Key 行锁，在一个事务中清零所选周期金额、推进计费起点并写入审计，
 保留窗口到期时间与费用事件，不推进配置 revision。结算仍按完成时间判断归属，重置前完成的费用不会重新扣入已重置周期。
 插件预算回调通过 `PluginClientKeyAccess` 进入同一 `ClientKeyService` 和 `ClientKeyStore`，存储事务先复用插件写入授权，
@@ -550,7 +561,8 @@ Admin 的手动重置复用同一账本与 Key 行锁，在一个事务中清零
 
 结算写入失败时，进程内保留精确费用，在同一 Key 下次请求前重试；进程退出后无法恢复的费用不会形成欠账。
 PostgreSQL 不可用时拒绝所有新的计费请求，Redis 继续管理并发/RPM 租约。
-账本独立于可丢弃的请求观测日志，日志清理不重置金额；费用事件保留至删除 Key，已有日志不会回填为账本费用。
+账本独立于可丢弃的请求观测日志，日志清理不重置金额；普通 Key 的费用事件保留至删除 Key，
+共享来源禁止删除，设备删除不影响其账本。已有日志不会回填为账本费用。
 字段与错误合同见 [Client Key API](api.md#7-client-key)。
 
 ### 模型价格与费用快照

@@ -79,6 +79,12 @@ pub(super) async fn change(
     if exists.is_none() {
         return Err(error(AdminStoreErrorKind::NotFound));
     }
+    // 与限额绑定共用配置锁及 Key 行锁；共享成员不能修改不生效的本地窗口。
+    let bound: bool = sqlx::query_scalar("select exists(select 1 from client_key_limit_bindings where client_api_key_id=$1 and source_key_id is not null)")
+        .bind(command.id.as_str()).fetch_one(&mut *tx).await.map_err(unavailable)?;
+    if bound {
+        return Err(error(AdminStoreErrorKind::Conflict));
+    }
     let now = Utc::now();
     super::client_budgets::advance_windows(&mut tx, command.id.as_str(), now)
         .await

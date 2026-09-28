@@ -250,6 +250,101 @@ async fn seed_budget(environment: &Environment) -> ClientApiKeyId {
     key
 }
 
+#[tokio::test]
+async fn plugin_budget_callback_rejects_bound_member_updates_and_accepts_explicit_source() {
+    let Some(environment) = Environment::create().await else {
+        eprintln!("SKIP: plugin integration environment absent");
+        return;
+    };
+    let member = seed_budget(&environment).await;
+    let source = ClientApiKeyId::new("budget_source").unwrap();
+    environment
+        .client_key(source.as_str(), &format!("sk_{}", "b".repeat(43)))
+        .await;
+    environment.seed_client_key_budget(source.as_str()).await;
+    let store = environment.store.admin_ports().client_keys();
+    store
+        .change_limit_binding(
+            gateway_admin::model::client_keys::ChangeClientLimitBinding {
+                id: member.clone(),
+                source_key_id: Some(source.clone()),
+                expected_revision: 0,
+            },
+            &MutationContext {
+                actor: gateway_admin::model::MutationActor::System,
+                request_id: "binding-fixture".into(),
+            },
+            gateway_admin::model::client_keys::ClientLimitBindingMutationOrigin::Admin,
+        )
+        .await
+        .unwrap();
+    let before = store.get_client_key(&member).await.unwrap().unwrap();
+    environment.install_plugin(json!({
+        "management_registration":{"routes":[{"method":"POST","path":"budget","request_content_types":[],"response_content_types":["application/json"]}]},
+        "data_queries":[
+            {"method":"host.keys.get_budget","query":{"client_key_id":member.as_str()}},
+            {"method":"host.keys.update_budget_limits","query":{"client_key_id":member.as_str(),"weekly_limit_usd":"200"}},
+            {"method":"host.keys.get_budget","query":{"client_key_id":member.as_str()}},
+            {"method":"host.keys.reset_budget","query":{"client_key_id":member.as_str(),"period":"weekly"}},
+            {"method":"host.keys.update_budget_limits","query":{"client_key_id":source.as_str(),"weekly_limit_usd":"100"}},
+            {"method":"host.keys.get_budget","query":{"client_key_id":member.as_str()}}
+        ]
+    }), vec![account_grant("key_budgets")]).await;
+    let (runtime, core) = environment.runtime().await;
+    let access = gateway_admin::initialize_plugin_client_keys(
+        native::admin_registry(),
+        store.clone(),
+        core.snapshot_control(),
+    );
+    runtime.bind_client_key_ports(&access).unwrap();
+    let service = PluginManagementService::new(
+        runtime.clone(),
+        environment.store.admin_ports().plugins(),
+        core.snapshots(),
+    );
+    let view = service.views().await.unwrap().remove(0);
+    let reply = service
+        .handle(
+            &view.target,
+            PluginManagementRequest {
+                method: "POST".into(),
+                path: "budget".into(),
+                query: String::new(),
+                content_type: None,
+                body: vec![],
+                request_id: "shared-budget-fixture".into(),
+            },
+        )
+        .await
+        .unwrap();
+    let results: Vec<Value> = serde_json::from_slice(&reply.body).unwrap();
+    assert_eq!(results[1], json!({"error":"conflict"}));
+    assert_eq!(results[2], results[0]);
+    assert_eq!(results[3], json!({"error":"conflict"}));
+    assert_eq!(results[4], json!({"client_key_id":source.as_str()}));
+    assert_eq!(results[5]["client_key_id"], member.as_str());
+    assert_eq!(results[5]["weekly_limit_usd"], "100");
+    let after = store.get_client_key(&member).await.unwrap().unwrap();
+    assert_eq!(after.local_budget_limits, before.local_budget_limits);
+    assert_eq!(after.budget.weekly_used_usd, before.budget.weekly_used_usd);
+    assert_eq!(
+        environment
+            .audit_requests("update_budget_limits")
+            .await
+            .len(),
+        1
+    );
+    assert!(environment.audit_requests("reset_budget").await.is_empty());
+    drop(service);
+    drop(access);
+    environment.release_plugin_accounts(&runtime);
+    runtime.shutdown().await;
+    drop(core);
+    drop(runtime);
+    drop(store);
+    environment.close().await;
+}
+
 fn reset_queries() -> Value {
     // 重置无需先查询目录；两个基础接口由测试插件自行选择调用顺序。
     json!([
@@ -408,10 +503,25 @@ struct HoldCommittedReply {
 
 #[async_trait::async_trait]
 impl PluginClientKeyAccess for HoldCommittedReply {
-    async fn facts(
+    async fn limit_binding(
         &self,
         id: &ClientApiKeyId,
-    ) -> Result<gateway_admin::model::plugin_client_keys::PluginClientKeyFacts, AdminError> {
+    ) -> Result<gateway_admin::model::client_keys::ClientLimitBinding, AdminError> {
+        self.inner.limit_binding(id).await
+    }
+
+    async fn change_limit_binding(
+        &self,
+        owner: &PluginResourceOwner,
+        command: gateway_admin::model::client_keys::ChangeClientLimitBinding,
+        context: &MutationContext,
+    ) -> Result<gateway_admin::model::client_keys::ClientLimitBinding, AdminError> {
+        self.inner
+            .change_limit_binding(owner, command, context)
+            .await
+    }
+
+    async fn facts(&self, id: &ClientApiKeyId) -> Result<PluginClientKeyFacts, AdminError> {
         self.inner.facts(id).await
     }
     async fn weekly_budget_control(

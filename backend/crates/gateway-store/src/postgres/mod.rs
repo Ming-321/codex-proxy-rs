@@ -17,6 +17,7 @@ mod admission_recovery;
 mod backup;
 mod client_budgets;
 mod client_keys;
+mod client_limit_bindings;
 mod execution;
 mod execution_buffer;
 mod observability;

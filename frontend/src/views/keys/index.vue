@@ -169,14 +169,14 @@ watch(
                 <dt class="text-right text-cp-text-tertiary">
                   并发
                 </dt>
-                <dd class="m-0 truncate text-cp-text" :title="String(row.maxConcurrency || '∞')">
-                  {{ row.maxConcurrency || '∞' }}
+                <dd class="m-0 truncate text-cp-text" :title="String(row.effectiveMaxConcurrency || '∞')">
+                  {{ row.effectiveMaxConcurrency || '∞' }}
                 </dd>
                 <dt class="text-right text-cp-text-tertiary">
                   RPM
                 </dt>
-                <dd class="m-0 truncate text-cp-text" :title="String(row.requestsPerMinute || '∞')">
-                  {{ row.requestsPerMinute || '∞' }}
+                <dd class="m-0 truncate text-cp-text" :title="String(row.effectiveRequestsPerMinute || '∞')">
+                  {{ row.effectiveRequestsPerMinute || '∞' }}
                 </dd>
               </dl>
             </template>
@@ -218,6 +218,7 @@ watch(
       :groups="groups"
       :group-loading="loadingGroups"
       :editing="Boolean(editingKey)"
+      :limit-source-key-id="editingKey?.limitSourceKeyId"
       :created-key="createdKey"
       :saving="savingKey"
       @copy="copyToClipboard"

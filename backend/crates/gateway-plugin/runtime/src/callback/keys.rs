@@ -1,4 +1,4 @@
-//! Key 目录与预算回调；实例身份由宿主冻结，写入授权在存储事务复验。
+//! Key 目录、预算与共享关系回调；实例身份由宿主冻结，写入授权在存储事务复验。
 
 use std::sync::{Arc, OnceLock, Weak};
 
@@ -18,7 +18,7 @@ use gateway_plugin_sdk::{
     CallContext, PluginFault,
     call::{
         host::{ClientKey, KeyListRequest, KeyListResult},
-        key_budgets, weekly_budget,
+        key_budgets, key_limit_bindings, weekly_budget,
     },
 };
 
@@ -110,6 +110,31 @@ impl PluginClientKeys {
                         .map_err(map_admin_error)?,
                 )
             }
+            key_limit_bindings::GET => {
+                let request: key_limit_bindings::GetKeyLimitBindingRequest =
+                    serde_json::from_slice(payload).map_err(|_| invalid())?;
+                let id = ClientApiKeyId::new(request.client_key_id).map_err(|_| invalid())?;
+                encode_binding(access.limit_binding(&id).await.map_err(map_admin_error)?)
+            }
+            key_limit_bindings::CHANGE => {
+                let request: key_limit_bindings::ChangeKeyLimitBindingRequest =
+                    serde_json::from_slice(payload).map_err(|_| invalid())?;
+                let command = gateway_admin::model::client_keys::ChangeClientLimitBinding {
+                    id: ClientApiKeyId::new(request.client_key_id).map_err(|_| invalid())?,
+                    source_key_id: request
+                        .source_key_id
+                        .map(ClientApiKeyId::new)
+                        .transpose()
+                        .map_err(|_| invalid())?,
+                    expected_revision: request.expected_revision,
+                };
+                encode_binding(
+                    access
+                        .change_limit_binding(&self.owner, command, &mutation_context(context))
+                        .await
+                        .map_err(map_admin_error)?,
+                )
+            }
             key_budgets::GET => {
                 let request: key_budgets::GetKeyBudgetRequest =
                     serde_json::from_slice(payload).map_err(|_| invalid())?;
@@ -175,6 +200,20 @@ impl PluginClientKeys {
             _ => Err(denied()),
         }
     }
+}
+
+fn encode_binding(
+    binding: gateway_admin::model::client_keys::ClientLimitBinding,
+) -> Result<RpcReply, PluginFault> {
+    encode(&key_limit_bindings::KeyLimitBinding {
+        client_key_id: binding.id.as_str().to_owned(),
+        source_key_id: binding.source_key_id.as_str().to_owned(),
+        revision: binding.revision,
+        config_revision: binding.config_revision.get(),
+        binding_config_revision: binding.binding_config_revision,
+        loaded_config_revision: binding.loaded_config_revision,
+        source_enabled: binding.source_enabled,
+    })
 }
 
 pub(crate) struct PluginClientKeyPortSlot {

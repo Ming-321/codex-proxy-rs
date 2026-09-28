@@ -444,6 +444,8 @@ impl CallbackHandler for PluginCallbacks {
                     | gateway_plugin_sdk::call::key_budgets::UPDATE_LIMITS
                     | gateway_plugin_sdk::call::weekly_budget::GET
                     | gateway_plugin_sdk::call::weekly_budget::CHANGE
+                    | gateway_plugin_sdk::call::key_limit_bindings::GET
+                    | gateway_plugin_sdk::call::key_limit_bindings::CHANGE
             ) {
                 return keys.call(&context, &method, params, &payload).await;
             }
