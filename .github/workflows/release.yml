@@ -17,7 +17,7 @@ concurrency:
 
 env:
   REGISTRY: ghcr.io
-  IMAGE_NAME: zyycn/codex-proxy-rs
+  IMAGE_NAME: ming-321/codex-proxy-rs-car
 
 jobs:
   release-info:
@@ -152,8 +152,9 @@ jobs:
 
           puts "tag=#{release_tag}"
           puts "version=#{version}"
-          # Docker tags forbid "+", so semver build metadata maps to "-" in image tags.
-          puts "docker_version=#{version.tr("+", "-")}"
+          # Fork car builds use the explicitly versioned image channel, never latest.
+          car_build = version.match?(/\+car\.[1-9]\d*\z/)
+          puts "docker_version=#{car_build ? version.tr("+", ".") : version.tr("+", "-")}"
           puts "build_time=#{Time.now.utc.iso8601}"
           puts "git_sha=#{git_sha.strip}"
           puts "platform_matrix=#{matrix}"
@@ -161,7 +162,7 @@ jobs:
           puts "non_docker_matrix=#{non_docker_matrix}"
           puts "docker_platforms=#{docker_platforms.join(",")}"
           puts "previous_tag=#{previous_tag}"
-          puts "prerelease=#{version.split("+", 2).first.include?("-")}"
+          puts "prerelease=#{car_build || version.split("+", 2).first.include?("-")}"
           puts "build_type=#{version.split("+", 2).first.include?("-exp.") ? "experimental" : "release"}"
           RUBY
 
