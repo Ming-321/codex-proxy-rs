@@ -1,6 +1,9 @@
 name: Release
 
 on:
+  push:
+    branches: [integrate/car-plugin-3.17.0]
+    paths: [.github/workflows/release.yml]
   workflow_dispatch:
     inputs:
       tag:
@@ -21,6 +24,7 @@ env:
 
 jobs:
   release-info:
+    if: github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-latest
     timeout-minutes: 10
     outputs:
