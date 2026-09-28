@@ -44,12 +44,14 @@ jobs:
             backend:
               - 'backend/**'
               - 'release/version.yaml'
-              - '.github/workflows/**'
+              - '.github/workflows/ci.yml'
+              - '.github/workflows/_quality.yml'
               - '!**/*.md'
             frontend:
               - 'frontend/**'
               - '.github/actions/build-frontend/**'
-              - '.github/workflows/**'
+              - '.github/workflows/ci.yml'
+              - '.github/workflows/_quality.yml'
               - '!**/*.md'
             source:
               - '.gitmodules'
@@ -65,7 +67,8 @@ jobs:
               - 'deploy/**'
               - '.dockerignore'
               - 'release/version.yaml'
-              - '.github/actions/**'
+              - '.github/actions/verify-container/**'
+              - '.github/actions/cargo-cache/**'
               - '.github/workflows/_container.yml'
               - '.github/workflows/ci.yml'
               - '!**/*.md'

@@ -165,6 +165,39 @@ jobs:
           puts "build_type=#{version.split("+", 2).first.include?("-exp.") ? "experimental" : "release"}"
           RUBY
 
+      - name: Seal plugin release manifest
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+          GIT_SHA: ${{ steps.version.outputs.git_sha }}
+        run: |
+          ruby <<'RUBY'
+          require "fileutils"
+          require "json"
+
+          host_path = "backend/crates/gateway-plugin/runtime/plugin-host-compatibility.json"
+          host = JSON.parse(File.read(host_path))
+          abort "Invalid plugin host compatibility declaration: #{host_path}" unless host["schema_version"] == 1
+          # 清单只依赖版本与兼容声明，平台归档和镜像消费同一份封口结果。
+          manifest = {
+            "schema_version" => 1,
+            "sealed" => true,
+            "gateway_version" => ENV.fetch("VERSION"),
+            "gateway_git_sha" => ENV.fetch("GIT_SHA"),
+            "plugin_host" => host,
+            "plugins" => [],
+          }
+          FileUtils.mkdir_p("dist/plugin-release-assets")
+          File.write("dist/plugin-release-assets/plugin-release-manifest.json", JSON.pretty_generate(manifest) + "\n")
+          RUBY
+
+      - name: Upload sealed plugin assets
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: plugin-release-assets
+          path: dist/plugin-release-assets
+          if-no-files-found: error
+          retention-days: 1
+
   quality:
     needs: [release-info]
     uses: ./.github/workflows/_quality.yml
@@ -329,12 +362,17 @@ jobs:
           pattern: codex-proxy-rs-*
           path: dist/binaries
 
+      - name: Download sealed plugin assets
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: plugin-release-assets
+          path: dist/plugin-release-assets
+
       - name: Package release assets
         shell: bash
         env:
           VERSION: ${{ needs.release-info.outputs.version }}
           DOCKER_VERSION: ${{ needs.release-info.outputs.docker_version }}
-          GIT_SHA: ${{ needs.release-info.outputs.git_sha }}
         run: |
           set -euo pipefail
           ruby <<'RUBY' > release-platforms.json
@@ -409,21 +447,8 @@ jobs:
                   raise SystemExit(f"Unsupported archive format: {platform['archive']}")
               release_packages.append((platform, package_root, archive_path))
 
-          plugin_host_path = pathlib.Path("backend/crates/gateway-plugin/runtime/plugin-host-compatibility.json")
-          plugin_host = json.loads(plugin_host_path.read_text())
-          if plugin_host.get("schema_version") != 1:
-              raise SystemExit(f"Invalid plugin host compatibility declaration: {plugin_host_path}")
-
           plugin_manifest_path = release_dir / "plugin-release-manifest.json"
-          plugin_manifest_path.write_text(json.dumps({
-              "schema_version": 1,
-              "sealed": True,
-              "gateway_version": version,
-              "gateway_git_sha": os.environ["GIT_SHA"],
-              "plugin_host": plugin_host,
-              # 示例独立发版；当前不内置插件，仍保留更新与回滚所需的封口清单。
-              "plugins": [],
-          }, indent=2, sort_keys=True) + "\n")
+          shutil.copy2("dist/plugin-release-assets/plugin-release-manifest.json", plugin_manifest_path)
           assets.append(plugin_manifest_path)
 
           # 保留运行时清单目录合同，宿主包不再携带教学示例。
@@ -456,10 +481,12 @@ jobs:
           path: dist/release
           if-no-files-found: error
           retention-days: 1
+          # tar.gz 已压缩，Actions 只负责传递原始发行字节。
+          compression-level: 0
 
   build-docker-image:
     name: build-docker-image (${{ matrix.dockerPlatform }})
-    needs: [release-info, build-docker-binary, package-assets]
+    needs: [release-info, frontend, build-docker-binary]
     strategy:
       fail-fast: false
       matrix: ${{ fromJson(needs.release-info.outputs.docker_matrix) }}
@@ -492,11 +519,11 @@ jobs:
           name: codex-proxy-rs-${{ matrix.os }}-${{ matrix.arch }}
           path: dist/docker-artifacts/codex-proxy-rs-${{ matrix.os }}-${{ matrix.arch }}
 
-      - name: Download sealed release assets
+      - name: Download sealed plugin assets
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
-          name: release-assets
-          path: dist/release-assets
+          name: plugin-release-assets
+          path: dist/plugin-release-assets
 
       - name: Prepare Docker prebuilt assets
         shell: bash
@@ -524,7 +551,7 @@ jobs:
           shutil.copy2(binary_src, binary_dest)
           binary_dest.chmod(0o755)
 
-          release_dir = pathlib.Path("dist/release-assets")
+          release_dir = pathlib.Path("dist/plugin-release-assets")
           manifest_path = release_dir / "plugin-release-manifest.json"
           manifest = json.loads(manifest_path.read_text())
           if manifest.get("schema_version") != 1 or manifest.get("sealed") is not True:

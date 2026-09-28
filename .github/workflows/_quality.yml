@@ -211,5 +211,8 @@ jobs:
           -color
           .github/workflows/*.yml
 
-      - name: Check release script syntax
-        run: bash -n release/publish
+      - name: Check workflow script syntax
+        run: |
+          bash -n release/publish
+          shopt -s globstar nullglob
+          for script in .github/**/*.sh; do bash -n "$script"; done

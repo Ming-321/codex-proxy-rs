@@ -27,20 +27,15 @@ jobs:
         with:
           ref: ${{ github.event.pull_request.head.sha || github.sha }}
 
-      - name: Setup Rust
-        uses: dtolnay/rust-toolchain@1a3a6d54512beeaffd394f8d516ca16f2c506a20 # 1.97
-
-      - name: Cache Rust
-        uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
-        with:
-          workspaces: backend -> target
-
       - name: Install cargo-audit
-        run: cargo install cargo-audit --version 0.22.2 --locked
+        uses: taiki-e/install-action@4cef1412cce204788f482e778a0b9187f9626a29 # v2.87.21
+        with:
+          tool: cargo-audit@0.22.2
+          fallback: none
 
       - name: Run Cargo audits
         run: |
-          cargo audit --file backend/Cargo.lock
+          cargo-audit audit --file backend/Cargo.lock
 
   frontend-security:
     runs-on: ubuntu-latest
