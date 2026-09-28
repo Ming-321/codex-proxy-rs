@@ -863,6 +863,11 @@ fn decode<T>(result: Result<T, sqlx::Error>) -> AdminStoreResult<T> {
 /// StoreError → AdminStoreError 的显式映射。
 fn map_admin_error(error: StoreError) -> AdminStoreError {
     match error {
+        StoreError::ControlledLimits { message } => AdminStoreError::new(
+            AdminStoreErrorKind::Conflict,
+            "controlled client limits",
+            message,
+        ),
         StoreError::Unavailable { .. } => AdminStoreError::new(
             AdminStoreErrorKind::Unavailable,
             "backup",

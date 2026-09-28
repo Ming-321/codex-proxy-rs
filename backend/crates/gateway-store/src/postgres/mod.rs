@@ -17,6 +17,7 @@ mod admission_recovery;
 mod backup;
 mod client_budgets;
 mod client_keys;
+mod client_limit_bindings;
 mod execution;
 mod execution_buffer;
 mod observability;
@@ -29,6 +30,7 @@ mod retention;
 mod runtime_settings;
 mod snapshot;
 mod usage_facts;
+mod weekly_budget;
 
 pub use account_groups::*;
 pub use admin_security_audit::*;

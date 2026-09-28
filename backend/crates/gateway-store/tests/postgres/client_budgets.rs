@@ -38,8 +38,651 @@ fn key_id(key: &str) -> ClientApiKeyId {
     ClientApiKeyId::new(key).unwrap()
 }
 
+#[tokio::test]
+async fn shared_source_windows_preserve_waiting_spending_and_reject_member_control() {
+    use gateway_admin::model::{
+        client_keys::{ChangeClientLimitBinding, ClientLimitBindingMutationOrigin},
+        weekly_budget::{ChangeWeeklyBudget, WeeklyBudgetAction},
+    };
+    let Some(db) = TestDatabase::create("shared_weekly").await else {
+        return;
+    };
+    for key in ["device", "source", "other"] {
+        seed(&db, key, "0", "100").await;
+    }
+    let owner = plugin_reset_owner(&db).await;
+    let origin = ClientKeyBudgetMutationOrigin::Plugin(owner);
+    let admin = PgAdminClientKeyStore::new(db.pool.clone());
+    let budget = PgClientBudgetStore::new(db.pool.clone());
+    admin
+        .change_weekly_budget(
+            ChangeWeeklyBudget {
+                id: key_id("source"),
+                expected_revision: 0,
+                action: WeeklyBudgetAction::Claim {
+                    expires_at: Utc::now() + chrono::Duration::days(2),
+                    clear_used: false,
+                },
+            },
+            origin.clone(),
+            &context(),
+        )
+        .await
+        .unwrap();
+    admin
+        .change_limit_binding(
+            ChangeClientLimitBinding {
+                id: key_id("device"),
+                source_key_id: Some(key_id("source")),
+                expected_revision: 0,
+            },
+            &context(),
+            ClientLimitBindingMutationOrigin::Admin,
+        )
+        .await
+        .unwrap();
+    let mut usage = charge("source", "shared", "3");
+    usage.client_key_ref = key_id("device");
+    budget.settle(usage).await.unwrap();
+    sqlx::query("update client_key_budget_windows set weekly_end=now()-interval '1 second' where client_api_key_id='source'").execute(&db.pool).await.unwrap();
+    let shared = status(&db, "device").await;
+    assert!(shared.weekly_waiting);
+    assert_eq!(shared.weekly_used_usd.canonical(), "3");
+    assert!(
+        admin
+            .get_limit_binding(&key_id("device"))
+            .await
+            .unwrap()
+            .budget
+            .weekly_waiting
+    );
+    assert!(
+        admin
+            .weekly_budget_control(&key_id("device"))
+            .await
+            .unwrap()
+            .waiting
+    );
+    assert_eq!(
+        budget
+            .admit(gateway_core::engine::budget::ClientBudgetAdmission {
+                client_key_id: key_id("device"),
+                source_key_id: key_id("source")
+            })
+            .await
+            .unwrap_err()
+            .client_error_code(),
+        Some("key_weekly_window_waiting")
+    );
+    assert_eq!(
+        admin
+            .change_weekly_budget(
+                ChangeWeeklyBudget {
+                    id: key_id("device"),
+                    expected_revision: 1,
+                    action: WeeklyBudgetAction::Release
+                },
+                origin.clone(),
+                &context()
+            )
+            .await
+            .unwrap_err()
+            .kind(),
+        AdminStoreErrorKind::Conflict
+    );
+    let sync = ChangeWeeklyBudget {
+        id: key_id("source"),
+        expected_revision: 1,
+        action: WeeklyBudgetAction::Sync {
+            expires_at: Utc::now() + chrono::Duration::days(7),
+        },
+    };
+    admin
+        .change_weekly_budget(sync.clone(), origin.clone(), &context())
+        .await
+        .unwrap();
+    budget.settle(charge("source", "next", "2")).await.unwrap();
+    admin
+        .change_weekly_budget(sync, origin.clone(), &context())
+        .await
+        .unwrap();
+    assert_eq!(status(&db, "device").await.weekly_used_usd.canonical(), "2");
+    assert!(!status(&db, "device").await.weekly_waiting);
+    assert!(status(&db, "other").await.weekly_controller.is_none());
+    admin
+        .change_weekly_budget(
+            ChangeWeeklyBudget {
+                id: key_id("other"),
+                expected_revision: 0,
+                action: WeeklyBudgetAction::Claim {
+                    expires_at: Utc::now() + chrono::Duration::days(2),
+                    clear_used: false,
+                },
+            },
+            origin,
+            &context(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(
+        admin
+            .change_limit_binding(
+                ChangeClientLimitBinding {
+                    id: key_id("other"),
+                    source_key_id: Some(key_id("source")),
+                    expected_revision: 0
+                },
+                &context(),
+                ClientLimitBindingMutationOrigin::Admin
+            )
+            .await
+            .unwrap_err()
+            .kind(),
+        AdminStoreErrorKind::Conflict
+    );
+    db.close().await;
+}
+
+#[tokio::test]
+async fn weekly_control_preserves_claim_deduplicates_sync_and_waits_at_expiry() {
+    use gateway_admin::model::weekly_budget::{ChangeWeeklyBudget, WeeklyBudgetAction};
+    let Some(database) = TestDatabase::create("weekly_control").await else {
+        return;
+    };
+    seed(&database, "key", "100", "100").await;
+    let owner = plugin_reset_owner(&database).await;
+    let origin = ClientKeyBudgetMutationOrigin::Plugin(owner.clone());
+    let admin = PgAdminClientKeyStore::new(database.pool.clone());
+    let budget = PgClientBudgetStore::new(database.pool.clone());
+    budget
+        .settle(charge("key", "before_claim", "3"))
+        .await
+        .unwrap();
+    let before = status(&database, "key").await;
+    let claim = ChangeWeeklyBudget {
+        id: key_id("key"),
+        expected_revision: 0,
+        action: WeeklyBudgetAction::Claim {
+            expires_at: Utc::now() + chrono::Duration::days(2),
+            clear_used: false,
+        },
+    };
+    admin
+        .change_weekly_budget(claim.clone(), origin.clone(), &context())
+        .await
+        .unwrap();
+    let after = status(&database, "key").await;
+    assert_eq!(after.weekly_used_usd, before.weekly_used_usd);
+    assert_eq!(after.daily_used_usd, before.daily_used_usd);
+    assert_eq!(after.limits, before.limits);
+    assert_eq!(
+        after.weekly_controller.as_deref(),
+        Some(owner.instance_id.as_str())
+    );
+    budget
+        .settle(charge("key", "after_claim", "1"))
+        .await
+        .unwrap();
+    admin
+        .change_weekly_budget(claim, origin.clone(), &context())
+        .await
+        .unwrap();
+    assert_eq!(
+        status(&database, "key").await.weekly_used_usd.canonical(),
+        "4"
+    );
+    let late = charge("key", "late", "7");
+    // 数据库时间推进夹具模拟账号窗口到期，不等待实际两天。
+    sqlx::query("update client_key_budget_windows set weekly_end=now()-interval '1 second' where client_api_key_id='key'").execute(&database.pool).await.unwrap();
+    assert_eq!(
+        budget
+            .admit(admission("key"))
+            .await
+            .unwrap_err()
+            .client_error_code(),
+        Some("key_weekly_window_waiting")
+    );
+    budget.settle(charge("key", "inflight", "2")).await.unwrap();
+    let waiting = status(&database, "key").await;
+    assert!(waiting.weekly_waiting);
+    assert_eq!(waiting.weekly_used_usd.canonical(), "6");
+    let sync = ChangeWeeklyBudget {
+        id: key_id("key"),
+        expected_revision: 1,
+        action: WeeklyBudgetAction::Sync {
+            expires_at: Utc::now() + chrono::Duration::days(7),
+        },
+    };
+    admin
+        .change_weekly_budget(sync.clone(), origin.clone(), &context())
+        .await
+        .unwrap();
+    budget.settle(late).await.unwrap();
+    assert_eq!(
+        status(&database, "key").await.weekly_used_usd.canonical(),
+        "0"
+    );
+    budget
+        .settle(charge("key", "after_sync", "5"))
+        .await
+        .unwrap();
+    // 用新的 Store 实例重试，模拟提交响应丢失后进程重启。
+    let restarted = PgAdminClientKeyStore::new(database.pool.clone());
+    restarted
+        .change_weekly_budget(sync.clone(), origin.clone(), &context())
+        .await
+        .unwrap();
+    assert_eq!(
+        status(&database, "key").await.weekly_used_usd.canonical(),
+        "5"
+    );
+    budget.admit(admission("key")).await.unwrap();
+    let early = ChangeWeeklyBudget {
+        expected_revision: 2,
+        action: WeeklyBudgetAction::Sync {
+            expires_at: Utc::now() + chrono::Duration::days(3),
+        },
+        ..sync.clone()
+    };
+    admin
+        .change_weekly_budget(early, origin.clone(), &context())
+        .await
+        .unwrap();
+    assert_eq!(
+        admin
+            .change_weekly_budget(sync, origin, &context())
+            .await
+            .unwrap_err()
+            .kind(),
+        AdminStoreErrorKind::StaleRevision
+    );
+    assert_eq!(
+        status(&database, "key").await.weekly_used_usd.canonical(),
+        "0"
+    );
+    sqlx::query("update client_api_keys set daily_limit_usd=1 where id='key'")
+        .execute(&database.pool)
+        .await
+        .unwrap();
+    assert_eq!(
+        budget
+            .admit(admission("key"))
+            .await
+            .unwrap_err()
+            .client_error_code(),
+        Some("key_daily_budget_exceeded")
+    );
+    sqlx::query("update client_api_keys set enabled=false where id='key'")
+        .execute(&database.pool)
+        .await
+        .unwrap();
+    assert_eq!(
+        budget.admit(admission("key")).await.unwrap_err().kind(),
+        GatewayErrorKind::PolicyDenied
+    );
+    let count: i64 = sqlx::query_scalar(
+        "select count(*) from client_key_charge_events where client_api_key_id='key'",
+    )
+    .fetch_one(&database.pool)
+    .await
+    .unwrap();
+    assert_eq!(count, 5);
+    database.close().await;
+}
+
+#[tokio::test]
+async fn weekly_control_initializes_unused_keys_and_release_preserves_spending() {
+    use gateway_admin::model::weekly_budget::{ChangeWeeklyBudget, WeeklyBudgetAction};
+    let Some(database) = TestDatabase::create("weekly_release").await else {
+        return;
+    };
+    seed(&database, "key", "0", "10").await;
+    let owner = plugin_reset_owner(&database).await;
+    let origin = ClientKeyBudgetMutationOrigin::Plugin(owner.clone());
+    let admin = PgAdminClientKeyStore::new(database.pool.clone());
+    let budget = PgClientBudgetStore::new(database.pool.clone());
+    assert_eq!(
+        admin
+            .weekly_budget_control(&key_id("key"))
+            .await
+            .unwrap()
+            .revision,
+        0
+    );
+    let claim = ChangeWeeklyBudget {
+        id: key_id("key"),
+        expected_revision: 0,
+        action: WeeklyBudgetAction::Claim {
+            expires_at: Utc::now() + chrono::Duration::days(2),
+            clear_used: true,
+        },
+    };
+    admin
+        .change_weekly_budget(claim.clone(), origin.clone(), &context())
+        .await
+        .unwrap();
+    budget.admit(admission("key")).await.unwrap();
+    budget.settle(charge("key", "new_key", "2")).await.unwrap();
+    admin
+        .change_weekly_budget(claim.clone(), origin.clone(), &context())
+        .await
+        .unwrap();
+    assert_eq!(
+        status(&database, "key").await.weekly_used_usd.canonical(),
+        "2"
+    );
+    let release = ChangeWeeklyBudget {
+        id: key_id("key"),
+        expected_revision: 1,
+        action: WeeklyBudgetAction::Release,
+    };
+    admin
+        .change_weekly_budget(release.clone(), origin.clone(), &context())
+        .await
+        .unwrap();
+    let after = status(&database, "key").await;
+    assert!(after.weekly_controller.is_none());
+    assert_eq!(after.weekly_used_usd.canonical(), "2");
+    assert_eq!(after.limits.weekly_usd.canonical(), "10");
+    let native_end: DateTime<Utc> = sqlx::query_scalar("select (date_trunc('day',now() at time zone 'Asia/Shanghai') at time zone 'Asia/Shanghai')+interval '168 hours'").fetch_one(&database.pool).await.unwrap();
+    assert_eq!(after.weekly_resets_at, Some(native_end.into()));
+    assert_eq!(
+        admin
+            .change_weekly_budget(claim, origin.clone(), &context())
+            .await
+            .unwrap_err()
+            .kind(),
+        AdminStoreErrorKind::StaleRevision
+    );
+    admin
+        .change_weekly_budget(release, origin.clone(), &context())
+        .await
+        .unwrap();
+    // 重新接管保留金额，不重放首次清零；明确停用由宿主解除。
+    admin
+        .change_weekly_budget(
+            ChangeWeeklyBudget {
+                id: key_id("key"),
+                expected_revision: 2,
+                action: WeeklyBudgetAction::Claim {
+                    expires_at: Utc::now() + chrono::Duration::days(1),
+                    clear_used: false,
+                },
+            },
+            origin.clone(),
+            &context(),
+        )
+        .await
+        .unwrap();
+    let plugins = PgPluginStore::new(database.pool.clone());
+    let snapshot = plugins.load_instances().await.unwrap();
+    let mut instance = snapshot.instances[0].clone();
+    instance.enabled = false;
+    plugins
+        .save_instance(instance, snapshot.config_revision, &context())
+        .await
+        .unwrap();
+    let stopped = status(&database, "key").await;
+    assert!(stopped.weekly_controller.is_none());
+    assert_eq!(stopped.weekly_used_usd.canonical(), "2");
+    assert_eq!(stopped.weekly_control_revision, 4);
+    let old = ChangeWeeklyBudget {
+        id: key_id("key"),
+        expected_revision: 4,
+        action: WeeklyBudgetAction::Sync {
+            expires_at: Utc::now() + chrono::Duration::days(3),
+        },
+    };
+    assert!(
+        admin
+            .change_weekly_budget(old, origin, &context())
+            .await
+            .is_err()
+    );
+    sqlx::query("update client_key_budget_windows set weekly_end=now()-interval '1 second' where client_api_key_id='key'").execute(&database.pool).await.unwrap();
+    budget.admit(admission("key")).await.unwrap();
+    assert_eq!(
+        status(&database, "key").await.weekly_used_usd.canonical(),
+        "0"
+    );
+    database.close().await;
+}
+
+#[tokio::test]
+async fn weekly_control_partial_progress_and_audit_failure_are_recoverable() {
+    use gateway_admin::model::weekly_budget::{ChangeWeeklyBudget, WeeklyBudgetAction};
+    let Some(database) = TestDatabase::create("weekly_partial").await else {
+        return;
+    };
+    for key in ["first", "second"] {
+        seed(&database, key, "0", "10").await;
+    }
+    let owner = plugin_reset_owner(&database).await;
+    let origin = ClientKeyBudgetMutationOrigin::Plugin(owner);
+    let admin = PgAdminClientKeyStore::new(database.pool.clone());
+    let budget = PgClientBudgetStore::new(database.pool.clone());
+    let first = ChangeWeeklyBudget {
+        id: key_id("first"),
+        expected_revision: 0,
+        action: WeeklyBudgetAction::Claim {
+            expires_at: Utc::now() + chrono::Duration::days(2),
+            clear_used: true,
+        },
+    };
+    admin
+        .change_weekly_budget(first.clone(), origin.clone(), &context())
+        .await
+        .unwrap();
+    let invalid = ChangeWeeklyBudget {
+        id: key_id("second"),
+        expected_revision: 0,
+        action: WeeklyBudgetAction::Claim {
+            expires_at: Utc::now() - chrono::Duration::days(1),
+            clear_used: true,
+        },
+    };
+    assert_eq!(
+        admin
+            .change_weekly_budget(invalid, origin.clone(), &context())
+            .await
+            .unwrap_err()
+            .kind(),
+        AdminStoreErrorKind::Invalid
+    );
+    budget
+        .settle(charge("first", "partial", "2"))
+        .await
+        .unwrap();
+    admin
+        .change_weekly_budget(first.clone(), origin.clone(), &context())
+        .await
+        .unwrap();
+    admin
+        .change_weekly_budget(
+            ChangeWeeklyBudget {
+                id: key_id("second"),
+                ..first.clone()
+            },
+            origin.clone(),
+            &context(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(
+        status(&database, "first").await.weekly_used_usd.canonical(),
+        "2"
+    );
+    assert_eq!(
+        admin
+            .weekly_budget_control(&key_id("second"))
+            .await
+            .unwrap()
+            .revision,
+        1
+    );
+    sqlx::raw_sql("create function reject_weekly_audit() returns trigger language plpgsql as $$ begin if NEW.action='weekly_control' then raise exception 'fixture audit failure'; end if; return NEW; end $$; create trigger reject_weekly_audit before insert on admin_audit_events for each row execute function reject_weekly_audit()")
+        .execute(&database.pool).await.unwrap();
+    let sync = ChangeWeeklyBudget {
+        expected_revision: 1,
+        action: WeeklyBudgetAction::Sync {
+            expires_at: Utc::now() + chrono::Duration::days(3),
+        },
+        ..first
+    };
+    assert!(
+        admin
+            .change_weekly_budget(sync.clone(), origin.clone(), &context())
+            .await
+            .is_err()
+    );
+    assert_eq!(
+        admin
+            .weekly_budget_control(&key_id("first"))
+            .await
+            .unwrap()
+            .revision,
+        1
+    );
+    assert_eq!(
+        status(&database, "first").await.weekly_used_usd.canonical(),
+        "2"
+    );
+    sqlx::query("drop trigger reject_weekly_audit on admin_audit_events")
+        .execute(&database.pool)
+        .await
+        .unwrap();
+    let mutation = context();
+    let (left, right) = tokio::join!(
+        admin.change_weekly_budget(sync.clone(), origin.clone(), &mutation),
+        admin.change_weekly_budget(sync, origin, &mutation)
+    );
+    assert_eq!(left.unwrap().revision, 2);
+    assert_eq!(right.unwrap().revision, 2);
+    database.close().await;
+}
+
+#[tokio::test]
+async fn weekly_control_rejects_competing_owners_and_releases_when_permission_is_removed() {
+    use gateway_admin::model::weekly_budget::{ChangeWeeklyBudget, WeeklyBudgetAction};
+    let Some(database) = TestDatabase::create("weekly_owner").await else {
+        return;
+    };
+    seed(&database, "key", "0", "10").await;
+    let owner = plugin_reset_owner(&database).await;
+    let admin = PgAdminClientKeyStore::new(database.pool.clone());
+    let plugins = PgPluginStore::new(database.pool.clone());
+    let claim = ChangeWeeklyBudget {
+        id: key_id("key"),
+        expected_revision: 0,
+        action: WeeklyBudgetAction::Claim {
+            expires_at: Utc::now() + chrono::Duration::days(2),
+            clear_used: false,
+        },
+    };
+    admin
+        .change_weekly_budget(
+            claim.clone(),
+            ClientKeyBudgetMutationOrigin::Plugin(owner.clone()),
+            &context(),
+        )
+        .await
+        .unwrap();
+    let snapshot = plugins.load_instances().await.unwrap();
+    let original = snapshot.instances[0].clone();
+    let mut competing = original.clone();
+    competing.id = uuid::Uuid::now_v7().to_string();
+    competing.name = "competing controller".into();
+    let competing = plugins
+        .save_instance(competing, snapshot.config_revision, &context())
+        .await
+        .unwrap()
+        .instance;
+    let other = PluginResourceOwner {
+        instance_id: competing.id,
+        artifact_sha256: competing.artifact_sha256,
+        revision: competing.revision,
+    };
+    assert_eq!(
+        admin
+            .change_weekly_budget(
+                ChangeWeeklyBudget {
+                    expected_revision: 1,
+                    ..claim.clone()
+                },
+                ClientKeyBudgetMutationOrigin::Plugin(other),
+                &context()
+            )
+            .await
+            .unwrap_err()
+            .kind(),
+        AdminStoreErrorKind::Conflict
+    );
+    let budget = PgClientBudgetStore::new(database.pool.clone());
+    budget
+        .settle(charge("key", "before_revoke", "3"))
+        .await
+        .unwrap();
+    let mut replacement = super::plugins::artifacts::artifact('c', &["linux-x86_64"]);
+    replacement.metadata.version = "1.1.0".into();
+    let installed = plugins
+        .install_artifact(replacement, PluginSource::Upload, &context())
+        .await
+        .unwrap();
+    let accepted = plugins
+        .accept_artifact(&installed.artifact.metadata.sha256, &context())
+        .await
+        .unwrap();
+    let mut without_permission = original;
+    without_permission.artifact_sha256 = installed.artifact.metadata.sha256;
+    without_permission.grants.clear();
+    let saved = plugins
+        .save_instance(without_permission, accepted.config_revision, &context())
+        .await
+        .unwrap();
+    let state = status(&database, "key").await;
+    assert!(state.weekly_controller.is_none());
+    assert_eq!(state.weekly_used_usd.canonical(), "3");
+    assert_eq!(state.weekly_control_revision, 2);
+    assert!(
+        admin
+            .change_weekly_budget(
+                ChangeWeeklyBudget {
+                    expected_revision: 2,
+                    ..claim
+                },
+                ClientKeyBudgetMutationOrigin::Plugin(owner.clone()),
+                &context()
+            )
+            .await
+            .is_err()
+    );
+    let mut disabled = saved.instance;
+    disabled.enabled = false;
+    let stopped = plugins
+        .save_instance(disabled, saved.config_revision, &context())
+        .await
+        .unwrap();
+    plugins
+        .delete_instance(&owner.instance_id, stopped.config_revision, &context())
+        .await
+        .unwrap();
+    assert_eq!(
+        status(&database, "key").await.weekly_used_usd.canonical(),
+        "3"
+    );
+    database.close().await;
+}
+
+fn admission(key: &str) -> gateway_core::engine::budget::ClientBudgetAdmission {
+    gateway_core::engine::budget::ClientBudgetAdmission {
+        client_key_id: key_id(key),
+        source_key_id: key_id(key),
+    }
+}
+
 fn charge(key: &str, request: &str, amount: &str) -> ClientBudgetCharge {
     ClientBudgetCharge {
+        client_key_ref: key_id(key),
         key_id: key_id(key),
         request_id: ModelRequestId::new(format!("req_{request}")).unwrap(),
         amount_usd: amount.parse().unwrap(),
@@ -95,10 +738,10 @@ async fn manual_reset_clears_only_selected_budget_and_preserves_policy_history_a
         ("all", ClientKeyBudgetPeriod::All, "0", "0"),
     ] {
         seed(&database, key, "1", "2").await;
-        store.admit(key_id(key)).await.unwrap();
+        store.admit(admission(key)).await.unwrap();
         let billed = charge(key, key, "2.5");
         store.settle(billed.clone()).await.unwrap();
-        assert!(store.admit(key_id(key)).await.is_err());
+        assert!(store.admit(admission(key)).await.is_err());
         let before = status(&database, key).await;
         admin
             .reset_client_key_budget(
@@ -120,7 +763,7 @@ async fn manual_reset_clears_only_selected_budget_and_preserves_policy_history_a
         assert_eq!(after.daily_resets_at, before.daily_resets_at);
         assert_eq!(after.weekly_resets_at, before.weekly_resets_at);
         assert_eq!(
-            store.admit(key_id(key)).await.is_ok(),
+            store.admit(admission(key)).await.is_ok(),
             period == ClientKeyBudgetPeriod::All
         );
     }
@@ -141,7 +784,7 @@ async fn manual_reset_excludes_old_completions_but_counts_inflight_requests_afte
     seed(&database, "key", "1", "5").await;
     let store = PgClientBudgetStore::new(database.pool.clone());
     let admin = PgAdminClientKeyStore::new(database.pool.clone());
-    store.admit(key_id("key")).await.unwrap();
+    store.admit(admission("key")).await.unwrap();
     store
         .settle(charge("key", "before-reset", "1.2"))
         .await
@@ -185,7 +828,7 @@ async fn manual_reset_leaves_unused_and_expired_windows_inactive_and_reports_mis
     for key in ["unused", "expired"] {
         seed(&database, key, "1", "5").await;
     }
-    store.admit(key_id("expired")).await.unwrap();
+    store.admit(admission("expired")).await.unwrap();
     store.settle(charge("expired", "old", "2")).await.unwrap();
     sqlx::query("update client_key_budget_windows set daily_end = now() - interval '1 second', weekly_end = now() - interval '1 second'")
         .execute(&database.pool).await.unwrap();
@@ -315,7 +958,7 @@ async fn budgets_settle_exactly_once_and_enforce_each_threshold_across_store_ins
     for (key, prefix, amount) in [("day", "d", "0.1"), ("week", "w", "0.1")] {
         for _ in 0..3 {
             // 已准入请求可完成并超过限额，不预占估算费用。
-            first.admit(key_id(key)).await.unwrap();
+            first.admit(admission(key)).await.unwrap();
         }
         for index in 0..3 {
             let id = format!("{prefix}-{index}");
@@ -330,14 +973,14 @@ async fn budgets_settle_exactly_once_and_enforce_each_threshold_across_store_ins
     let day = status(&database, "day").await;
     assert_eq!(day.daily_used_usd.canonical(), "0.3");
     assert_eq!(day.weekly_used_usd.canonical(), "0.3");
-    let day_error = second.admit(key_id("day")).await.unwrap_err();
+    let day_error = second.admit(admission("day")).await.unwrap_err();
     assert_eq!(day_error.kind(), GatewayErrorKind::RateLimited);
     assert_eq!(
         day_error.client_error_code(),
         Some("key_daily_budget_exceeded")
     );
     assert!(day_error.retry_after().is_some());
-    let week_error = first.admit(key_id("week")).await.unwrap_err();
+    let week_error = first.admit(admission("week")).await.unwrap_err();
     assert_eq!(
         week_error.client_error_code(),
         Some("key_weekly_budget_exceeded")
@@ -357,7 +1000,7 @@ async fn window_rollover_is_shanghai_midnight_and_seven_days_with_late_settlemen
     };
     seed(&database, "key", "1", "2").await;
     let store = PgClientBudgetStore::new(database.pool.clone());
-    store.admit(key_id("key")).await.unwrap();
+    store.admit(admission("key")).await.unwrap();
     let (day_start, day_end, week_end): (DateTime<Utc>, DateTime<Utc>, DateTime<Utc>) =
         sqlx::query_as("select daily_start, daily_end, weekly_end from client_key_budget_windows where client_api_key_id = 'key'")
             .fetch_one(&database.pool).await.unwrap();
@@ -367,7 +1010,7 @@ async fn window_rollover_is_shanghai_midnight_and_seven_days_with_late_settlemen
     store.settle(charge("key", "first", "1")).await.unwrap();
     sqlx::query("update client_key_budget_windows set daily_start = daily_start - interval '1 day', daily_end = daily_start")
         .execute(&database.pool).await.unwrap();
-    store.admit(key_id("key")).await.unwrap();
+    store.admit(admission("key")).await.unwrap();
     assert_eq!(
         status(&database, "key").await.daily_used_usd.canonical(),
         "0"
@@ -382,7 +1025,7 @@ async fn window_rollover_is_shanghai_midnight_and_seven_days_with_late_settlemen
     let virtual_reset = status(&database, "key").await;
     assert_eq!(virtual_reset.daily_used_usd.canonical(), "0");
     assert_eq!(virtual_reset.weekly_used_usd.canonical(), "0");
-    store.admit(key_id("key")).await.unwrap();
+    store.admit(admission("key")).await.unwrap();
     let old = ClientBudgetCharge {
         completed_at: (day_start - chrono::Duration::seconds(1)).into(),
         ..charge("key", "after-reset", "0.9")
@@ -402,12 +1045,12 @@ async fn zero_cost_and_interrupted_requests_never_block_limited_keys() {
     };
     seed(&database, "key", "1", "5").await;
     let store = PgClientBudgetStore::new(database.pool.clone());
-    store.admit(key_id("key")).await.unwrap();
+    store.admit(admission("key")).await.unwrap();
     store.settle(charge("key", "no-cost", "0")).await.unwrap();
     // 模拟准入后进程退出，没有费用可结算；重启后仍应允许同一 Key 使用。
-    store.admit(key_id("key")).await.unwrap();
+    store.admit(admission("key")).await.unwrap();
     let restarted = PgClientBudgetStore::new(database.pool.clone());
-    restarted.admit(key_id("key")).await.unwrap();
+    restarted.admit(admission("key")).await.unwrap();
     let events: i64 = sqlx::query_scalar("select count(*) from client_key_charge_events")
         .fetch_one(&database.pool)
         .await
@@ -435,7 +1078,7 @@ async fn transient_settlement_failure_rolls_back_and_retries_exact_cost_before_a
     };
     seed(&database, "key", "1", "5").await;
     let store = PgClientBudgetStore::new(database.pool.clone());
-    store.admit(key_id("key")).await.unwrap();
+    store.admit(admission("key")).await.unwrap();
     // 在费用事件插入后让窗口写入失败，验证整个事务回滚。
     sqlx::raw_sql(
         "create function reject_budget_update() returns trigger language plpgsql as $$
@@ -463,7 +1106,7 @@ async fn transient_settlement_failure_rolls_back_and_retries_exact_cost_before_a
         .execute(&database.pool)
         .await
         .unwrap();
-    let error = store.admit(key_id("key")).await.unwrap_err();
+    let error = store.admit(admission("key")).await.unwrap_err();
     assert_eq!(error.client_error_code(), Some("key_daily_budget_exceeded"));
     store.settle(charge("key", "retry", "1.25")).await.unwrap();
     assert_eq!(
@@ -481,7 +1124,7 @@ async fn budget_updates_preserve_omitted_limits_and_do_not_clear_usage() {
     seed(&database, "key", "0", "0").await;
     let store = PgClientBudgetStore::new(database.pool.clone());
     let admin = PgAdminClientKeyStore::new(database.pool.clone());
-    store.admit(key_id("key")).await.unwrap();
+    store.admit(admission("key")).await.unwrap();
     store
         .settle(charge("key", "unlimited", "2.75"))
         .await
@@ -521,7 +1164,7 @@ async fn budget_updates_preserve_omitted_limits_and_do_not_clear_usage() {
     assert_eq!(current.daily_used_usd.canonical(), "2.75");
     assert_eq!(
         store
-            .admit(key_id("key"))
+            .admit(admission("key"))
             .await
             .unwrap_err()
             .client_error_code(),
@@ -539,13 +1182,13 @@ async fn budget_updates_preserve_omitted_limits_and_do_not_clear_usage() {
         )
         .await
         .unwrap();
-    store.admit(key_id("key")).await.unwrap();
+    store.admit(admission("key")).await.unwrap();
     sqlx::query("update client_api_keys set enabled = false where id = 'key'")
         .execute(&database.pool)
         .await
         .unwrap();
     assert_eq!(
-        store.admit(key_id("key")).await.unwrap_err().kind(),
+        store.admit(admission("key")).await.unwrap_err().kind(),
         GatewayErrorKind::PolicyDenied
     );
     sqlx::query("delete from client_api_keys where id = 'key'")
@@ -553,7 +1196,7 @@ async fn budget_updates_preserve_omitted_limits_and_do_not_clear_usage() {
         .await
         .unwrap();
     assert_eq!(
-        store.admit(key_id("key")).await.unwrap_err().kind(),
+        store.admit(admission("key")).await.unwrap_err().kind(),
         GatewayErrorKind::Unauthorized
     );
     store.settle(charge("key", "allowed", "1")).await.unwrap();
@@ -569,7 +1212,7 @@ async fn budget_database_outage_fails_closed() {
     database.pool.close().await;
     assert_eq!(
         store
-            .admit(key_id("key"))
+            .admit(admission("key"))
             .await
             .unwrap_err()
             .client_error_code(),
@@ -839,6 +1482,160 @@ fn budget_update(
 }
 
 #[tokio::test]
+async fn bound_budget_updates_reject_and_full_edits_preserve_effective_limits() {
+    let Some(database) = TestDatabase::create("bound_budget_updates").await else {
+        return;
+    };
+    let owner = plugin_reset_owner(&database).await;
+    seed(&database, "member", "10", "20").await;
+    seed(&database, "source", "50", "100").await;
+    let store = PgAdminClientKeyStore::new(database.pool.clone());
+    let binding = store
+        .change_limit_binding(
+            gateway_admin::model::client_keys::ChangeClientLimitBinding {
+                id: key_id("member"),
+                source_key_id: Some(key_id("source")),
+                expected_revision: 0,
+            },
+            &context(),
+            gateway_admin::model::client_keys::ClientLimitBindingMutationOrigin::Admin,
+        )
+        .await
+        .unwrap();
+    let before = store
+        .get_client_key(&key_id("member"))
+        .await
+        .unwrap()
+        .unwrap();
+    let source_before = status(&database, "source").await;
+    let audit_count: i64 = sqlx::query_scalar("select count(*) from admin_audit_events")
+        .fetch_one(&database.pool)
+        .await
+        .unwrap();
+    for origin in [
+        ClientKeyBudgetMutationOrigin::Admin,
+        ClientKeyBudgetMutationOrigin::Plugin(owner.clone()),
+    ] {
+        // 本地原值、有效来源原值和新值都必须拒绝，不能绕过到无变化分支。
+        for (daily, weekly) in [
+            (Some("10"), None),
+            (None, Some("100")),
+            (Some("30"), Some("200")),
+        ] {
+            assert_eq!(
+                store
+                    .update_client_key_budget_limits(
+                        budget_update("member", daily, weekly),
+                        origin.clone(),
+                        &context(),
+                    )
+                    .await
+                    .unwrap_err()
+                    .kind(),
+                AdminStoreErrorKind::Conflict
+            );
+        }
+    }
+    let after = store
+        .get_client_key(&key_id("member"))
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(after.local_budget_limits, before.local_budget_limits);
+    assert_eq!(after.budget, before.budget);
+    assert_eq!(status(&database, "source").await, source_before);
+    let state: (i64, i64) = sqlx::query_as("select config_revision,(select count(*) from admin_audit_events) from runtime_settings where id=1")
+        .fetch_one(&database.pool).await.unwrap();
+    assert_eq!(state, (binding.config_revision.get() as i64, audit_count));
+
+    store
+        .update_client_key(
+            UpdateClientKey {
+                request_profile_override_updates: Default::default(),
+                id: key_id("member"),
+                name: before.name,
+                label: before.label,
+                group_ids: vec![],
+                limits: before.limits,
+                daily_limit_usd: Some("50.00".parse().unwrap()),
+                weekly_limit_usd: Some("100".parse().unwrap()),
+            },
+            &context(),
+        )
+        .await
+        .unwrap();
+    let edited = store
+        .get_client_key(&key_id("member"))
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(edited.local_budget_limits.weekly_usd.canonical(), "20");
+    assert_eq!(edited.budget, source_before);
+
+    store
+        .update_client_key_budget_limits(
+            budget_update("source", None, Some("200")),
+            ClientKeyBudgetMutationOrigin::Plugin(owner.clone()),
+            &context(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(
+        status(&database, "member")
+            .await
+            .limits
+            .weekly_usd
+            .canonical(),
+        "200"
+    );
+    store
+        .change_limit_binding(
+            gateway_admin::model::client_keys::ChangeClientLimitBinding {
+                id: key_id("member"),
+                source_key_id: None,
+                expected_revision: binding.revision,
+            },
+            &context(),
+            gateway_admin::model::client_keys::ClientLimitBindingMutationOrigin::Admin,
+        )
+        .await
+        .unwrap();
+    assert_eq!(
+        status(&database, "member")
+            .await
+            .limits
+            .weekly_usd
+            .canonical(),
+        "200"
+    );
+    store
+        .update_client_key_budget_limits(
+            budget_update("member", None, Some("60")),
+            ClientKeyBudgetMutationOrigin::Plugin(owner),
+            &context(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(
+        status(&database, "member")
+            .await
+            .limits
+            .weekly_usd
+            .canonical(),
+        "60"
+    );
+    assert_eq!(
+        status(&database, "source")
+            .await
+            .limits
+            .weekly_usd
+            .canonical(),
+        "200"
+    );
+    database.close().await;
+}
+
+#[tokio::test]
 async fn plugin_budget_limits_preserve_consumption_and_unrelated_configuration_and_control_admission()
  {
     let Some(database) = TestDatabase::create("plugin_budget_limits").await else {
@@ -898,7 +1695,7 @@ async fn plugin_budget_limits_preserve_consumption_and_unrelated_configuration_a
         )
     );
     assert_eq!(
-        budgets.admit(key_id("key")).await.unwrap_err().kind(),
+        budgets.admit(admission("key")).await.unwrap_err().kind(),
         GatewayErrorKind::RateLimited
     );
     assert!(
@@ -923,7 +1720,7 @@ async fn plugin_budget_limits_preserve_consumption_and_unrelated_configuration_a
         )
         .await
         .unwrap();
-    budgets.admit(key_id("key")).await.unwrap();
+    budgets.admit(admission("key")).await.unwrap();
     let mutation = context();
     let (updated, settled) = tokio::join!(
         store.update_client_key_budget_limits(
@@ -939,7 +1736,7 @@ async fn plugin_budget_limits_preserve_consumption_and_unrelated_configuration_a
     assert_eq!(after.daily_used_usd.canonical(), "6");
     assert_eq!(after.weekly_used_usd.canonical(), "6");
     assert!(!after.limits.is_limited());
-    budgets.admit(key_id("key")).await.unwrap();
+    budgets.admit(admission("key")).await.unwrap();
     database.close().await;
 }
 
@@ -1024,5 +1821,236 @@ async fn plugin_budget_limits_revalidate_authority_and_rollback_with_audit() {
     assert_eq!(after.limits.daily_usd.canonical(), "2");
     assert_eq!(after.daily_resets_at, None);
     assert_eq!(after.weekly_resets_at, None);
+    database.close().await;
+}
+
+use gateway_admin::model::{
+    plugins::state::{PluginStateCommit, PluginStateConfiguration},
+    weekly_budget::{ChangeWeeklyBudget, WeeklyBudgetAction},
+};
+
+#[tokio::test]
+async fn waiting_manual_reset_excludes_late_charges_without_releasing_waiting() {
+    let Some(database) = TestDatabase::create("weekly_waiting_reset").await else {
+        return;
+    };
+    let owner = plugin_reset_owner(&database).await;
+    let admin = PgAdminClientKeyStore::new(database.pool.clone());
+    let budget = PgClientBudgetStore::new(database.pool.clone());
+    for (id, period) in [
+        ("weekly", ClientKeyBudgetPeriod::Weekly),
+        ("all", ClientKeyBudgetPeriod::All),
+    ] {
+        seed(&database, id, "100", "100").await;
+        admin
+            .change_weekly_budget(
+                ChangeWeeklyBudget {
+                    id: key_id(id),
+                    expected_revision: 0,
+                    action: WeeklyBudgetAction::Claim {
+                        expires_at: Utc::now() + chrono::Duration::days(2),
+                        clear_used: false,
+                    },
+                },
+                ClientKeyBudgetMutationOrigin::Plugin(owner.clone()),
+                &context(),
+            )
+            .await
+            .unwrap();
+        budget
+            .settle(charge(id, &format!("{id}_before"), "3"))
+            .await
+            .unwrap();
+        sqlx::query("update client_key_budget_windows set weekly_end=now()-interval '1 second' where client_api_key_id=$1")
+            .bind(id).execute(&database.pool).await.unwrap();
+        let before = admin.weekly_budget_control(&key_id(id)).await.unwrap();
+        let delayed = charge(id, &format!("{id}_late"), "2");
+        admin
+            .reset_client_key_budget(
+                ResetClientKeyBudget {
+                    id: key_id(id),
+                    period,
+                },
+                ClientKeyBudgetMutationOrigin::Admin,
+                &context(),
+            )
+            .await
+            .unwrap();
+        budget.settle(delayed).await.unwrap();
+        assert_eq!(status(&database, id).await.weekly_used_usd.canonical(), "0");
+        let after = admin.weekly_budget_control(&key_id(id)).await.unwrap();
+        assert_eq!(after.controller, before.controller);
+        assert_eq!(after.expires_at, before.expires_at);
+        assert_eq!(after.revision, before.revision);
+        assert!(after.accounting_start > before.accounting_start);
+        assert!(after.waiting);
+        assert_eq!(
+            budget
+                .admit(admission(id))
+                .await
+                .unwrap_err()
+                .client_error_code(),
+            Some("key_weekly_window_waiting")
+        );
+        budget
+            .settle(charge(id, &format!("{id}_after"), "1"))
+            .await
+            .unwrap();
+        assert_eq!(status(&database, id).await.weekly_used_usd.canonical(), "1");
+    }
+    database.close().await;
+}
+
+#[tokio::test]
+async fn align_preserves_accounting_start_spending_and_retry_identity() {
+    let Some(database) = TestDatabase::create("weekly_align").await else {
+        return;
+    };
+    seed(&database, "key", "100", "100").await;
+    let owner = plugin_reset_owner(&database).await;
+    let origin = ClientKeyBudgetMutationOrigin::Plugin(owner);
+    let admin = PgAdminClientKeyStore::new(database.pool.clone());
+    let budget = PgClientBudgetStore::new(database.pool.clone());
+    let claimed = admin
+        .change_weekly_budget(
+            ChangeWeeklyBudget {
+                id: key_id("key"),
+                expected_revision: 0,
+                action: WeeklyBudgetAction::Claim {
+                    expires_at: Utc::now() + chrono::Duration::days(1),
+                    clear_used: false,
+                },
+            },
+            origin.clone(),
+            &context(),
+        )
+        .await
+        .unwrap();
+    budget.settle(charge("key", "used", "3")).await.unwrap();
+    sqlx::query("update client_key_budget_windows set weekly_end=now()-interval '1 second' where client_api_key_id='key'").execute(&database.pool).await.unwrap();
+    let pending = ChangeWeeklyBudget {
+        id: key_id("key"),
+        expected_revision: 1,
+        action: WeeklyBudgetAction::Align {
+            expires_at: Utc::now() + chrono::Duration::days(3),
+        },
+    };
+    assert!(
+        admin
+            .change_weekly_budget(
+                pending.clone(),
+                ClientKeyBudgetMutationOrigin::Admin,
+                &context()
+            )
+            .await
+            .is_err()
+    );
+    let aligned = admin
+        .change_weekly_budget(pending.clone(), origin.clone(), &context())
+        .await
+        .unwrap();
+    assert!(!aligned.waiting);
+    assert_eq!(aligned.accounting_start, claimed.accounting_start);
+    assert_eq!(aligned.controller, claimed.controller);
+    assert_eq!(
+        status(&database, "key").await.weekly_used_usd.canonical(),
+        "3"
+    );
+    budget.settle(charge("key", "after", "2")).await.unwrap();
+    assert_eq!(
+        admin
+            .change_weekly_budget(pending, origin, &context())
+            .await
+            .unwrap(),
+        aligned
+    );
+    assert_eq!(
+        status(&database, "key").await.weekly_used_usd.canonical(),
+        "5"
+    );
+    database.close().await;
+}
+
+#[tokio::test]
+async fn migration_pause_preserves_control_and_old_process_loses_write_authority() {
+    let Some(database) = TestDatabase::create("weekly_pause").await else {
+        return;
+    };
+    seed(&database, "key", "0", "100").await;
+    let owner = plugin_reset_owner(&database).await;
+    let admin = PgAdminClientKeyStore::new(database.pool.clone());
+    let plugins = PgPluginStore::new(database.pool.clone());
+    let request = ChangeWeeklyBudget {
+        id: key_id("key"),
+        expected_revision: 0,
+        action: WeeklyBudgetAction::Claim {
+            expires_at: Utc::now() + chrono::Duration::days(2),
+            clear_used: true,
+        },
+    };
+    let control = admin
+        .change_weekly_budget(
+            request.clone(),
+            ClientKeyBudgetMutationOrigin::Plugin(owner.clone()),
+            &context(),
+        )
+        .await
+        .unwrap();
+    PgClientBudgetStore::new(database.pool.clone())
+        .settle(charge("key", "during", "4"))
+        .await
+        .unwrap();
+    let snapshot = plugins.load_instances().await.unwrap();
+    let mut paused = snapshot.instances[0].clone();
+    paused.enabled = false;
+    let saved = plugins
+        .pause_instance_for_state_transition(
+            paused,
+            snapshot.config_revision,
+            PluginStateCommit {
+                configuration: PluginStateConfiguration { namespaces: vec![] },
+                transition_id: None,
+            },
+            &context(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(
+        admin.weekly_budget_control(&key_id("key")).await.unwrap(),
+        control
+    );
+    assert!(
+        admin
+            .change_weekly_budget(
+                request.clone(),
+                ClientKeyBudgetMutationOrigin::Plugin(owner),
+                &context()
+            )
+            .await
+            .is_err()
+    );
+    let mut resumed = saved.instance;
+    resumed.enabled = true;
+    let saved = plugins
+        .save_instance(resumed, saved.config_revision, &context())
+        .await
+        .unwrap();
+    let current = PluginResourceOwner {
+        instance_id: saved.instance.id,
+        artifact_sha256: saved.instance.artifact_sha256,
+        revision: saved.instance.revision,
+    };
+    admin
+        .change_weekly_budget(
+            request,
+            ClientKeyBudgetMutationOrigin::Plugin(current),
+            &context(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(
+        status(&database, "key").await.weekly_used_usd.canonical(),
+        "4"
+    );
     database.close().await;
 }

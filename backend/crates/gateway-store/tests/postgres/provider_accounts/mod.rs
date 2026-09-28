@@ -3194,7 +3194,7 @@ async fn seed_model_request(
 ) -> Result<(), sqlx::Error> {
     sqlx::query(
         "insert into model_requests (
-           id, client_api_key_ref, config_revision, protocol, operation, endpoint,
+           id, client_api_key_ref, limit_source_key_ref, client_admission_acquired, config_revision, protocol, operation, endpoint,
            client_transport, requested_model_id,
            provider_kind, provider_account_id,
            provider_account_ref, upstream_model_id, upstream_transport, attempt_count,
@@ -3205,7 +3205,7 @@ async fn seed_model_request(
            started_at, deadline_at, completed_at,
            routing_scope, routing_group_refs, routing_group_names_snapshot
          ) values (
-           $1, 'key-provider-account-test', 1, 'openai', 'responses', '/v1/responses',
+           $1, 'key-provider-account-test', 'key-provider-account-test', true, 1, 'openai', 'responses', '/v1/responses',
            'http_sse', $4, $3, $2, $2, $4, 'http_sse', 1,
            'sent', $7 + interval '1 second', 'succeeded', 200, 200, $5, 0, 0, 0, 0,
            $5, 'provider_reported', $6::numeric, 'USD', $7,

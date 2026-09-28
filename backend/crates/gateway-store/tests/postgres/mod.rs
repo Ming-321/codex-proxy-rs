@@ -16,6 +16,7 @@ mod admission_recovery;
 mod backup;
 mod client_budgets;
 mod client_keys;
+mod client_limit_bindings;
 mod execution;
 mod execution_buffer;
 mod health;
@@ -235,6 +236,7 @@ async fn connect_and_migrate_should_apply_all_migrations_once_and_reopen_cleanly
             "client_api_keys",
             "client_key_budget_windows",
             "client_key_charge_events",
+            "client_key_limit_bindings",
             "model_requests",
             "ops_events",
             "outbound_proxies",

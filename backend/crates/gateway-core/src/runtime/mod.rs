@@ -161,6 +161,11 @@ impl HealthProbe for RuntimeSnapshotHandle {
 /// Admin 提交配置后触发本进程刷新与跨进程通知的对象安全端口。
 pub trait SnapshotControl: Send + Sync {
     fn publish_committed(&self, committed_revision: ConfigRevision) -> BoxFuture<'_, ()>;
+
+    /// 当前实例已加载的版本；尚未加载快照时返回 None。
+    fn loaded_revision(&self) -> Option<ConfigRevision> {
+        None
+    }
 }
 
 #[derive(Default)]
@@ -433,6 +438,10 @@ impl RuntimeSnapshotPublisher {
 }
 
 impl SnapshotControl for RuntimeSnapshotPublisher {
+    fn loaded_revision(&self) -> Option<ConfigRevision> {
+        self.published_revision()
+    }
+
     fn publish_committed(&self, committed_revision: ConfigRevision) -> BoxFuture<'_, ()> {
         Box::pin(async move {
             self.publish_committed_inner(committed_revision).await;

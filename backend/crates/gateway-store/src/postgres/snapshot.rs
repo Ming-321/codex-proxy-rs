@@ -186,6 +186,7 @@ impl SnapshotStorePort for PgRuntimeSnapshotRepository {
                         key.limits,
                     )
                     .with_request_profiles(key.request_profiles)
+                    .with_limit_source(key.limit_source)
                 })
                 .collect();
             let account_groups = data
@@ -329,16 +330,23 @@ async fn load_client_keys(
             i64,
             i64,
             sqlx::types::Json<BTreeMap<String, serde_json::Map<String, serde_json::Value>>>,
+            Option<String>,
+            Option<i64>,
+            Option<bool>,
         ),
     >(
         "select k.id, k.key,
                 coalesce(array_agg(kg.account_group_id order by kg.account_group_id)
                   filter (where kg.account_group_id is not null), '{}') as group_ids,
-                k.max_concurrency, k.requests_per_minute, k.provider_request_profiles_json
+                coalesce(x.max_concurrency,k.max_concurrency),
+                coalesce(x.requests_per_minute,k.requests_per_minute), k.provider_request_profiles_json,
+                b.source_key_id, b.revision, x.enabled
          from client_api_keys k
+         left join client_key_limit_bindings b on b.client_api_key_id = k.id
+         left join client_api_keys x on x.id = b.source_key_id
          left join client_api_key_groups kg on kg.client_api_key_id = k.id
          where k.enabled
-         group by k.id
+         group by k.id, b.source_key_id, b.revision, x.id
          order by k.id",
     )
     .fetch_all(&mut **transaction)
@@ -348,6 +356,19 @@ async fn load_client_keys(
         .map(|row| {
             let mut key = ClientApiKeySnapshot::from_persisted(row.0, row.1, row.2, row.3, row.4)?;
             key.request_profiles = decode_request_profiles(row.5.0)?;
+            if let Some(revision) = row.7 {
+                key.limit_source = Some(gateway_core::policy::NativeLimitSource {
+                    key_id: match row.6 {
+                        Some(id) => gateway_core::policy::ClientApiKeyId::new(id)
+                            .map_err(|_| invalid("invalid limit source"))?,
+                        None => key.id.clone(),
+                    },
+                    binding_revision: u64::try_from(revision)
+                        .map_err(|_| invalid("invalid binding revision"))?,
+                    enabled: row.8.unwrap_or(true),
+                    limits: key.limits,
+                });
+            }
             Ok(key)
         })
         .collect()

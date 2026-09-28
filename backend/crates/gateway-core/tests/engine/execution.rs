@@ -12,6 +12,8 @@ use gateway_core::error::GatewayError;
 
 #[derive(Default)]
 struct Admissions {
+    owners: Mutex<Vec<ClientApiKeyId>>,
+    released_owners: Mutex<Vec<ClientApiKeyId>>,
     active: Arc<AtomicBool>,
     limits: Mutex<Vec<RateLimits>>,
     release_gate: Mutex<Option<oneshot::Receiver<()>>>,
@@ -33,16 +35,21 @@ impl ClientAdmissionPort for Admissions {
     ) -> BoxFuture<'_, Result<ClientAdmissionDecision, ClientAdmissionError>> {
         Box::pin(async move {
             self.limits.lock().unwrap().push(request.limits);
+            self.owners
+                .lock()
+                .unwrap()
+                .push(request.client_api_key_id.clone());
             assert!(!self.active.swap(true, Ordering::SeqCst));
             Ok(ClientAdmissionDecision::Granted)
         })
     }
     fn release<'a>(
         &'a self,
-        _: &'a ClientApiKeyId,
+        key: &'a ClientApiKeyId,
         _: &'a ModelRequestId,
     ) -> BoxFuture<'a, Result<bool, ClientAdmissionError>> {
         Box::pin(async {
+            self.released_owners.lock().unwrap().push(key.clone());
             self.releases.fetch_add(1, Ordering::SeqCst);
             let gate = self.release_gate.lock().unwrap().take();
             if let Some(gate) = gate {
@@ -70,7 +77,10 @@ struct Budget {
 }
 
 impl ClientBudgetPort for Budget {
-    fn admit(&self, _: ClientApiKeyId) -> BoxFuture<'_, Result<(), GatewayError>> {
+    fn admit(
+        &self,
+        _: gateway_core::engine::budget::ClientBudgetAdmission,
+    ) -> BoxFuture<'_, Result<(), GatewayError>> {
         Box::pin(async {
             assert!(self.active.load(Ordering::SeqCst));
             if self.reject {
@@ -1112,6 +1122,7 @@ fn completed_parent_rejects_new_nested_execution_and_cancels_an_active_child() {
         let _owner = policy_index
             .register(generation.id().clone(), Arc::new(NestedRoutingPolicy))
             .unwrap();
+        let store = Arc::new(TrackingExecutionStore::default());
         let service = DefaultExecutionService::new(
             RuntimeSnapshotHandle::new(request_policy_snapshot(
                 generation,
@@ -1120,7 +1131,7 @@ fn completed_parent_rejects_new_nested_execution_and_cancels_an_active_child() {
                     ProviderKind::new("nested").unwrap(),
                 ],
             )),
-            Arc::new(TrackingExecutionStore::default()),
+            store.clone(),
             provider_index.clone(),
             Arc::new(Admissions::default()),
             Arc::new(UnusedContinuation),
@@ -1184,6 +1195,14 @@ fn completed_parent_rejects_new_nested_execution_and_cancels_an_active_child() {
         );
         child.session.detach_finalize().await;
         parent.session.detach_finalize().await;
+        let requests = store.requests.lock().unwrap();
+        assert_eq!(requests.len(), 2);
+        assert!(requests[0].client_admission_acquired);
+        assert!(!requests[1].client_admission_acquired);
+        assert_eq!(
+            requests[0].limit_source_key_ref,
+            requests[1].limit_source_key_ref
+        );
     });
 }
 
@@ -3855,6 +3874,16 @@ fn start_snapshot_with_policy(
     limits: RateLimits,
     disable_fast: bool,
 ) -> RuntimeSnapshot {
+    start_snapshot_with_source(revision, enabled, limits, disable_fast, None)
+}
+
+fn start_snapshot_with_source(
+    revision: u64,
+    enabled: bool,
+    limits: RateLimits,
+    disable_fast: bool,
+    source: Option<gateway_core::policy::NativeLimitSource>,
+) -> RuntimeSnapshot {
     let provider = ProviderKind::new("openai").expect("provider kind");
     let capabilities =
         ModelCapabilities::new(BTreeSet::from([OperationKind::Generate]), Some(16_000));
@@ -3871,20 +3900,116 @@ fn start_snapshot_with_policy(
             UpstreamModelId::new("gpt-start").expect("model ID"),
             capabilities,
         )],
-        vec![ClientPolicy::new(
-            ClientApiKeyId::new("key_start_test").expect("client API key ID"),
-            PlaintextClientApiKey::new("sk_start_test").expect("plaintext client API key"),
-            Arc::new(
-                account_scope(&provider, "acct_start")
-                    .as_ref()
-                    .clone()
-                    .with_disable_fast(disable_fast),
-            ),
-            enabled,
-            limits,
-        )],
+        vec![
+            ClientPolicy::new(
+                ClientApiKeyId::new("key_start_test").expect("client API key ID"),
+                PlaintextClientApiKey::new("sk_start_test").expect("plaintext client API key"),
+                Arc::new(
+                    account_scope(&provider, "acct_start")
+                        .as_ref()
+                        .clone()
+                        .with_disable_fast(disable_fast),
+                ),
+                enabled,
+                limits,
+            )
+            .with_limit_source(source),
+        ],
     )
     .expect("start snapshot")
+}
+
+#[test]
+fn shared_source_is_frozen_across_rebind_for_settlement_release_and_request_identity() {
+    block_on(async {
+        for transport in [
+            ClientTransport::HttpJson,
+            ClientTransport::HttpSse,
+            ClientTransport::WebSocket,
+        ] {
+            for detached in [false, true] {
+                let source_snapshot = |revision, id: &str| {
+                    start_snapshot_with_source(
+                        revision,
+                        true,
+                        RateLimits {
+                            max_concurrency: 99,
+                            requests_per_minute: 99,
+                        },
+                        false,
+                        Some(gateway_core::policy::NativeLimitSource {
+                            key_id: ClientApiKeyId::new(id).unwrap(),
+                            binding_revision: revision,
+                            enabled: true,
+                            limits: RateLimits {
+                                max_concurrency: 2,
+                                requests_per_minute: 3,
+                            },
+                        }),
+                    )
+                };
+                let snapshots = RuntimeSnapshotHandle::new(source_snapshot(1, "source_x"));
+                let admissions = Arc::new(Admissions::default());
+                let budget = Arc::new(Budget {
+                    active: admissions.active.clone(),
+                    ..Default::default()
+                });
+                let store = Arc::new(TrackingExecutionStore::default());
+                let usage = Arc::new(RecordingClientApiKeyUsage::default());
+                let service = DefaultExecutionService::new(
+                    snapshots.clone(),
+                    store.clone(),
+                    ProviderRegistry::new([
+                        Arc::new(ChargedProvider::default()) as Arc<dyn Provider>
+                    ])
+                    .unwrap(),
+                    admissions.clone(),
+                    Arc::new(UnusedContinuation),
+                    usage.clone(),
+                )
+                .with_budget(budget.clone());
+                let mut first = service.start(request(&service, transport)).await.unwrap();
+                consume_charged_prefix(first.session.as_mut()).await;
+                snapshots.publish(source_snapshot(2, "source_y"));
+                if detached {
+                    first.session.detach_finalize().await;
+                } else {
+                    while first.session.next_event().await.unwrap().is_some() {}
+                    first.session.detach_finalize().await;
+                }
+                let mut second = service.start(request(&service, transport)).await.unwrap();
+                consume_charged_prefix(second.session.as_mut()).await;
+                while second.session.next_event().await.unwrap().is_some() {}
+                let charges = budget.charges.lock().unwrap();
+                assert_eq!(charges.len(), 2);
+                assert_eq!(charges[0].key_id.as_str(), "source_x");
+                assert_eq!(charges[1].key_id.as_str(), "source_y");
+                assert!(
+                    charges
+                        .iter()
+                        .all(|charge| charge.client_key_ref.as_str() == "key_start_test"
+                            && charge.amount_usd == known_charge())
+                );
+                assert_eq!(
+                    *admissions.owners.lock().unwrap(),
+                    *admissions.released_owners.lock().unwrap()
+                );
+                assert_eq!(admissions.limits.lock().unwrap()[0].max_concurrency, 2);
+                let requests = store.requests.lock().unwrap();
+                assert_eq!(requests[0].limit_source_key_ref.as_str(), "source_x");
+                assert_eq!(requests[1].limit_source_key_ref.as_str(), "source_y");
+                assert!(
+                    requests
+                        .iter()
+                        .all(
+                            |request| request.client_api_key_ref.as_str() == "key_start_test"
+                                && request.client_admission_acquired
+                        )
+                );
+                assert!(usage.recorded().iter().all(|id| id == "key_start_test"));
+            }
+        }
+    });
 }
 
 fn probe_operation() -> Operation {

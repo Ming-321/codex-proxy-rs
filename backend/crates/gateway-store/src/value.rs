@@ -25,6 +25,8 @@ pub enum ConflictKind {
 /// Store adapter 的稳定错误边界。
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 pub enum StoreError {
+    #[error("{message}")]
+    ControlledLimits { message: String },
     #[error("{backend:?} store is unavailable: {message}")]
     Unavailable {
         backend: StoreBackend,
@@ -100,7 +102,15 @@ pub(crate) fn mutation_audit(
 }
 
 pub(crate) fn admin_store_error(resource: &'static str, error: StoreError) -> AdminStoreError {
+    if let StoreError::ControlledLimits { message } = error {
+        return AdminStoreError::new(
+            AdminStoreErrorKind::Conflict,
+            "controlled client limits",
+            message,
+        );
+    }
     let kind = match error {
+        StoreError::ControlledLimits { .. } => unreachable!(),
         StoreError::NotFound { .. } => AdminStoreErrorKind::NotFound,
         StoreError::Conflict {
             kind: ConflictKind::StaleRevision,

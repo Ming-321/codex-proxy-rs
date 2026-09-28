@@ -54,6 +54,7 @@ async fn fixture() -> (AdminTestFixture, Router) {
         weekly_used_usd: "2.35".parse().unwrap(),
         daily_resets_at: Some((Utc::now() + Duration::days(1)).into()),
         weekly_resets_at: Some((Utc::now() + Duration::days(7)).into()),
+        ..Default::default()
     };
     *fixture.client_key.lock().unwrap() = Some(key);
     let app = super::api_router_with_admin_and_client(fixture.services.clone(), KEY, "key-42");

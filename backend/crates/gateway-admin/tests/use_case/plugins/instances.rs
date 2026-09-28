@@ -434,6 +434,16 @@ impl PluginStore for LifecycleFixture {
         self.save(instance, expected_revision, state.transition_id, &[])
     }
 
+    async fn pause_instance_for_state_transition(
+        &self,
+        instance: PluginInstance,
+        expected_revision: Revision,
+        state: PluginStateCommit,
+        _: &MutationContext,
+    ) -> AdminStoreResult<PluginInstanceMutation> {
+        self.save(instance, expected_revision, state.transition_id, &[])
+    }
+
     async fn save_instance_replacing(
         &self,
         instance: PluginInstance,

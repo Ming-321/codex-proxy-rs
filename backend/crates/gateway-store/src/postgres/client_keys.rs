@@ -24,7 +24,7 @@ use gateway_admin::{
             SortDirection as AdminSortDirection, UpdateClientKey as AdminUpdateClientKey,
         },
     },
-    ports::store::{AdminStoreResult, ClientKeyStore},
+    ports::store::{AdminStoreError, AdminStoreErrorKind, AdminStoreResult, ClientKeyStore},
 };
 use gateway_core::{
     account::OpaqueProviderData,
@@ -37,7 +37,7 @@ use gateway_core::{
     task::{DaemonTask, WorkerTaskError},
 };
 use serde::Deserialize;
-use sqlx::{PgPool, Postgres, QueryBuilder, Transaction};
+use sqlx::{PgPool, Postgres, QueryBuilder, Row, Transaction};
 use tokio::sync::Notify;
 
 use crate::{
@@ -53,6 +53,7 @@ const CLIENT_API_KEY_LAST_USED_SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ClientApiKeySnapshot {
+    pub limit_source: Option<gateway_core::policy::NativeLimitSource>,
     pub request_profiles: std::collections::BTreeMap<
         gateway_core::routing::ProviderKind,
         gateway_core::account::OpaqueProviderData,
@@ -73,6 +74,7 @@ impl ClientApiKeySnapshot {
     ) -> StoreResult<Self> {
         Ok(Self {
             request_profiles: std::collections::BTreeMap::new(),
+            limit_source: None,
             id: ClientApiKeyId::new(id).map_err(|_| invalid("persisted key ID is invalid"))?,
             plaintext_key: PlaintextClientApiKey::new(key)
                 .map_err(|_| invalid("persisted plaintext key is invalid"))?,
@@ -112,6 +114,8 @@ impl fmt::Debug for ClientApiKeySecret {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ClientApiKeyRecord {
+    pub local_budget_limits: ClientBudgetLimits,
+    pub limit_source: Option<gateway_core::policy::NativeLimitSource>,
     pub request_profile_overrides: BTreeMap<ProviderKind, OpaqueProviderData>,
     pub id: String,
     pub name: String,
@@ -708,6 +712,22 @@ impl PgAdminClientKeyStore {
 
 #[async_trait]
 impl ClientKeyStore for PgAdminClientKeyStore {
+    async fn get_limit_binding(
+        &self,
+        id: &ClientApiKeyId,
+    ) -> AdminStoreResult<gateway_admin::model::client_keys::ClientLimitBinding> {
+        super::client_limit_bindings::get(&self.keys.pool, id).await
+    }
+
+    async fn change_limit_binding(
+        &self,
+        command: gateway_admin::model::client_keys::ChangeClientLimitBinding,
+        context: &MutationContext,
+        origin: gateway_admin::model::client_keys::ClientLimitBindingMutationOrigin,
+    ) -> AdminStoreResult<gateway_admin::model::client_keys::ClientLimitBinding> {
+        super::client_limit_bindings::change(&self.keys.pool, command, context, origin).await
+    }
+
     async fn update_client_key_budget_limits(
         &self,
         command: gateway_admin::model::client_keys::UpdateClientKeyBudgetLimits,
@@ -743,6 +763,17 @@ impl ClientKeyStore for PgAdminClientKeyStore {
                 id: command.id.as_str().to_owned(),
             })
         })?;
+        // 与绑定修改共用配置锁和 Key 行锁；专用预算写入不能静默修改未生效的本地值。
+        let bound: bool = sqlx::query_scalar("select exists(select 1 from client_key_limit_bindings where client_api_key_id=$1 and source_key_id is not null)")
+            .bind(command.id.as_str()).fetch_one(&mut *tx).await
+            .map_err(|_| map_error(postgres_unavailable("check budget limits binding")))?;
+        if bound {
+            return Err(AdminStoreError::new(
+                AdminStoreErrorKind::Conflict,
+                ENTITY,
+                "当前 Key 使用共享预算，请显式操作限额来源",
+            ));
+        }
         let daily: Decimal = daily
             .parse()
             .map_err(|_| map_error(postgres_unavailable("decode daily budget limit")))?;
@@ -819,6 +850,22 @@ impl ClientKeyStore for PgAdminClientKeyStore {
             .map_err(|error| admin_store_error(ENTITY, error))?
             .map(admin_client_key_record)
             .transpose()
+    }
+
+    async fn weekly_budget_control(
+        &self,
+        id: &ClientApiKeyId,
+    ) -> AdminStoreResult<gateway_admin::model::weekly_budget::WeeklyBudgetControl> {
+        super::weekly_budget::get(&self.keys.pool, id).await
+    }
+
+    async fn change_weekly_budget(
+        &self,
+        command: gateway_admin::model::weekly_budget::ChangeWeeklyBudget,
+        origin: gateway_admin::model::client_keys::ClientKeyBudgetMutationOrigin,
+        context: &MutationContext,
+    ) -> AdminStoreResult<gateway_admin::model::weekly_budget::WeeklyBudgetControl> {
+        super::weekly_budget::change(&self.keys.pool, command, origin, context).await
     }
 
     async fn list_client_keys(
@@ -1078,6 +1125,8 @@ fn admin_client_key_cursor(cursor: ClientApiKeyCursor) -> AdminStoreResult<Admin
 
 fn admin_client_key_record(record: ClientApiKeyRecord) -> AdminStoreResult<AdminClientKeyRecord> {
     Ok(AdminClientKeyRecord {
+        local_budget_limits: record.local_budget_limits,
+        limit_source: record.limit_source,
         request_profile_overrides: record.request_profile_overrides,
         id: ClientApiKeyId::new(record.id)
             .map_err(|_| admin_store_error(ENTITY, invalid("invalid client key id")))?,
@@ -1167,6 +1216,43 @@ pub(crate) async fn update_client_api_key_in_transaction(
     key: &UpdateClientApiKeyDetails,
 ) -> StoreResult<()> {
     key.validate()?;
+    // 配置锁已由调用方持有；关系、来源有效值与保存必须使用同一事务。
+    sqlx::query("select id from client_api_keys where id=$1 or id=(select source_key_id from client_key_limit_bindings where client_api_key_id=$1) order by id for update")
+        .bind(&key.id).execute(&mut **transaction).await
+        .map_err(|_| postgres_unavailable("lock client limit update"))?;
+    let source = sqlx::query("select x.name, x.max_concurrency, x.requests_per_minute, x.daily_limit_usd::text, x.weekly_limit_usd::text from client_key_limit_bindings b join client_api_keys x on x.id=b.source_key_id where b.client_api_key_id=$1 for update of x")
+        .bind(&key.id).fetch_optional(&mut **transaction).await
+        .map_err(|_| postgres_unavailable("read shared limits for update"))?;
+    if let Some(source) = &source {
+        let mut fields = Vec::new();
+        if key.max_concurrency != to_u64(source.get("max_concurrency"))? {
+            fields.push("并发上限");
+        }
+        if key.requests_per_minute != to_u64(source.get("requests_per_minute"))? {
+            fields.push("RPM 上限");
+        }
+        for (value, column, label) in [
+            (key.daily_limit_usd, "daily_limit_usd", "日预算上限"),
+            (key.weekly_limit_usd, "weekly_limit_usd", "周预算上限"),
+        ] {
+            let effective: Decimal = source
+                .get::<String, _>(column)
+                .parse()
+                .map_err(|_| postgres_unavailable("decode shared budget limit"))?;
+            if value.is_some_and(|value| value != effective) {
+                fields.push(label);
+            }
+        }
+        if !fields.is_empty() {
+            let name: String = source.get("name");
+            let fields = fields.join("、");
+            return Err(StoreError::ControlledLimits {
+                message: format!(
+                    "此 Key 的{fields}由来源 Key「{name}」统一控制，不能在此修改。请修改「{name}」的{fields}。本次修改未保存。"
+                ),
+            });
+        }
+    }
     ensure_client_key_name_available(transaction, &key.id, key.name.trim()).await?;
     let removed_profiles = key
         .request_profile_override_updates
@@ -1187,8 +1273,8 @@ pub(crate) async fn update_client_api_key_in_transaction(
         .collect::<BTreeMap<_, _>>();
     let result = sqlx::query(
         "update client_api_keys
-         set name = $2, label = $3, max_concurrency = $4,
-             requests_per_minute = $5, updated_at = now(),
+         set name = $2, label = $3, max_concurrency = case when $10 then max_concurrency else $4 end,
+             requests_per_minute = case when $10 then requests_per_minute else $5 end, updated_at = now(),
              daily_limit_usd = coalesce($6::text::numeric, daily_limit_usd),
              weekly_limit_usd = coalesce($7::text::numeric, weekly_limit_usd),
              provider_request_profiles_json = (provider_request_profiles_json - $8::text[])
@@ -1200,10 +1286,11 @@ pub(crate) async fn update_client_api_key_in_transaction(
     .bind(&key.label)
     .bind(to_i64(key.max_concurrency)?)
     .bind(to_i64(key.requests_per_minute)?)
-    .bind(key.daily_limit_usd.map(|amount| amount.canonical()))
-    .bind(key.weekly_limit_usd.map(|amount| amount.canonical()))
+    .bind(key.daily_limit_usd.filter(|_| source.is_none()).map(|amount| amount.canonical()))
+    .bind(key.weekly_limit_usd.filter(|_| source.is_none()).map(|amount| amount.canonical()))
     .bind(removed_profiles)
     .bind(sqlx::types::Json(replacement_profiles))
+    .bind(source.is_some())
     .execute(&mut **transaction)
     .await
     .map_err(|_| postgres_unavailable("update client API key in transaction"))?;
@@ -1258,6 +1345,19 @@ pub(crate) async fn delete_client_api_key_in_transaction(
     id: &str,
 ) -> StoreResult<()> {
     require_nonempty(ENTITY, "id", id)?;
+    let anchor: Option<bool> =
+        sqlx::query_scalar("select limit_anchor from client_api_keys where id=$1 for update")
+            .bind(id)
+            .fetch_optional(&mut **transaction)
+            .await
+            .map_err(|_| postgres_unavailable("lock limit anchor deletion"))?;
+    if anchor == Some(true) {
+        return Err(StoreError::Conflict {
+            entity: "retained limit anchor",
+            id: id.to_owned(),
+            kind: crate::ConflictKind::InvalidTransition,
+        });
+    }
     let result = sqlx::query("delete from client_api_keys where id = $1")
         .bind(id)
         .execute(&mut **transaction)
@@ -1396,6 +1496,8 @@ fn client_record_from_row(row: &sqlx::postgres::PgRow) -> StoreResult<ClientApiK
         .map_err(|_| invalid("invalid groups"))?;
     Ok(
         ClientApiKeyRecord {
+            local_budget_limits: ClientBudgetLimits::default(),
+            limit_source: None,
             request_profile_overrides:
                 decode_request_profiles(
                     row.try_get::<sqlx::types::Json<

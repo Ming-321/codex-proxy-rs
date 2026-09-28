@@ -9,6 +9,7 @@ mod plugin;
 mod resources;
 mod session;
 mod upstream_adapter;
+mod weekly_budget;
 
 use crate::{ErrorCode, PluginFault};
 use serde::{Serialize, de::DeserializeOwned};

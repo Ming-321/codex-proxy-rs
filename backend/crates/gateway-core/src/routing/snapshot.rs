@@ -136,6 +136,7 @@ impl SnapshotSettingsFacts {
 /// Store 读取到的一个启用 Client API Key 策略事实。
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SnapshotClientPolicyFacts {
+    limit_source: Option<crate::policy::NativeLimitSource>,
     request_profiles: BTreeMap<ProviderKind, crate::account::OpaqueProviderData>,
     key_id: ClientApiKeyId,
     plaintext_key: PlaintextClientApiKey,
@@ -144,6 +145,12 @@ pub struct SnapshotClientPolicyFacts {
 }
 
 impl SnapshotClientPolicyFacts {
+    #[must_use]
+    pub fn with_limit_source(mut self, source: Option<crate::policy::NativeLimitSource>) -> Self {
+        self.limit_source = source;
+        self
+    }
+
     #[must_use]
     pub fn with_request_profiles(
         mut self,
@@ -163,6 +170,7 @@ impl SnapshotClientPolicyFacts {
         Self {
             key_id,
             request_profiles: BTreeMap::new(),
+            limit_source: None,
             plaintext_key,
             group_ids,
             limits,
@@ -647,17 +655,20 @@ async fn compile_runtime_snapshot(
         };
         let mut request_profiles = facts.settings.request_profiles.clone();
         request_profiles.extend(policy.request_profiles);
-        client_policies.push(ClientPolicy::new(
-            policy.key_id,
-            policy.plaintext_key,
-            Arc::new(
-                account_scope
-                    .with_disable_fast(disable_fast)
-                    .with_request_profiles(request_profiles),
-            ),
-            true,
-            policy.limits,
-        ));
+        client_policies.push(
+            ClientPolicy::new(
+                policy.key_id,
+                policy.plaintext_key,
+                Arc::new(
+                    account_scope
+                        .with_disable_fast(disable_fast)
+                        .with_request_profiles(request_profiles),
+                ),
+                true,
+                policy.limits,
+            )
+            .with_limit_source(policy.limit_source),
+        );
     }
 
     // 关闭自定义时保留持久化值，但不生成全局覆盖；请求继续使用客户端字段。

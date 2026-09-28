@@ -28,6 +28,7 @@
     "groups",
     "keys",
     "key_budgets",
+    "key_limit_bindings",
     "quota_observations"
   ]
 }
