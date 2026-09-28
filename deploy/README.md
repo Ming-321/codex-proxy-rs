@@ -526,6 +526,23 @@ alpha、beta、rc、exp 在 GitHub 标记为 Pre-release，不覆盖 GitHub Late
 回滚入口只接受与记录指纹一致的完整备份；旧格式记录没有指纹，或备份被替换、丢失时，不再提供在线回滚，
 但不会删除备份文件。此时需要按人工部署流程恢复已经核实的发行包。
 
+直接运行二进制时，若未设置 `CPR_ENABLE_SELF_RESTART=true`，管理端自重启默认关闭。
+在现有 `deploy/config.yaml` 的 `host` 下合并以下配置：
+
+```yaml
+host:
+  system_update:
+    deployment_mode: binary
+    self_restart_enabled: true
+    executable_path: '/opt/codex-proxy-rs/codex-proxy-rs'
+```
+
+`executable_path` 为可选项：未指定时，服务在启动时解析并固定当前程序路径；
+显式配置时，将示例改为实际程序的绝对路径。`self_restart_enabled` 控制管理端的「立即重启」操作；
+修改配置后需手动重启当前服务一次才会生效。
+以上三个字段也可分别通过 `CPR_DEPLOYMENT_MODE`、`CPR_ENABLE_SELF_RESTART` 和 `CPR_UPDATE_EXE_PATH` 设置，
+YAML 中显式配置的值优先于对应环境变量。
+
 Compose 提供以下在线更新运行参数：
 
 - `CPR_UPDATE_REPOSITORY`：只接受 `owner/repository`；默认 `zyycn/codex-proxy-rs`。

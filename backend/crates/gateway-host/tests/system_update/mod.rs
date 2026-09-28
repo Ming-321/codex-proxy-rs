@@ -206,6 +206,73 @@ async fn restart_should_spawn_replacement_before_shutdown_outside_docker() {
     .expect("replacement executed before fixture cleanup");
 }
 
+#[cfg(target_os = "linux")]
+#[tokio::test]
+async fn restart_should_use_startup_path_after_running_executable_is_renamed() {
+    const CHILD_ENV: &str = "CPR_TEST_RESTART_RENAMED_EXECUTABLE_CHILD";
+    let executable = std::env::current_exe().expect("test executable");
+    if std::env::var_os(CHILD_ENV).is_none() {
+        // 只重命名隔离副本，避免修改 Cargo 的测试程序或影响并行测试。
+        let directory = tempfile::tempdir().expect("isolated test directory");
+        let child = directory.path().join("restart-test");
+        fs::copy(&executable, &child).expect("copy test executable");
+        let output = std::process::Command::new(child)
+            .args([
+                "--exact",
+                "system_update::restart_should_use_startup_path_after_running_executable_is_renamed",
+            ])
+            .env(CHILD_ENV, "1")
+            .env("CPR_RESTART_DELAY_MS", "1200")
+            .output()
+            .expect("isolated restart test");
+        assert!(
+            output.status.success(),
+            "stdout: {}\nstderr: {}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+        return;
+    }
+    if executable.file_name() == Some(std::ffi::OsStr::new("codex-proxy-rs.backup")) {
+        // 误启动旧程序时留下可观察结果并退出，避免旧副本再次发起重启。
+        fs::write(
+            executable
+                .parent()
+                .expect("installation directory")
+                .join("replacement-version"),
+            "old",
+        )
+        .expect("old replacement marker");
+        return;
+    }
+
+    let fixture = Fixture::new();
+    fs::rename(executable, fixture.executable()).expect("move isolated running executable");
+    let mut config = fixture.config("http://127.0.0.1:1/repos");
+    config.executable_path = None;
+    config.self_restart_enabled = true;
+    let service = ProcessSystemOperations::new(CancellationToken::new(), config);
+
+    let backup = fixture.root.path().join("codex-proxy-rs.backup");
+    fs::rename(fixture.executable(), &backup).expect("back up running executable");
+    fixture.write_executable("#!/bin/sh\nprintf new > \"${0%/*}/replacement-version\"\n");
+    assert_eq!(std::env::current_exe().expect("renamed executable"), backup);
+
+    service.restart().await.expect("restart accepted");
+    let marker = fixture.root.path().join("replacement-version");
+    tokio::time::timeout(Duration::from_secs(5), async {
+        while !marker.is_file() {
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .expect("replacement executed");
+    assert_eq!(
+        fs::read_to_string(marker).expect("replacement version"),
+        "new"
+    );
+}
+
 #[tokio::test]
 async fn restart_should_conflict_while_another_system_operation_is_running() {
     let fixture = Fixture::new();
