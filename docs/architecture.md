@@ -141,6 +141,11 @@ flowchart LR
   正文按需读取，透传无需额外读取权限；转换和改写不能绕过 Core 的交付、取消与结算边界。
   数据面插件通过受管 HTTP 已发送或无法证明未发送时，Runtime 把该事实并入 Core 的请求副作用水位，后续不能按
   Provider 的 `not_sent` 结果透明重放
+- **上游适配器是洋葱链终端**：`upstream_adapter` 只扩展内置 OpenAI / xAI，沿原 Provider 的选号、租约及 attempt 中间件进入冷流。
+  Provider 解释凭据、恢复账号状态和计算价格；Runtime 限定目标、绑定账号版本并解析标准事件，Host 负责真实出站。
+  普通 HTTP 与账号 HTTP 共用发送、背压、取消和正文回收，账号鉴权只装饰已授权请求。
+  WebSocket 连接续接绑定 Key、账号、凭据版本、实例和代次，不能当作可重排的中间件或全局共享句柄。
+  路由、调度、重试和终态观察保留各自端口，适配器不能另建执行引擎或提交最终账单
 - **访问域不跨调用**：账号、HTTP、模型、私有状态和日志回调绑定有效父调用与阶段。管理页和 CLI 不预绑定 Client Key，模型调用按次
   选择当前 Key；页面 Responses 桥还复核精确实例目标和 `models` 域，并在等待与交付期间持续撤销检查。
   `frontend_authentication` 必须显式配置 principal 到 Key 的映射；公开登录回调使用一次性票据且不继承宿主回调权限。

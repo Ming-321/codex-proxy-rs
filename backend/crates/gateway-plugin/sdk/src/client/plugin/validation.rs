@@ -18,6 +18,10 @@ pub(super) fn validate(
         match capability {
             C::Maintenance => required(methods::RECONCILE.name)?,
             C::Middleware => required(crate::call::middleware::HANDLE_METHOD)?,
+            C::UpstreamAdapter => {
+                required(methods::UPSTREAM_ADAPTER_REGISTER.name)?;
+                required(methods::UPSTREAM_ADAPTER_EXECUTE.name)?;
+            }
             C::ModelRouter => required(methods::ROUTE_MODEL.name)?,
             C::ModelCatalog => required(methods::MODEL_CATALOG_REGISTER.name)?,
             C::RetryPolicy => required(methods::RETRY_DECISION.name)?,

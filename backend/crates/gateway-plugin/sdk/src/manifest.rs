@@ -261,8 +261,9 @@ impl Manifest {
             let stages = declaration.stages.iter().copied().collect::<BTreeSet<_>>();
             let input_formats = declaration.input_formats.iter().collect::<BTreeSet<_>>();
             let output_formats = declaration.output_formats.iter().collect::<BTreeSet<_>>();
-            if !(declaration.version == 1
-                || (*capability == Capability::Middleware && declaration.version == 2))
+            if !capability
+                .contract_versions()
+                .contains(&declaration.version)
                 || declaration.id.len() > 128
                 || local_id.is_empty()
                 || !local_id.is_ascii()

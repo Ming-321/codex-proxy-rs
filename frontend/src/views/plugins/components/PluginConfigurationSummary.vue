@@ -14,6 +14,7 @@ const props = defineProps<{
 const stageLabels: Record<string, string> = {
   request: '请求开始',
   attempt: '每次尝试',
+  upstream: '上游调用',
   routing: '模型路由',
   scheduling: '账号调度',
   retry: '重试决策',
@@ -23,7 +24,7 @@ const stageLabels: Record<string, string> = {
   maintenance: '后台维护',
   authentication: '客户端认证',
 }
-const requestStages = new Set(['request', 'attempt', 'routing', 'scheduling', 'retry', 'observation'])
+const requestStages = new Set(['request', 'attempt', 'upstream', 'routing', 'scheduling', 'retry', 'observation'])
 const groups = computed(() => {
   const result = new Map<string, { label: string, bindings: PluginCapabilityBinding[] }>()
   for (const binding of props.instance.bindings) {

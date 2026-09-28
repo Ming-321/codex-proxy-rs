@@ -18,6 +18,11 @@ use serde_json::{Value, json};
 use tokio::io::AsyncWriteExt as _;
 use tokio::sync::{Mutex, Notify, mpsc, oneshot};
 
+use gateway_plugin_sdk::call::{
+    model::{ExecutionEvent, WireEvent, WirePayload},
+    upstream_adapter::{UpstreamAdapterEvent, UpstreamAdapterRequest},
+};
+
 type CallbackResult = Result<(Value, Vec<u8>), PluginFault>;
 struct PendingCallback {
     parent: u64,
@@ -396,6 +401,23 @@ impl Peer {
             return;
         }
         match method.as_str() {
+            "upstream_adapter.register" => {
+                self.send(
+                    Message::Result {
+                        id,
+                        result: json!({}),
+                    },
+                    serde_json::to_vec(&self.configuration["upstream_registration"]).unwrap(),
+                )
+                .await;
+                return;
+            }
+            "upstream_adapter.execute" => {
+                if let Err(error) = self.upstream_adapter(id, payload).await {
+                    self.send(Message::Error { id, error }, vec![]).await;
+                }
+                return;
+            }
             "plugin.reconcile" => {
                 let result = if let Some(results) = self.data_queries(id).await {
                     self.append_observation_marker(
@@ -1308,7 +1330,12 @@ async fn main() {
                 if method == "hang_uncancellable" {
                     uncancellable.insert(id);
                 }
-                if method.starts_with("stream") || matches!(method.as_str(), "middleware.handle") {
+                if method.starts_with("stream")
+                    || matches!(
+                        method.as_str(),
+                        "middleware.handle" | "upstream_adapter.execute"
+                    )
+                {
                     peer.streams
                         .lock()
                         .await
@@ -1383,5 +1410,103 @@ async fn main() {
             Message::Shutdown => break,
             _ => {}
         }
+    }
+}
+
+impl Peer {
+    async fn upstream_adapter(&self, id: u64, payload: Vec<u8>) -> Result<(), PluginFault> {
+        let (request, body) = UpstreamAdapterRequest::decode(&payload).unwrap();
+        // 假凭据用于检测宿主是否把已选账号令牌放入了插件输入。
+        assert!(!String::from_utf8_lossy(&payload).contains("fixture-native-token"));
+        self.append_observation_marker("upstream_marker", &json!({"key":request.client_key_id,"account":request.account_id,"continuation":request.continuation}));
+        self.send(
+            Message::Result {
+                id,
+                result: json!({}),
+            },
+            vec![],
+        )
+        .await;
+        let mut response_body = vec![];
+        for callback in self.configuration["upstream_callbacks"]
+            .as_array()
+            .into_iter()
+            .flatten()
+        {
+            let payload = if callback["body"] == "request" {
+                body.clone()
+            } else {
+                vec![]
+            };
+            let (result, payload) = self
+                .callback_payload(
+                    id,
+                    callback["method"].as_str().unwrap(),
+                    callback["params"].clone(),
+                    payload,
+                )
+                .await?;
+            if let Some(stream) = result["stream"].as_str() {
+                loop {
+                    let (result, chunk) = self
+                        .callback_payload(
+                            id,
+                            "host.upstream.http.stream_read",
+                            json!({"stream":stream,"maximum_bytes":65536}),
+                            vec![],
+                        )
+                        .await?;
+                    response_body.extend(chunk);
+                    if result["eof"] == true {
+                        break;
+                    }
+                }
+            } else if !payload.is_empty() {
+                response_body = payload;
+            }
+        }
+        let events = self.configuration["upstream_events"].as_array().unwrap();
+        let credits = self.streams.lock().await.get(&id).unwrap().clone();
+        for (sequence, event) in events.iter().enumerate() {
+            let mut message = UpstreamAdapterEvent::new(
+                serde_json::from_value::<ExecutionEvent>(event["event"].clone()).unwrap(),
+            );
+            message.service_tier = event["service_tier"].as_str().map(str::to_owned);
+            message.continuation = event
+                .get("continuation")
+                .map(|value| serde_json::from_value(value.clone()).unwrap());
+            message.failure = event
+                .get("failure")
+                .map(|value| serde_json::from_value(value.clone()).unwrap());
+            if event["wire"] == "http" {
+                message.event.wire = Some(WireEvent {
+                    protocol: request.protocol.clone(),
+                    payload: WirePayload::RawJson {
+                        body: response_body.clone(),
+                    },
+                });
+            } else if event["wire"] == "sse" {
+                message.event.wire = Some(WireEvent {
+                    protocol: request.protocol.clone(),
+                    payload: WirePayload::RawSse {
+                        frame: response_body.clone(),
+                    },
+                });
+            }
+            let payload = message.encode().unwrap();
+            credits.take(payload.len() as u64).await;
+            self.send(
+                Message::Stream {
+                    id,
+                    sequence: sequence as u64,
+                },
+                payload,
+            )
+            .await;
+        }
+        let error = (self.configuration["upstream_tail_error"] == true)
+            .then(|| PluginFault::new(ErrorCode::Fault, "fixture terminal fault"));
+        self.send(Message::End { id, error }, vec![]).await;
+        Ok(())
     }
 }

@@ -12,3 +12,4 @@ pub mod observation;
 pub mod policy;
 pub mod registration;
 pub mod resources;
+pub mod upstream_adapter;

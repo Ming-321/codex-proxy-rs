@@ -41,6 +41,7 @@ export const PLUGIN_CAPABILITY_LABELS: Record<string, string> = {
   retry_policy: '重试策略',
   executor: 'Provider 执行',
   middleware: '请求中间件',
+  upstream_adapter: '上游适配器',
   request_lifecycle: '请求生命周期',
   web_socket_observer: 'WebSocket 观察',
   usage: '用量处理',

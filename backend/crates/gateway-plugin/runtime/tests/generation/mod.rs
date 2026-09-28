@@ -6,6 +6,7 @@ mod observer;
 mod policy;
 mod prepare;
 mod private_state;
+mod upstream_adapter;
 
 use gateway_admin::{
     model::{

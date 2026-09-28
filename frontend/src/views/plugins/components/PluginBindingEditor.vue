@@ -12,6 +12,7 @@ const emit = defineEmits<{ validityChange: [valid: boolean] }>()
 const bindings = defineModel<PluginCapabilityBinding[]>({ required: true })
 const stages: Record<string, string[]> = {
   middleware: ['request', 'attempt'],
+  upstream_adapter: ['upstream'],
   model_router: ['routing'],
   scheduler: ['scheduling'],
   retry_policy: ['retry'],
@@ -19,7 +20,7 @@ const stages: Record<string, string[]> = {
   usage: ['observation'],
   web_socket_observer: ['observation'],
 }
-const stageLabels: Record<string, string> = { request: '请求开始', attempt: '每次尝试', routing: '模型路由', scheduling: '账号调度', retry: '重试决策', observation: '请求结束' }
+const stageLabels: Record<string, string> = { request: '请求开始', attempt: '每次尝试', upstream: '上游调用', routing: '模型路由', scheduling: '账号调度', retry: '重试决策', observation: '请求结束' }
 const entries = computed(() => Object.entries(props.metadata.contributes).flatMap(([capability, contribution]) =>
   contribution.stages.filter(stage => stages[capability]?.includes(stage))
     .map(stage => ({ capability, contribution: contribution.id, stage, key: `${contribution.id}:${stage}` })),
@@ -98,8 +99,8 @@ watch(valid, value => emit('validityChange', value), { immediate: true })
           <PluginScopeInput :model-value="bindingFor(entry.key)!.models" label="模型范围" placeholder="每行一个模型名称，精确匹配" :class="['routing', 'request'].includes(entry.stage) ? 'sm:col-span-2' : undefined" :disabled="disabled" @update:model-value="patch(entry.key, { models: $event })" />
           <PluginScopeInput v-if="!['routing', 'request'].includes(entry.stage)" :model-value="bindingFor(entry.key)!.providerIds" label="Provider 范围" placeholder="每行一个 Provider 标识" :disabled="disabled" @update:model-value="patch(entry.key, { providerIds: $event })" />
         </div>
-        <div v-if="entry.stage !== 'observation'" class="grid items-end gap-4 sm:grid-cols-2">
-          <BaseFormItem label="执行顺序">
+        <div v-if="entry.stage !== 'observation'" class="grid items-end gap-4" :class="entry.stage !== 'upstream' ? 'sm:grid-cols-2' : undefined">
+          <BaseFormItem v-if="entry.stage !== 'upstream'" label="执行顺序">
             <template #label-extra>
               <PluginHelpPopover label="执行顺序说明">
                 数值较小的先执行
@@ -108,7 +109,7 @@ watch(valid, value => emit('validityChange', value), { immediate: true })
             <BaseNumberInput :model-value="bindingFor(entry.key)!.order" label="执行顺序" size="md" :min="-2147483648" :max="2147483647" :disabled="disabled" class="w-full" @update:model-value="patch(entry.key, { order: $event })" />
           </BaseFormItem>
           <BaseFormItem label="插件失败时">
-            <BaseSelect :model-value="bindingFor(entry.key)!.failurePolicy" :options="entry.stage === 'retry' ? [{ label: '交给后续处理', value: 'delegate' }] : [{ label: '拒绝请求', value: 'reject' }, { label: '交给后续处理', value: 'delegate' }]" :disabled="disabled || entry.stage === 'retry'" class="w-full" @update:model-value="patch(entry.key, { failurePolicy: $event as 'reject' | 'delegate' })" />
+            <BaseSelect :model-value="bindingFor(entry.key)!.failurePolicy" :options="entry.stage === 'retry' ? [{ label: '交给后续处理', value: 'delegate' }] : entry.stage === 'upstream' ? [{ label: '拒绝请求', value: 'reject' }] : [{ label: '拒绝请求', value: 'reject' }, { label: '交给后续处理', value: 'delegate' }]" :disabled="disabled || ['retry', 'upstream'].includes(entry.stage)" class="w-full" @update:model-value="patch(entry.key, { failurePolicy: $event as 'reject' | 'delegate' })" />
           </BaseFormItem>
         </div>
       </template>

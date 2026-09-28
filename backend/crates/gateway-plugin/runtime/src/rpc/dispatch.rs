@@ -253,6 +253,18 @@ fn callback_allowed(method: &str, stage: Stage, permissions: &[Permission]) -> b
             ) && permissions.contains(&Permission::KeyBudgets));
     }
     let permission = match method {
+        "host.upstream.http.do"
+        | "host.upstream.http.do_stream"
+        | "host.upstream.http.stream_read"
+        | "host.upstream.http.stream_close"
+        | "host.upstream.websocket.open"
+        | "host.upstream.websocket.send"
+        | "host.upstream.websocket.read"
+        | "host.upstream.websocket.close"
+            if stage == Stage::Upstream =>
+        {
+            Permission::UpstreamConnections
+        }
         "host.http.do"
         | "host.http.do_stream"
         | "host.http.stream_read"

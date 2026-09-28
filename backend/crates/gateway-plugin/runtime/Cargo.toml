@@ -37,6 +37,7 @@ uuid = { version = "1.23.3", features = ["v4"] }
 url = "2.5.8"
 
 [dev-dependencies]
+tokio-tungstenite = { version = "0.29.0", default-features = false, features = ["handshake"] }
 wiremock = "0.6.5"
 gateway-store = { path = "../../gateway-store" }
 sqlx = { version = "0.9.0", default-features = false, features = ["runtime-tokio", "tls-rustls", "postgres"] }

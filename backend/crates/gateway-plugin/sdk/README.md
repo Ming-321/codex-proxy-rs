@@ -25,6 +25,7 @@ SDK 仍处于实验阶段；能力是否可用取决于宿主支持、清单声�
 | `call::frontend_authentication` | 数据面认证信封、认证器标识与外部 principal 结果 |
 | `call::model` | 宿主模型调用的 canonical 事实、原生 wire 与有界事件编解码 |
 | `call::middleware` | 洋葱中间件请求/响应 head、single-use next 与惰性正文 frame 合同 |
+| `call::upstream_adapter` | 内置 OpenAI / xAI 的[受管上游适配器](docs/upstream-adapters.md)注册、执行、出站与续接合同 |
 | `call::policy` | 模型路由、账号调度、受约束重试及终态用量观察合同 |
 | `call::catalog` | 固定 Provider 的模型别名注册合同 |
 | `call::data` | 最小账号事实与已有额度观测的只读合同 |
@@ -33,8 +34,9 @@ SDK 仍处于实验阶段；能力是否可用取决于宿主支持、清单声�
 | `call::management` | 管理 API、页面与资源声明、公开回调，以及 CLI 命令与待保存账号 |
 | `client` | 通过 `io` feature 开启的 `PluginBuilder`、会话、中间件与异步帧收发 |
 
-`call/` 按业务能力组织数据，`message.rs` 定义消息与帧。请求／响应改写、协议转换和思考参数映射统一使用
-`call::middleware`；WebSocket 观察接口不能改写连接
+`call/` 按业务能力组织数据，`message.rs` 定义消息与帧。已有请求链的请求／响应改写、协议转换和思考参数映射使用
+`call::middleware`；需要指定业务上游并解析结果时使用 `call::upstream_adapter`，作为洋葱链终端复用宿主账号与结算。
+WebSocket 观察接口不能改写连接
 
 插件使用的导入路径例如：
 

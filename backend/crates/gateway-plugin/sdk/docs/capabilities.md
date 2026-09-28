@@ -9,7 +9,7 @@
 | --- | --- |
 | 组合处理器并声明权限 | [作者入口](#类型化作者入口) · [能力与方法](#能力与方法) · [访问域](#访问域) |
 | 使用宿主资源 | [基础事实](#基础事实) · [额度刷新](#额度观测刷新) · [账号](#账号与凭据) · [自有资源](#自有资源与维护) · [Key 预算](#client-key-预算) · [模型](#key模型与模型调用) · [网络](#网络) |
-| 扩展请求链 | [中间件](#洋葱中间件) · [模型目录](#模型目录) · [重试](#重试决策) · [路由、调度与观察](#路由调度与观察) · [入口认证](#数据面入口认证) |
+| 扩展请求链 | [中间件](#洋葱中间件) · [上游适配器](upstream-adapters.md) · [模型目录](#模型目录) · [重试](#重试决策) · [路由、调度与观察](#路由调度与观察) · [入口认证](#数据面入口认证) |
 | 管理与交互 | [状态、日志与迁移](#状态日志与迁移) · [管理页面](#管理页面公开入口与-cli) · [页面宿主桥](#页面宿主桥-v2) · [命令行](#命令行) |
 
 ## 类型化作者入口
@@ -52,6 +52,7 @@ Provider 固定为宿主内置的 OpenAI 与 xAI。插件提供以下扩展能�
 | 能力 | 类型化方法 |
 | --- | --- |
 | `middleware` | `PluginBuilder::middleware` / `middleware.handle` |
+| `upstream_adapter` | `methods::UPSTREAM_ADAPTER_REGISTER`、`methods::UPSTREAM_ADAPTER_EXECUTE`，见[受管上游](upstream-adapters.md) |
 | `model_router` | `methods::ROUTE_MODEL` |
 | `model_catalog` | `PluginBuilder::model_catalog` / `methods::MODEL_CATALOG_REGISTER` |
 | `retry_policy` | `methods::RETRY_DECISION` |
@@ -71,6 +72,7 @@ Provider 固定为宿主内置的 OpenAI 与 xAI。插件提供以下扩展能�
 | 权限 | 开放的宿主能力 |
 | --- | --- |
 | `network` | 通过 `host.http.*` 使用宿主受管出站网络；仍受统一代理、超时、大小和流控规则约束 |
+| `upstream_connections` | 仅在 `upstream` 阶段使用已选账号的受管 HTTP / WebSocket；宿主注入凭据和账号代理，不能读取原始凭据或重新选号 |
 | `models` | 列出非秘密 Key、按所选 Key 查询模型，以及通过 `host.model.*` 调用模型；调用可能产生消耗 |
 | `accounts` | 查询账号、读取原始凭据及创建或替换账号；写入仍经过 revision CAS、审计和发布事务 |
 | `data` | 在管理／命令／维护阶段只读账号、Key 的最小基础信息及已有额度观测，不包含凭据、写入或预测 |
@@ -244,6 +246,10 @@ SDK 不自动重试。超时或断连不能证明写入未提交；重试上限�
 
 ### 网络
 
+`HostClient::http(request, body)` 返回响应头与 `HostHttpBody`。正文用 `read()` 按需读取，
+用 `collect(maximum_bytes)` 有界收集，提前结束用 `close()`；EOF 与重复关闭不再调用宿主。
+父调用取消或结束时宿主回收未关闭的流，SDK 不后台预读。账号上游使用同一正文对象，权限与目标见[受管上游](upstream-adapters.md)
+
 `network` 域通过 `host.http.do/do_stream` 和流读取／关闭方法提供受管 HTTP。URL、header 和正文可能含敏感数据，
 正文使用独立二进制载荷。宿主统一施加代理、超时、帧与流限制；插件不能绕过宿主端口取得额外调用身份。
 地址被拒绝返回 `permission_denied`，期限耗尽返回 `timeout`，解析、连接或响应读取失败返回 `upstream`。
@@ -290,6 +296,21 @@ restore_and_validate_response(response).await
 
 仅实现中间件时也可使用轻量的 `MiddlewarePlugin`；需要与管理或其他方法组合时使用
 `PluginBuilder`，两者复用相同的 `MiddlewareCall` 和 `MiddlewareResponse`
+
+### 扩展的组合边界
+
+请求处理沿 `request middleware → 原生选路与选号 → attempt middleware → 原生上游或 upstream_adapter` 推进，
+响应按相反顺序返回；适配器是现有洋葱链的终端，不能再次调用 `next` 或组织换号重试
+
+| 工作 | 组合方式 |
+| --- | --- |
+| 请求头／正文改写、提前拒绝、响应头处理 | `middleware` 包裹一次 `next.run(request)` |
+| 响应逐帧转换、观察 | 返回惰性 `map_frames` / `inspect_frames`，不能在 `next` 返回时就把流视为结束 |
+| 新上游路径、协议编码、错误及用量解析 | `upstream_adapter` 终端，复用已选账号和原生结算 |
+| 目标限制、凭据注入、网络发送状态 | 宿主网络外层，普通 HTTP 与账号 HTTP 共用发送和正文资源实现 |
+| 路由、调度、重试决策 | 各自的决策端口，Core 保持最终裁决和预算 |
+| RPC Credit、取消、流关闭、WebSocket 续接 | 会话及资源生命周期，不作为可重排的中间件 |
+| 终态观察、管理与维护 | 原有观察／管理／维护入口，不嵌入请求 `next` 链 |
 
 ### 模型目录
 
