@@ -48,6 +48,9 @@ export CPR_TEST_REDIS_URL='redis://:<password>@127.0.0.1:6379'
 凭据从自己的部署配置或 CI Secret 中读取，不要粘贴未脱敏的 `docker inspect` 输出。
 环境变量未设置导致的跳过不算数据库测试通过
 
+PostgreSQL 的临时 schema 测试连接使用异步提交，保留事务可见性、回滚和完整迁移检查
+需要验证数据库崩溃后的持久性时，使用独立数据库与生产连接配置，不复用这类 fixture
+
 运行包含 `StoreBundle` 初始化的完整集成测试时，两条测试 URL 都须包含密码，且密码满足 Store
 启动配置的 48 位十六进制要求；仅能连接数据库并不代表该初始化合同通过。专用服务使用对应测试密码，
 并在测试进程中清除 `CPR_DATABASE_URL`、`CPR_REDIS_URL`、`CPR_DATABASE_PASSWORD` 和

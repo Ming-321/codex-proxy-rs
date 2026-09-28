@@ -814,6 +814,9 @@ RUST_MIN_STACK=16777216 cargo +1.97.0 test --manifest-path backend/Cargo.toml --
 若测试环境使用 Fake-IP 或私网 DNS，需通过 `CPR_PLUGIN_TEST_LIVE_NETWORK_RANGES` 显式提供逗号分隔的
 CIDR 授权。该选项只用于真实网络测试，默认为空，不改变生产网络策略或其他测试的授权
 
+测试归档缓存在 Cargo 测试临时目录的 `plugin-packages-v1/`，按含 worker 摘要的清单跨进程复用；
+每项测试独立校验、解包并创建会话、子进程与 Store，缓存不承载可变运行状态
+
 独立插件包的构建、安装与功能验证说明位于 `codex-proxy-plugins` 仓库的 `examples/workbench/README.md`。
 功能测试与性能、隔离和平台实测分别记录，不相互替代
 

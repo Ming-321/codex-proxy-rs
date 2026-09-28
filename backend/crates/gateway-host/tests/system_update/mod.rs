@@ -212,10 +212,11 @@ async fn restart_should_use_startup_path_after_running_executable_is_renamed() {
     const CHILD_ENV: &str = "CPR_TEST_RESTART_RENAMED_EXECUTABLE_CHILD";
     let executable = std::env::current_exe().expect("test executable");
     if std::env::var_os(CHILD_ENV).is_none() {
-        // 只重命名隔离副本，避免修改 Cargo 的测试程序或影响并行测试。
-        let directory = tempfile::tempdir().expect("isolated test directory");
+        // 用例只移动目录项，不修改旧程序内容；同盘硬链接避免复制整个调试二进制。
+        let directory =
+            tempfile::tempdir_in(executable.parent().unwrap()).expect("isolated test directory");
         let child = directory.path().join("restart-test");
-        fs::copy(&executable, &child).expect("copy test executable");
+        fs::hard_link(&executable, &child).expect("link isolated test executable");
         let output = std::process::Command::new(child)
             .args([
                 "--exact",
@@ -246,7 +247,7 @@ async fn restart_should_use_startup_path_after_running_executable_is_renamed() {
         return;
     }
 
-    let fixture = Fixture::new();
+    let fixture = Fixture::new_in(executable.parent().unwrap());
     fs::rename(executable, fixture.executable()).expect("move isolated running executable");
     let mut config = fixture.config("http://127.0.0.1:1/repos");
     config.executable_path = None;
@@ -1950,7 +1951,11 @@ struct Fixture {
 
 impl Fixture {
     fn new() -> Self {
-        let root = tempfile::tempdir().expect("system update root");
+        Self::new_in(std::env::temp_dir())
+    }
+
+    fn new_in(parent: impl AsRef<std::path::Path>) -> Self {
+        let root = tempfile::tempdir_in(parent).expect("system update root");
         let fixture = Self { root };
         fixture.write_executable("old-binary");
         fs::create_dir_all(fixture.web()).expect("web dir");

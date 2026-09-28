@@ -11752,10 +11752,15 @@ async fn lost_http_response_after_payload_does_not_request_connection_replay() {
 async fn stalled_proxy_connections_share_thirty_seconds_instead_of_resetting_timeout() {
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let proxy = format!("socks5h://{}", listener.local_addr().unwrap());
+    let (accepted, connected) = tokio::sync::oneshot::channel();
     let server = tokio::spawn(async move {
+        let mut accepted = Some(accepted);
         let mut sockets = Vec::new();
         loop {
             sockets.push(listener.accept().await.unwrap().0);
+            if let Some(accepted) = accepted.take() {
+                let _ = accepted.send(());
+            }
         }
     });
     let store = Arc::new(MemoryAccountStore::default());
@@ -11766,32 +11771,62 @@ async fn stalled_proxy_connections_share_thirty_seconds_instead_of_resetting_tim
         None,
     );
     let provider = provider_with_base_url(&store, "http://upstream.invalid".to_owned());
-    let context = fallback_transport_context("req_socks_timeout");
-    let started = std::time::Instant::now();
-    timeout(Duration::from_secs(32), async {
-        for _ in 0..4 {
-            let mut stream = provider
-                .clone()
-                .execute(
-                    planned_request("openai", generate_operation()),
-                    context.clone(),
-                )
-                .await
-                .unwrap();
-            let mut failure = None;
-            while let Some(event) = stream.next().await {
-                if let Err(error) = event {
-                    failure = Some(error);
-                    break;
+    let context = AttemptContext::new(
+        RequestAttemptContext::new(
+            ModelRequestId::new("req_socks_timeout").unwrap(),
+            ClientApiKeyId::new("key_openai_contract").unwrap(),
+        )
+        .with_request_location(Some(global_request_location()))
+        .with_connection_budget(
+            gateway_core::engine::connection::ConnectionBudget::with_clock(|| {
+                tokio::time::Instant::now().into_std()
+            }),
+        ),
+        NonZeroU32::MIN,
+        SystemTime::now() + Duration::from_secs(30),
+        account_policy(),
+        AccountAttemptContext::new(BTreeSet::new(), None, None)
+            .with_account_scope(contract_account_scope()),
+        None,
+        CancellationToken::new(),
+    )
+    .with_transport(AttemptTransport::Fallback);
+    let started = tokio::time::Instant::now();
+    let execution_context = context.clone();
+    let execution = tokio::spawn(async move {
+        timeout(Duration::from_secs(32), async {
+            for _ in 0..4 {
+                let mut stream = provider
+                    .clone()
+                    .execute(
+                        planned_request("openai", generate_operation()),
+                        execution_context.clone(),
+                    )
+                    .await
+                    .unwrap();
+                let mut failure = None;
+                while let Some(event) = stream.next().await {
+                    if let Err(error) = event {
+                        failure = Some(error);
+                        break;
+                    }
                 }
+                let failure = failure.unwrap();
+                assert_eq!(failure.kind(), ProviderErrorKind::Timeout);
+                assert_eq!(failure.send_state(), UpstreamSendState::NotSent);
             }
-            let failure = failure.unwrap();
-            assert_eq!(failure.kind(), ProviderErrorKind::Timeout);
-            assert_eq!(failure.send_state(), UpstreamSendState::NotSent);
-        }
-    })
-    .await
-    .expect("shared recovery window must not become four 15-second timeouts");
+        })
+        .await
+        .expect("shared recovery window must not become four 15-second timeouts");
+    });
+    timeout(Duration::from_secs(5), connected)
+        .await
+        .expect("proxy accepted the real socket")
+        .unwrap();
+    // 先确认真实连接已建立，再推进共享预算与 transport 的同一单调时钟。
+    tokio::time::pause();
+    tokio::time::advance(Duration::from_secs(29)).await;
+    execution.await.unwrap();
     assert!(started.elapsed() >= Duration::from_secs(25));
     assert!(context.connection_budget().exhausted());
     server.abort();

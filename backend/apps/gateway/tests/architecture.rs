@@ -498,6 +498,8 @@ fn root_test_scenario_allowed(member: &str, module: &Path) -> bool {
 
 fn assert_module_tree(root: &Path, crate_roots: &[&str]) {
     let files = super::rust_files(root);
+    // 同一父模块的所有子文件复用一次语法解析，计数仍保留重复声明检查。
+    let mut declarations = BTreeMap::<PathBuf, BTreeMap<String, usize>>::new();
     for relative in &files {
         if crate_roots
             .iter()
@@ -560,7 +562,14 @@ fn assert_module_tree(root: &Path, crate_roots: &[&str]) {
         };
         let declaration_count = declaration_parents
             .iter()
-            .map(|path| external_module_declaration_count(path, module_name))
+            .map(|path| {
+                declarations
+                    .entry(path.clone())
+                    .or_insert_with(|| external_module_declarations(path))
+                    .get(module_name)
+                    .copied()
+                    .unwrap_or_default()
+            })
             .sum::<usize>();
         assert_eq!(
             declaration_count,
@@ -571,23 +580,21 @@ fn assert_module_tree(root: &Path, crate_roots: &[&str]) {
     }
 }
 
-fn external_module_declaration_count(path: &Path, module_name: &str) -> usize {
+fn external_module_declarations(path: &Path) -> BTreeMap<String, usize> {
     if !path.is_file() {
-        return 0;
+        return BTreeMap::new();
     }
     let source = fs::read_to_string(path).expect("read parent module source");
     let syntax = syn::parse_file(&source).expect("parse parent module source");
-    syntax
-        .items
-        .iter()
-        .filter(|item| {
-            matches!(
-                item,
-                Item::Mod(module)
-                    if module.content.is_none() && module.ident == module_name
-            )
-        })
-        .count()
+    let mut declarations = BTreeMap::new();
+    for item in syntax.items {
+        if let Item::Mod(module) = item
+            && module.content.is_none()
+        {
+            *declarations.entry(module.ident.to_string()).or_default() += 1;
+        }
+    }
+    declarations
 }
 
 pub(super) fn backend_root() -> PathBuf {
