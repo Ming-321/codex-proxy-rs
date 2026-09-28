@@ -26,6 +26,7 @@
     "groups",
     "keys",
     "key_budgets",
-    "quota_observations"
+    "quota_observations",
+    "quota_forecasts"
   ]
 }

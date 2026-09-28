@@ -80,6 +80,7 @@ Provider 固定为宿主内置的 OpenAI 与 xAI。插件提供以下扩展能�
 | `keys` | 创建仅绑定本实例分组的 Key，返回非秘密身份；不授予其他 Key 的修改或明文读取权限 |
 | `key_budgets` | 在管理／命令／维护阶段查询全部 Client Key 的预算、修改日／周金额上限及重置用量，不读取密钥或修改其他 Key 配置 |
 | `quota_observations` | 在管理／命令／维护阶段读取及刷新全部账号的额度观测，不暴露凭据或执行上游额度重置 |
+| `quota_forecasts` | 在管理／命令／维护阶段只读全部账号的周容量及剩余金额估计，不刷新上游、不修改预算、不返回凭据或逐条历史 |
 
 `host.log` 和本插件声明的 `host.state.*` 是基础设施，不需要额外 permission。公开调用阶段不开放任何
 宿主回调；权限也不能把一个父调用的句柄、流或上下文转移到另一个调用
@@ -164,7 +165,7 @@ Provider 不支持刷新（如 OpenAI URL + Key 账号）返回 `invalid_input`�
 每个实例串行执行，不同实例相互独立；调用限时 30 秒，失败后等待 5 秒重试。维护失败不回滚已经提交的资源，
 下一次对账继续补齐。只读校验、准备候选与 CLI 帮助不会启动维护；停用、替换和宿主关闭时取消旧任务
 
-维护阶段允许日志、私有状态，以及已授权的 `data`、`groups`、`keys`、`key_budgets`、`quota_observations` 回调；不开放任意网络、凭据或模型执行。
+维护阶段允许日志、私有状态，以及已授权的 `data`、`groups`、`keys`、`key_budgets`、`quota_observations`、`quota_forecasts` 回调；不开放任意网络、凭据或模型执行。
 其他管理／命令入口也可使用下列资源方法：
 
 | SDK 方法 | 参数与行为 |
@@ -184,6 +185,32 @@ Key 明文仍通过宿主管理面查看，插件模型调用使用返回的 Key
 
 典型处理器先确保分组存在，再通过 `data` 分页查询账号并增量补齐成员，最后确保 Key 存在。
 安装 `groups` 域即授权纳入全部当前及未来账号；插件可按自己的配置筛选账号，但该筛选不构成宿主的权限边界
+
+### 账号周额度预测
+
+声明 `quota_forecasts` 权限后，在 management、command_line、maintenance 阶段调用
+`call.host.weekly_quota_forecast(WeeklyQuotaForecastQuery { account_id })`，对应
+`host.quota_forecasts.get_weekly`。类型位于 `call::quota_forecasts`，控制参数为 `{}`，查询和结果使用二进制 JSON 载荷。
+该权限覆盖所有当前及未来账号的预测汇总；账号 ID 或插件自己的账号筛选不是授权。`data`、`accounts`、
+`quota_observations`、`key_budgets` 均不能替代此权限，预测权限也不授予账号目录、凭据、刷新或预算写入权限。
+
+返回 `account_id`、`generated_at_ms`、`estimated_usd`、`remaining_usd`、`extrapolated`、`low_sample`、
+`incomplete_cost`、`unavailable_reason` 和可空 `source`。source 包含原生窗口的 `label`、`used_percent`、
+`observed_at_ms`、`reset_at_ms`；时间为 UTC Unix 毫秒，比例是百分数。金额使用原生浮点美元估计，不是账单金额；
+未知值保留 null，不能解释为零。SDK 只投影宿主周预测，不重新计算或填补缺失值。
+原生报告可能仍能估计 Token 而无法估计金额，此时金额为空但 `unavailable_reason` 可以为空；应结合 `incomplete_cost` 展示，不能把缺失金额补成零。
+
+`estimated_usd` 是周容量估计，不是剩余预算或保证可消费金额；`remaining_usd` 始终属于 source 的真实窗口。
+没有周窗口而复用其他窗口时 `extrapolated=true`，总量按原生规则折算，剩余量不折算。报告生成时间不代表观测时间。
+无样本、样本不足、费用缺失、窗口过期及其他不可估计状态沿用宿主结果；插件应展示相应说明，不据此自动补额。
+
+查询复用原生服务，只读已有观测及用量，不调用上游刷新、不清零、不调整任何 Key 限额。
+需要刷新时，插件须另外取得 `quota_observations` 并显式调用其刷新接口；两次查询不构成跨查询事务。
+无权限或阶段错误返回 `permission_denied`，非法输入返回 `invalid_input`，账号不存在返回 `rejected`，
+服务异常沿用 Admin 回调错误映射（如 `fault`、`upstream`），不能当作普通无样本结果。
+请求拒绝未知字段，结果允许忽略新增字段，必要字段仍须有效；现有账号事实响应保持不变。
+插件须声明支持该权限和方法的宿主兼容范围并固定对应 SDK 来源；旧宿主会拒绝不支持的权限或调用，
+不应回退到私有 HTTP API 或自行估算。
 
 ### Client Key 预算
 

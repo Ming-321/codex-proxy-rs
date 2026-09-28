@@ -116,7 +116,7 @@ pub fn provider_registry() -> ProviderRegistry {
     .unwrap()
 }
 
-struct NativeAdmin(ProviderKind);
+struct NativeAdmin(ProviderKind, Option<ProviderQuota>);
 
 impl NativeAdmin {
     fn unsupported() -> ProviderAdminError {
@@ -186,7 +186,14 @@ impl ProviderAdmin for NativeAdmin {
         Err(Self::unsupported())
     }
 
-    async fn quota(&self, _: ProviderQuotaRequest) -> Result<ProviderQuota, ProviderAdminError> {
+    async fn quota(
+        &self,
+        request: ProviderQuotaRequest,
+    ) -> Result<ProviderQuota, ProviderAdminError> {
+        if let Some(quota) = &self.1 {
+            assert!(!request.refresh, "只读预测不能刷新上游");
+            return Ok(quota.clone());
+        }
         Err(Self::unsupported())
     }
 
@@ -208,7 +215,15 @@ impl ProviderAdmin for NativeAdmin {
 
 pub fn admin_registry() -> ProviderAdminRegistry {
     ProviderAdminRegistry::new(["openai", "xai"].map(|name| {
-        Arc::new(NativeAdmin(ProviderKind::new(name).unwrap())) as Arc<dyn ProviderAdmin>
+        Arc::new(NativeAdmin(ProviderKind::new(name).unwrap(), None)) as Arc<dyn ProviderAdmin>
     }))
+    .unwrap()
+}
+
+pub fn forecast_admin_registry(quota: ProviderQuota) -> ProviderAdminRegistry {
+    ProviderAdminRegistry::new([Arc::new(NativeAdmin(
+        ProviderKind::new("openai").unwrap(),
+        Some(quota),
+    )) as Arc<dyn ProviderAdmin>])
     .unwrap()
 }

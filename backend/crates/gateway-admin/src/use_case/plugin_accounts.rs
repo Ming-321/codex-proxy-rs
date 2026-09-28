@@ -125,6 +125,21 @@ impl PluginAccountAccess for DefaultPluginAccountAccess {
         self.quota(account_id, true).await
     }
 
+    async fn quota_forecast(
+        &self,
+        account_id: &ProviderAccountId,
+    ) -> Result<crate::model::quota_forecast::AccountQuotaForecastReport, AdminError> {
+        let account = self.get_runtime(account_id).await?;
+        let provider = self.provider(&account.provider_kind)?;
+        super::accounts::load_quota_forecast(
+            self.accounts.as_ref(),
+            provider.as_ref(),
+            &account,
+            account_id,
+        )
+        .await
+    }
+
     async fn save(
         &self,
         command: PreparedPluginAccountSave,
