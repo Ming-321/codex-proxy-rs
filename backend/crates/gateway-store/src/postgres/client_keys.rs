@@ -24,7 +24,7 @@ use gateway_admin::{
             SortDirection as AdminSortDirection, UpdateClientKey as AdminUpdateClientKey,
         },
     },
-    ports::store::{AdminStoreResult, ClientKeyStore},
+    ports::store::{AdminStoreError, AdminStoreErrorKind, AdminStoreResult, ClientKeyStore},
 };
 use gateway_core::{
     account::OpaqueProviderData,
@@ -762,6 +762,17 @@ impl ClientKeyStore for PgAdminClientKeyStore {
                 id: command.id.as_str().to_owned(),
             })
         })?;
+        // 与绑定修改共用配置锁和 Key 行锁；专用预算写入不能静默修改未生效的本地值。
+        let bound: bool = sqlx::query_scalar("select exists(select 1 from client_key_limit_bindings where client_api_key_id=$1 and source_key_id is not null)")
+            .bind(command.id.as_str()).fetch_one(&mut *tx).await
+            .map_err(|_| map_error(postgres_unavailable("check budget limits binding")))?;
+        if bound {
+            return Err(AdminStoreError::new(
+                AdminStoreErrorKind::Conflict,
+                ENTITY,
+                "当前 Key 使用共享预算，请显式操作限额来源",
+            ));
+        }
         let daily: Decimal = daily
             .parse()
             .map_err(|_| map_error(postgres_unavailable("decode daily budget limit")))?;

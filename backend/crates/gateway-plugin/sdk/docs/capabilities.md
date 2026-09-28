@@ -197,6 +197,10 @@ Key 明文仍通过宿主管理面查看，插件模型调用使用返回的 Key
 `daily_limit_usd`、`weekly_limit_usd`、`daily_used_usd`、`weekly_used_usd`、`daily_resets_at_ms`、`weekly_resets_at_ms`；
 时间为 UTC Unix 毫秒，`null` 表示尚未使用或窗口已过期。读取不触发准入、开启窗口或清零，停用的 Key 仍可管理。
 
+共享成员的预算查询返回当前有效来源的限额、用量与窗口，返回的 `client_key_id` 仍是被查询的成员。
+对已绑定成员调用 `update_key_budget_limits` 或 `reset_key_budget` 返回 `conflict`，即使提供的上限与本地值相同；
+调用者必须显式指定来源 Key，不会自动重定向写入整个共享预算。管理员完整 Key 编辑仍可修改成员的本地限额，解绑后才生效。
+
 上限更新仅写入提供的日／周金额；省略或 `null` 的项保持不变。它保留已用金额、窗口到期时间、费用历史及其他 Key 配置。
 写入复用 Key 行锁，与结算串行；实际变化时授权、修改、配置 revision 和审计在同一事务提交，并通知原生配置发布。
 相同值再次赋值不产生新 revision 或审计；并发更新按事务顺序生效，同一字段由后提交的值覆盖，接口不提供调用去重或比较交换。

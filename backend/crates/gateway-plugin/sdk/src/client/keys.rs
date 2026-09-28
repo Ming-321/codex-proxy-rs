@@ -26,6 +26,7 @@ impl HostClient {
     ///
     /// # Errors
     /// 未授权、阶段不符、参数无效、Key 不存在或宿主写入失败时返回错误。
+    /// 已绑定共享来源的成员返回 conflict，须显式操作来源 Key。
     pub async fn update_key_budget_limits(
         &self,
         request: key_budgets::UpdateKeyBudgetLimitsRequest,

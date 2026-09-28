@@ -847,6 +847,159 @@ fn budget_update(
 }
 
 #[tokio::test]
+async fn bound_budget_updates_reject_without_mutation_but_full_edits_preserve_local_configuration()
+{
+    let Some(database) = TestDatabase::create("bound_budget_updates").await else {
+        return;
+    };
+    let owner = plugin_reset_owner(&database).await;
+    seed(&database, "member", "10", "20").await;
+    seed(&database, "source", "50", "100").await;
+    let store = PgAdminClientKeyStore::new(database.pool.clone());
+    let binding = store
+        .change_limit_binding(
+            gateway_admin::model::client_keys::ChangeClientLimitBinding {
+                id: key_id("member"),
+                source_key_id: Some(key_id("source")),
+                expected_revision: 0,
+            },
+            &context(),
+        )
+        .await
+        .unwrap();
+    let before = store
+        .get_client_key(&key_id("member"))
+        .await
+        .unwrap()
+        .unwrap();
+    let source_before = status(&database, "source").await;
+    let audit_count: i64 = sqlx::query_scalar("select count(*) from admin_audit_events")
+        .fetch_one(&database.pool)
+        .await
+        .unwrap();
+    for origin in [
+        ClientKeyBudgetMutationOrigin::Admin,
+        ClientKeyBudgetMutationOrigin::Plugin(owner.clone()),
+    ] {
+        // 本地原值、有效来源原值和新值都必须拒绝，不能绕过到无变化分支。
+        for (daily, weekly) in [
+            (Some("10"), None),
+            (None, Some("100")),
+            (Some("30"), Some("200")),
+        ] {
+            assert_eq!(
+                store
+                    .update_client_key_budget_limits(
+                        budget_update("member", daily, weekly),
+                        origin.clone(),
+                        &context(),
+                    )
+                    .await
+                    .unwrap_err()
+                    .kind(),
+                AdminStoreErrorKind::Conflict
+            );
+        }
+    }
+    let after = store
+        .get_client_key(&key_id("member"))
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(after.local_budget_limits, before.local_budget_limits);
+    assert_eq!(after.budget, before.budget);
+    assert_eq!(status(&database, "source").await, source_before);
+    let state: (i64, i64) = sqlx::query_as("select config_revision,(select count(*) from admin_audit_events) from runtime_settings where id=1")
+        .fetch_one(&database.pool).await.unwrap();
+    assert_eq!(state, (binding.config_revision.get() as i64, audit_count));
+
+    store
+        .update_client_key(
+            UpdateClientKey {
+                request_profile_override_updates: Default::default(),
+                id: key_id("member"),
+                name: before.name,
+                label: before.label,
+                group_ids: vec![],
+                limits: before.limits,
+                daily_limit_usd: Some("30".parse().unwrap()),
+                weekly_limit_usd: Some("40".parse().unwrap()),
+            },
+            &context(),
+        )
+        .await
+        .unwrap();
+    let edited = store
+        .get_client_key(&key_id("member"))
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(edited.local_budget_limits.weekly_usd.canonical(), "40");
+    assert_eq!(edited.budget, source_before);
+
+    store
+        .update_client_key_budget_limits(
+            budget_update("source", None, Some("200")),
+            ClientKeyBudgetMutationOrigin::Plugin(owner.clone()),
+            &context(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(
+        status(&database, "member")
+            .await
+            .limits
+            .weekly_usd
+            .canonical(),
+        "200"
+    );
+    store
+        .change_limit_binding(
+            gateway_admin::model::client_keys::ChangeClientLimitBinding {
+                id: key_id("member"),
+                source_key_id: None,
+                expected_revision: binding.revision,
+            },
+            &context(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(
+        status(&database, "member")
+            .await
+            .limits
+            .weekly_usd
+            .canonical(),
+        "40"
+    );
+    store
+        .update_client_key_budget_limits(
+            budget_update("member", None, Some("60")),
+            ClientKeyBudgetMutationOrigin::Plugin(owner),
+            &context(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(
+        status(&database, "member")
+            .await
+            .limits
+            .weekly_usd
+            .canonical(),
+        "60"
+    );
+    assert_eq!(
+        status(&database, "source")
+            .await
+            .limits
+            .weekly_usd
+            .canonical(),
+        "200"
+    );
+    database.close().await;
+}
+
+#[tokio::test]
 async fn plugin_budget_limits_preserve_consumption_and_unrelated_configuration_and_control_admission()
  {
     let Some(database) = TestDatabase::create("plugin_budget_limits").await else {
