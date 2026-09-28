@@ -41,7 +41,7 @@ function amount(value: string) {
     <section class="grid min-w-56 max-w-[calc(100vw-1rem)] gap-3 p-3" role="dialog" aria-label="费用用量详情（美元）">
       <p v-if="apiKey.weeklyWaiting" class="text-cp-xs text-cp-error" role="status">
         周预算周期已结束，暂不可请求
-    </p>
+      </p>
       <p v-if="apiKey.limitSourceKeyId" class="m-0 break-all text-cp-xs text-cp-text-secondary">
         限额来源：{{ apiKey.limitSourceKeyId }}<br>
         本地限额暂不生效，重置预算需操作来源 Key

@@ -159,7 +159,7 @@ pub enum Permission {
 
 impl Permission {
     /// 当前公开访问域，安装摘要与授权校验复用同一集合。
-    pub const ALL: [Self; 11] = [
+    pub const ALL: [Self; 12] = [
         Self::Network,
         Self::Models,
         Self::Accounts,

@@ -192,6 +192,11 @@ pub(super) async fn change(
         ));
     }
     if let Some(source) = &command.source_key_id {
+        let controlled: bool = sqlx::query_scalar("select exists(select 1 from client_key_budget_windows where client_api_key_id=$1 and weekly_controller is not null)")
+            .bind(command.id.as_str()).fetch_one(&mut *tx).await.map_err(unavailable)?;
+        if controlled {
+            return Err(conflict("设备仍有周窗口控制，请先解除再绑定共享来源"));
+        }
         if keys
             .iter()
             .any(|(id, anchor)| id == command.id.as_str() && *anchor)

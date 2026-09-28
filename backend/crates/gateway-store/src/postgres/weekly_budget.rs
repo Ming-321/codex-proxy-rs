@@ -28,7 +28,7 @@ pub(super) async fn get(
     pool: &PgPool,
     id: &ClientApiKeyId,
 ) -> AdminStoreResult<WeeklyBudgetControl> {
-    let row = sqlx::query("select coalesce(w.weekly_control_revision,0) as revision, w.weekly_controller, w.weekly_start, w.weekly_end from client_api_keys k left join client_key_budget_windows w on w.client_api_key_id=k.id where k.id=$1")
+    let row = sqlx::query("select coalesce(w.weekly_control_revision,0) as revision, w.weekly_controller, w.weekly_start, w.weekly_end from client_api_keys k left join client_key_limit_bindings b on b.client_api_key_id=k.id left join client_key_budget_windows w on w.client_api_key_id=coalesce(b.source_key_id,k.id) where k.id=$1")
         .bind(id.as_str()).fetch_optional(pool).await.map_err(unavailable)?
         .ok_or_else(|| error(AdminStoreErrorKind::NotFound))?;
     control_from_row(&row, Utc::now())

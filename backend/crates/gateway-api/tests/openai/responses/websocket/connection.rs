@@ -567,6 +567,8 @@ async fn idle_connection_reaches_the_official_limit_without_starting_an_executio
 
     tokio::time::advance(Duration::from_secs(60 * 60)).await;
     tokio::task::yield_now().await;
+    // 真正的 TCP 帧依赖操作系统调度；停止虚拟时钟自动跳跃，避免在帧送达前跳到读取超时。
+    tokio::time::resume();
     let text = loop {
         let message = tokio::time::timeout(Duration::from_secs(1), socket.next())
             .await

@@ -39,6 +39,151 @@ fn key_id(key: &str) -> ClientApiKeyId {
 }
 
 #[tokio::test]
+async fn shared_source_windows_preserve_waiting_spending_and_reject_member_control() {
+    use gateway_admin::model::{
+        client_keys::{ChangeClientLimitBinding, ClientLimitBindingMutationOrigin},
+        weekly_budget::{ChangeWeeklyBudget, WeeklyBudgetAction},
+    };
+    let Some(db) = TestDatabase::create("shared_weekly").await else {
+        return;
+    };
+    for key in ["device", "source", "other"] {
+        seed(&db, key, "0", "100").await;
+    }
+    let owner = plugin_reset_owner(&db).await;
+    let origin = ClientKeyBudgetMutationOrigin::Plugin(owner);
+    let admin = PgAdminClientKeyStore::new(db.pool.clone());
+    let budget = PgClientBudgetStore::new(db.pool.clone());
+    admin
+        .change_weekly_budget(
+            ChangeWeeklyBudget {
+                id: key_id("source"),
+                expected_revision: 0,
+                action: WeeklyBudgetAction::Claim {
+                    expires_at: Utc::now() + chrono::Duration::days(2),
+                    clear_used: false,
+                },
+            },
+            origin.clone(),
+            &context(),
+        )
+        .await
+        .unwrap();
+    admin
+        .change_limit_binding(
+            ChangeClientLimitBinding {
+                id: key_id("device"),
+                source_key_id: Some(key_id("source")),
+                expected_revision: 0,
+            },
+            &context(),
+            ClientLimitBindingMutationOrigin::Admin,
+        )
+        .await
+        .unwrap();
+    let mut usage = charge("source", "shared", "3");
+    usage.client_key_ref = key_id("device");
+    budget.settle(usage).await.unwrap();
+    sqlx::query("update client_key_budget_windows set weekly_end=now()-interval '1 second' where client_api_key_id='source'").execute(&db.pool).await.unwrap();
+    let shared = status(&db, "device").await;
+    assert!(shared.weekly_waiting);
+    assert_eq!(shared.weekly_used_usd.canonical(), "3");
+    assert!(
+        admin
+            .get_limit_binding(&key_id("device"))
+            .await
+            .unwrap()
+            .budget
+            .weekly_waiting
+    );
+    assert!(
+        admin
+            .weekly_budget_control(&key_id("device"))
+            .await
+            .unwrap()
+            .waiting
+    );
+    assert_eq!(
+        budget
+            .admit(gateway_core::engine::budget::ClientBudgetAdmission {
+                client_key_id: key_id("device"),
+                source_key_id: key_id("source")
+            })
+            .await
+            .unwrap_err()
+            .client_error_code(),
+        Some("key_weekly_window_waiting")
+    );
+    assert_eq!(
+        admin
+            .change_weekly_budget(
+                ChangeWeeklyBudget {
+                    id: key_id("device"),
+                    expected_revision: 1,
+                    action: WeeklyBudgetAction::Release
+                },
+                origin.clone(),
+                &context()
+            )
+            .await
+            .unwrap_err()
+            .kind(),
+        AdminStoreErrorKind::Conflict
+    );
+    let sync = ChangeWeeklyBudget {
+        id: key_id("source"),
+        expected_revision: 1,
+        action: WeeklyBudgetAction::Sync {
+            expires_at: Utc::now() + chrono::Duration::days(7),
+        },
+    };
+    admin
+        .change_weekly_budget(sync.clone(), origin.clone(), &context())
+        .await
+        .unwrap();
+    budget.settle(charge("source", "next", "2")).await.unwrap();
+    admin
+        .change_weekly_budget(sync, origin.clone(), &context())
+        .await
+        .unwrap();
+    assert_eq!(status(&db, "device").await.weekly_used_usd.canonical(), "2");
+    assert!(!status(&db, "device").await.weekly_waiting);
+    assert!(status(&db, "other").await.weekly_controller.is_none());
+    admin
+        .change_weekly_budget(
+            ChangeWeeklyBudget {
+                id: key_id("other"),
+                expected_revision: 0,
+                action: WeeklyBudgetAction::Claim {
+                    expires_at: Utc::now() + chrono::Duration::days(2),
+                    clear_used: false,
+                },
+            },
+            origin,
+            &context(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(
+        admin
+            .change_limit_binding(
+                ChangeClientLimitBinding {
+                    id: key_id("other"),
+                    source_key_id: Some(key_id("source")),
+                    expected_revision: 0
+                },
+                &context(),
+                ClientLimitBindingMutationOrigin::Admin
+            )
+            .await
+            .unwrap_err()
+            .kind(),
+        AdminStoreErrorKind::Conflict
+    );
+    db.close().await;
+}
+
+#[tokio::test]
 async fn weekly_control_preserves_claim_deduplicates_sync_and_waits_at_expiry() {
     use gateway_admin::model::weekly_budget::{ChangeWeeklyBudget, WeeklyBudgetAction};
     let Some(database) = TestDatabase::create("weekly_control").await else {

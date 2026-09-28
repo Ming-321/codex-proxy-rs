@@ -521,7 +521,10 @@ impl PluginClientKeyAccess for HoldCommittedReply {
             .await
     }
 
-    async fn facts(&self, id: &ClientApiKeyId) -> Result<PluginClientKeyFacts, AdminError> {
+    async fn facts(
+        &self,
+        id: &ClientApiKeyId,
+    ) -> Result<gateway_admin::model::plugin_client_keys::PluginClientKeyFacts, AdminError> {
         self.inner.facts(id).await
     }
     async fn weekly_budget_control(
