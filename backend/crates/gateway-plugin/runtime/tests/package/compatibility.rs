@@ -99,7 +99,8 @@ fn assert_exhaustive_permission(permission: Permission) {
         | Permission::Keys
         | Permission::KeyBudgets
         | Permission::KeyLimitBindings
-        | Permission::QuotaObservations => {}
+        | Permission::QuotaObservations
+        | Permission::QuotaForecasts => {}
     }
 }
 

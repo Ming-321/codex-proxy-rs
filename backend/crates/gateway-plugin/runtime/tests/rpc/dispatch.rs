@@ -244,6 +244,7 @@ async fn fact_callbacks_require_independent_grants_and_control_plane_stages() {
         vec![Permission::Models],
         vec![Permission::KeyBudgets],
         vec![Permission::QuotaObservations],
+        vec![Permission::QuotaForecasts],
         vec![Permission::Data],
     ] {
         let authorized = permissions.contains(&Permission::Data);
@@ -334,6 +335,10 @@ async fn managed_resources_require_their_domains_and_control_plane_stages() {
         (
             "host.quota_observations.refresh",
             Permission::QuotaObservations,
+        ),
+        (
+            "host.quota_forecasts.get_weekly",
+            Permission::QuotaForecasts,
         ),
     ] {
         for granted in [false, true] {

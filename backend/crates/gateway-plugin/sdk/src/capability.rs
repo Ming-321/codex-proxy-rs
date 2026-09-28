@@ -154,6 +154,7 @@ pub enum Permission {
     KeyBudgets,
     KeyLimitBindings,
     QuotaObservations,
+    QuotaForecasts,
 }
 
 impl Permission {
@@ -170,6 +171,7 @@ impl Permission {
         Self::KeyBudgets,
         Self::KeyLimitBindings,
         Self::QuotaObservations,
+        Self::QuotaForecasts,
     ];
 
     #[must_use]
@@ -186,6 +188,7 @@ impl Permission {
             Self::KeyBudgets => "key_budgets",
             Self::KeyLimitBindings => "key_limit_bindings",
             Self::QuotaObservations => "quota_observations",
+            Self::QuotaForecasts => "quota_forecasts",
         }
     }
 
@@ -204,6 +207,7 @@ impl Permission {
             Self::KeyBudgets => "API Key 预算",
             Self::KeyLimitBindings => "共享限额关系",
             Self::QuotaObservations => "账号额度观测",
+            Self::QuotaForecasts => "账号额度预测",
         }
     }
 
@@ -225,6 +229,9 @@ impl Permission {
             Self::Keys => "创建绑定本插件分组的 API Key，不读取密钥明文或修改管理员创建的 Key",
             Self::QuotaObservations => {
                 "查询所有现有及未来账号的额度观测，并通过宿主刷新上游观测；不读取凭据、不执行上游额度重置"
+            }
+            Self::QuotaForecasts => {
+                "只读查询所有现有及未来账号的周额度预测及费用汇总估计；不读取凭据或明细、不刷新上游、不修改预算"
             }
             Self::KeyBudgets => {
                 "查询所有现有及未来新增 Key 的预算、修改日／周金额上限、重置用量和持续接管周窗口，包括管理员和其他插件创建的 Key；不读取密钥或修改其他配置"

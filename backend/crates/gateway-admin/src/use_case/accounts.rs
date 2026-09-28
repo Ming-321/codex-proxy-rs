@@ -759,93 +759,13 @@ impl AccountsService for DefaultAccountsService {
         account_id: &ProviderAccountId,
     ) -> Result<AccountQuotaForecastReport, AdminError> {
         let (stored, provider) = self.provider_for_account(account_id).await?;
-        let quota = provider
-            .quota(ProviderQuotaRequest {
-                account_id: account_id.clone(),
-                refresh: false,
-                rolling_usage: None,
-            })
-            .await
-            .map_err(|error| map_provider_error(error, "forecast quota snapshot"))?;
-        let now = Utc::now();
-        let mut samples = Vec::new();
-        let mut selected_keys = BTreeSet::new();
-        for period in [AccountUsagePeriod::Weekly, AccountUsagePeriod::Monthly] {
-            let Some((window, _)) = quota_forecast_source_window(&quota, period) else {
-                continue;
-            };
-            // 缺少一个周期时两个结果会复用同一窗口，只查询一次历史快照。
-            if !selected_keys.insert(window.key.as_str()) {
-                continue;
-            }
-            let (Some(mut query), Some(observed), Some(percent)) = (
-                quota_usage_window(account_id.as_str(), window),
-                quota.observed_at,
-                window.used_percent,
-            ) else {
-                continue;
-            };
-            query.range.start = query.range.start.max(stored.account.created_at);
-            if query.range.start >= observed
-                || observed > now
-                || now >= query.range.end
-                || !percent.is_finite()
-                || !(0.0..=100.0).contains(&percent)
-            {
-                continue;
-            }
-            let reset_at = query.range.end;
-            query.range.end = observed;
-            let history = self
-                .accounts
-                .load_quota_forecast_history(&query)
-                .await
-                .map_err(|error| map_store_error(error, "forecast paired usage"))?;
-            let mut points = Vec::new();
-            let mut interrupted = false;
-            for point in history.points {
-                let Some(fact) =
-                    provider.quota_forecast_observation(&point.provider_observation, window)
-                else {
-                    continue;
-                };
-                let same_plan = quota
-                    .plan_type
-                    .as_deref()
-                    .zip(fact.plan_type.as_deref())
-                    .is_some_and(|(current, previous)| current.eq_ignore_ascii_case(previous));
-                // 仅容纳已观测到的秒级量化抖动，不用宽时间容差合并实际重置。
-                // 不匹配的段截断基线；之后的有效观测可以重新积累。
-                if !same_plan || (fact.reset_at - reset_at).abs() > Duration::seconds(2) {
-                    points.clear();
-                    interrupted = true;
-                    continue;
-                }
-                points.push(QuotaForecastPoint {
-                    observed_at: point.completed_at,
-                    used_percent: fact.used_percent,
-                    usage: point.usage,
-                });
-            }
-            let sample = select_forecast_sample(
-                window.key.clone(),
-                query.range.start,
-                QuotaForecastPoint {
-                    observed_at: observed,
-                    used_percent: percent,
-                    usage: history.usage,
-                },
-                points,
-                history.pending_request_count,
-                interrupted,
-            );
-            samples.push(sample);
-        }
-        Ok(AccountQuotaForecastReport {
-            account_id: account_id.to_string(),
-            generated_at: now,
-            forecasts: account_quota_forecasts(&quota, stored.account.created_at, now, &samples),
-        })
+        load_quota_forecast(
+            self.accounts.as_ref(),
+            provider.as_ref(),
+            &stored.account,
+            account_id,
+        )
+        .await
     }
 
     async fn personal_info(
@@ -1059,6 +979,101 @@ fn empty_quota() -> ProviderQuota {
         limit_reached: false,
         provider_data: None,
     }
+}
+
+/// 原生页面与插件共用预测读取链路，不刷新上游或写入预算。
+pub(super) async fn load_quota_forecast(
+    accounts: &dyn AccountStore,
+    provider: &dyn crate::ports::provider::ProviderAdmin,
+    account: &crate::model::accounts::AccountRecord,
+    account_id: &ProviderAccountId,
+) -> Result<AccountQuotaForecastReport, AdminError> {
+    let quota = provider
+        .quota(ProviderQuotaRequest {
+            account_id: account_id.clone(),
+            refresh: false,
+            rolling_usage: None,
+        })
+        .await
+        .map_err(|error| map_provider_error(error, "forecast quota snapshot"))?;
+    let now = Utc::now();
+    let mut samples = Vec::new();
+    let mut selected_keys = BTreeSet::new();
+    for period in [AccountUsagePeriod::Weekly, AccountUsagePeriod::Monthly] {
+        let Some((window, _)) = quota_forecast_source_window(&quota, period) else {
+            continue;
+        };
+        // 缺少一个周期时两个结果会复用同一窗口，只查询一次历史快照。
+        if !selected_keys.insert(window.key.as_str()) {
+            continue;
+        }
+        let (Some(mut query), Some(observed), Some(percent)) = (
+            quota_usage_window(account_id.as_str(), window),
+            quota.observed_at,
+            window.used_percent,
+        ) else {
+            continue;
+        };
+        query.range.start = query.range.start.max(account.created_at);
+        if query.range.start >= observed
+            || observed > now
+            || now >= query.range.end
+            || !percent.is_finite()
+            || !(0.0..=100.0).contains(&percent)
+        {
+            continue;
+        }
+        let reset_at = query.range.end;
+        query.range.end = observed;
+        let history = accounts
+            .load_quota_forecast_history(&query)
+            .await
+            .map_err(|error| map_store_error(error, "forecast paired usage"))?;
+        let mut points = Vec::new();
+        let mut interrupted = false;
+        for point in history.points {
+            let Some(fact) =
+                provider.quota_forecast_observation(&point.provider_observation, window)
+            else {
+                continue;
+            };
+            let same_plan = quota
+                .plan_type
+                .as_deref()
+                .zip(fact.plan_type.as_deref())
+                .is_some_and(|(current, previous)| current.eq_ignore_ascii_case(previous));
+            // 仅容纳已观测到的秒级量化抖动，不用宽时间容差合并实际重置。
+            // 不匹配的段截断基线；之后的有效观测可以重新积累。
+            if !same_plan || (fact.reset_at - reset_at).abs() > Duration::seconds(2) {
+                points.clear();
+                interrupted = true;
+                continue;
+            }
+            points.push(QuotaForecastPoint {
+                observed_at: point.completed_at,
+                used_percent: fact.used_percent,
+                usage: point.usage,
+            });
+        }
+        let sample = select_forecast_sample(
+            window.key.clone(),
+            query.range.start,
+            QuotaForecastPoint {
+                observed_at: observed,
+                used_percent: percent,
+                usage: history.usage,
+            },
+            points,
+            history.pending_request_count,
+            interrupted,
+        );
+        samples.push(sample);
+    }
+    Ok(AccountQuotaForecastReport {
+        account_id: account_id.to_string(),
+        generated_at: now,
+        forecasts: account_quota_forecasts(&quota, account.created_at, now, &samples),
+    })
 }
 
 fn quota_usage_window(

@@ -196,6 +196,20 @@ impl PluginHandler for TestHandler {
                         vec![],
                     ))
                 }
+                "weekly_forecast" => {
+                    let result = call
+                        .host
+                        .weekly_quota_forecast(
+                            gateway_plugin_sdk::call::quota_forecasts::WeeklyQuotaForecastQuery {
+                                account_id: "acct_1".into(),
+                            },
+                        )
+                        .await?;
+                    Ok(CallReply::unary(
+                        serde_json::to_value(result).unwrap(),
+                        vec![],
+                    ))
+                }
                 "refresh_quota" => {
                     let result = call
                         .host
@@ -1619,6 +1633,14 @@ async fn typed_key_and_quota_calls_keep_payloads_and_do_not_retry_failures() {
             "host.keys.change_limit_binding",
             json!({"client_key_id":"key_1","source_key_id":"source","expected_revision":0}),
             json!({"client_key_id":"key_1","source_key_id":"source","revision":1,"config_revision":4,"binding_config_revision":4,"loaded_config_revision":3,"source_enabled":true}),
+        ),
+        (
+            "weekly_forecast",
+            "host.quota_forecasts.get_weekly",
+            json!({"account_id":"acct_1"}),
+            json!({"account_id":"acct_1","generated_at_ms":123,"estimated_usd":null,"remaining_usd":null,
+                "source":null,"extrapolated":false,"low_sample":true,"incomplete_cost":true,
+                "unavailable_reason":"样本不足"}),
         ),
         (
             "key_facts",

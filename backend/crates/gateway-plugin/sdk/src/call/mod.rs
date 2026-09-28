@@ -11,6 +11,7 @@ pub mod middleware;
 pub mod model;
 pub mod observation;
 pub mod policy;
+pub mod quota_forecasts;
 pub mod registration;
 pub mod resources;
 pub mod weekly_budget;

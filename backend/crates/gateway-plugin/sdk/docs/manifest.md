@@ -70,6 +70,7 @@ capability 固定并由工具生成：
 | `key_budgets` | 查询全部 Client Key 的预算、修改日／周金额上限及重置用量，不读取密钥或修改其他配置 |
 | `key_limit_bindings` | 读取和修改全部 Client Key 的共享限额来源，影响预算、并发、RPM 和等待队列；不读取密钥，停用插件不解除共享 |
 | `quota_observations` | 查询和刷新全部账号的额度观测，不暴露凭据或执行上游额度重置 |
+| `quota_forecasts` | 只读查询全部账号的周额度预测与金额估计，不读取凭据或明细、不刷新上游、不修改预算 |
 | `public_endpoints` | 提供无需登录即可访问的资源或回调 |
 
 安装时统一接受清单声明的域，不再填写逐方法、用途、Key、账号或 Provider 白名单。日志与清单声明的

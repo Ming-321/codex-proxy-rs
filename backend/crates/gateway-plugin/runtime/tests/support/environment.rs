@@ -396,6 +396,14 @@ impl Environment {
     }
 
     pub async fn runtime(&self) -> (Arc<PluginRuntime>, gateway_core::CoreBundle) {
+        self.runtime_with_registry(super::native::admin_registry())
+            .await
+    }
+
+    pub async fn runtime_with_registry(
+        &self,
+        providers: gateway_admin::ports::provider::ProviderAdminRegistry,
+    ) -> (Arc<PluginRuntime>, gateway_core::CoreBundle) {
         let runtime = self.plugin_runtime();
         let core = gateway_core::prepare(
             self.store.core_ports(),
@@ -407,7 +415,7 @@ impl Environment {
             Some(runtime.frontend_authentication_registry()),
         );
         let access = gateway_admin::initialize_plugin_accounts(
-            super::native::admin_registry(),
+            providers,
             self.store.admin_ports().accounts(),
             core.snapshot_control(),
         );
@@ -483,6 +491,16 @@ impl Environment {
         runtime: &Arc<PluginRuntime>,
         core: &gateway_core::CoreBundle,
     ) -> gateway_admin::AdminBundle {
+        self.bind_admin_accounts_with_registry(runtime, core, super::native::admin_registry())
+            .await
+    }
+
+    pub async fn bind_admin_accounts_with_registry(
+        &self,
+        runtime: &Arc<PluginRuntime>,
+        core: &gateway_core::CoreBundle,
+        providers: gateway_admin::ports::provider::ProviderAdminRegistry,
+    ) -> gateway_admin::AdminBundle {
         let unavailable = Arc::new(UnusedAdminRuntime);
         let access = self
             .plugin_accounts
@@ -508,7 +526,7 @@ impl Environment {
                     "1.0.0".parse().unwrap(),
                 )),
                 pricing_source: unavailable.clone(),
-                providers: super::native::admin_registry(),
+                providers,
                 snapshot: core.snapshot_control(),
                 account_probe: core.account_probe(),
                 proxy_probe: unavailable.clone(),
@@ -528,6 +546,40 @@ impl Environment {
             .unwrap()
             .remove(&(Arc::as_ptr(runtime) as usize))
             .expect("runtime account access");
+    }
+
+    pub async fn seed_forecast_usage(&self, account_id: &str, cost: Option<&str>) {
+        sqlx::query(sqlx::AssertSqlSafe(format!(
+            "update {}.provider_accounts set created_at = now()-interval '60 days' where id=$1",
+            self.schema
+        )))
+        .bind(account_id)
+        .execute(&self.admin)
+        .await
+        .unwrap();
+        sqlx::query(sqlx::AssertSqlSafe(format!(
+            "insert into {}.model_requests (
+             id, client_api_key_ref, config_revision, protocol, operation, endpoint,
+             client_transport, requested_model_id, provider_kind, provider_account_id,
+             provider_account_ref, upstream_model_id, upstream_transport, attempt_count,
+             upstream_send_state, downstream_committed_at, outcome, client_status_code,
+             upstream_status_code, input_tokens, output_tokens, total_tokens,
+             cost_source, cost_amount, cost_currency, started_at, deadline_at, completed_at,
+             routing_scope, routing_group_refs, routing_group_names_snapshot)
+             values ('forecast-usage','key_forecast',1,'openai','responses','/v1/responses',
+             'http_sse','test','openai',$1,$1,'test','http_sse',1,'sent',now()-interval '2 hours',
+             'succeeded',200,200,100,0,100,
+             case when $2::text is null then 'unavailable' else 'provider_reported' end,
+             $2::numeric,case when $2::text is null then null else 'USD' end,
+             now()-interval '2 hours',now()-interval '1 hour',now()-interval '2 hours',
+             'all','{{}}'::text[],'[]'::jsonb)",
+            self.schema
+        )))
+        .bind(account_id)
+        .bind(cost)
+        .execute(&self.admin)
+        .await
+        .unwrap();
     }
 
     pub async fn account(
