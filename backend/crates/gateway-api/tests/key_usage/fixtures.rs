@@ -35,6 +35,7 @@ pub(super) async fn fixture() -> AdminTestFixture {
             weekly_used_usd: "2.35".parse().unwrap(),
             daily_resets_at: Some((now + Duration::days(1)).into()),
             weekly_resets_at: Some((now + Duration::days(7)).into()),
+            ..Default::default()
         },
         last_used_at: Some(now),
         created_at: now,

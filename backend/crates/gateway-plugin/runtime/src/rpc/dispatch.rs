@@ -233,6 +233,8 @@ fn callback_allowed(method: &str, stage: Stage, permissions: &[Permission]) -> b
                 | "host.keys.list"
                 | "host.keys.reset_budget"
                 | "host.keys.get_budget"
+                | "host.keys.weekly_control.get"
+                | "host.keys.weekly_control.change"
                 | "host.keys.update_budget_limits"
         )
     {
@@ -298,7 +300,11 @@ fn callback_allowed(method: &str, stage: Stage, permissions: &[Permission]) -> b
         {
             Permission::Keys
         }
-        "host.keys.reset_budget" | "host.keys.get_budget" | "host.keys.update_budget_limits"
+        "host.keys.reset_budget"
+        | "host.keys.get_budget"
+        | "host.keys.update_budget_limits"
+        | "host.keys.weekly_control.get"
+        | "host.keys.weekly_control.change"
             if matches!(
                 stage,
                 Stage::Management | Stage::CommandLine | Stage::Maintenance

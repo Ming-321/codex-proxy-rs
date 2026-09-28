@@ -70,6 +70,7 @@ struct KeyView {
     daily_resets_at: Option<DateTime<Utc>>,
     weekly_limit_usd: String,
     weekly_used_usd: String,
+    weekly_waiting: bool,
     weekly_resets_at: Option<DateTime<Utc>>,
 }
 
@@ -130,6 +131,7 @@ pub(super) fn overview(value: KeyUsageOverview) -> OverviewView {
             daily_resets_at: key.budget.daily_resets_at.map(DateTime::from),
             weekly_limit_usd: key.budget.limits.weekly_usd.canonical(),
             weekly_used_usd: key.budget.weekly_used_usd.canonical(),
+            weekly_waiting: key.budget.weekly_waiting,
             weekly_resets_at: key.budget.weekly_resets_at.map(DateTime::from),
         },
         summary: metrics(

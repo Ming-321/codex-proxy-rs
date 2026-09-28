@@ -35,6 +35,7 @@ export interface KeyUsageBudget {
   dailyResetsAt: string | null
   weeklyLimitUsd: string
   weeklyUsedUsd: string
+  weeklyWaiting: boolean
   weeklyResetsAt: string | null
 }
 

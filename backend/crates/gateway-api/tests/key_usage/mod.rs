@@ -192,6 +192,7 @@ async fn overview_scopes_every_query_and_projects_only_key_visible_fields() {
             "dailyResetsAt",
             "weeklyLimitUsd",
             "weeklyUsedUsd",
+            "weeklyWaiting",
             "weeklyResetsAt",
         ],
     );

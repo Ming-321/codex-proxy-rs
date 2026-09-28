@@ -35,13 +35,25 @@ impl DefaultPluginClientKeyAccess {
 
 #[async_trait]
 impl PluginClientKeyAccess for DefaultPluginClientKeyAccess {
-    async fn facts(&self, id: &ClientApiKeyId) -> Result<PluginClientKeyFacts, AdminError> {
-        let key = self.service.get(id).await?;
-        Ok(PluginClientKeyFacts {
-            id: key.id,
-            enabled: key.enabled,
-            group_ids: key.groups.into_iter().map(|group| group.id).collect(),
-        })
+    async fn weekly_budget_control(
+        &self,
+        id: &ClientApiKeyId,
+    ) -> Result<crate::model::weekly_budget::WeeklyBudgetControl, AdminError> {
+        self.service.weekly_budget_control(id).await
+    }
+    async fn change_weekly_budget(
+        &self,
+        owner: &PluginResourceOwner,
+        command: crate::model::weekly_budget::ChangeWeeklyBudget,
+        context: &MutationContext,
+    ) -> Result<crate::model::weekly_budget::WeeklyBudgetControl, AdminError> {
+        self.service
+            .change_weekly_budget(
+                context,
+                command,
+                ClientKeyBudgetMutationOrigin::Plugin(owner.clone()),
+            )
+            .await
     }
 
     async fn budget(&self, id: &ClientApiKeyId) -> Result<ClientBudgetStatus, AdminError> {
@@ -76,6 +88,15 @@ impl PluginClientKeyAccess for DefaultPluginClientKeyAccess {
                 ClientKeyBudgetMutationOrigin::Plugin(owner.clone()),
             )
             .await
+    }
+
+    async fn facts(&self, id: &ClientApiKeyId) -> Result<PluginClientKeyFacts, AdminError> {
+        let key = self.service.get(id).await?;
+        Ok(PluginClientKeyFacts {
+            id: key.id,
+            enabled: key.enabled,
+            group_ids: key.groups.into_iter().map(|group| group.id).collect(),
+        })
     }
 
     async fn list(

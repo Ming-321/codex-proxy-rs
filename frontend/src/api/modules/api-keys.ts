@@ -22,6 +22,7 @@ export interface ApiKey {
   weeklyLimitUsd: string
   dailyUsedUsd: string
   weeklyUsedUsd: string
+  weeklyWaiting: boolean
   dailyResetsAt: string | null
   weeklyResetsAt: string | null
   createdAt: string

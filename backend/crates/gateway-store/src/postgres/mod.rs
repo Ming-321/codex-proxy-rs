@@ -29,6 +29,7 @@ mod retention;
 mod runtime_settings;
 mod snapshot;
 mod usage_facts;
+mod weekly_budget;
 
 pub use account_groups::*;
 pub use admin_security_audit::*;

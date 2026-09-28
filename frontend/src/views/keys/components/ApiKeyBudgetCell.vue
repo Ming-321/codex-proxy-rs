@@ -31,10 +31,16 @@ function amount(value: string) {
             ${{ amount(window.used) }} / {{ Number(window.limit) === 0 ? '∞' : `$${amount(window.limit)}` }}
           </span>
         </span>
+        <span v-if="apiKey.weeklyWaiting" class="text-cp-error">
+          周预算周期已结束
+        </span>
       </button>
     </template>
 
     <section class="grid min-w-56 max-w-[calc(100vw-1rem)] gap-3 p-3" role="dialog" aria-label="费用用量详情（美元）">
+      <p v-if="apiKey.weeklyWaiting" class="text-cp-xs text-cp-error" role="status">
+        周预算周期已结束，暂不可请求
+      </p>
       <div v-for="window in windows" :key="window.label" class="grid gap-1">
         <div class="flex items-baseline justify-between gap-6 text-cp-sm">
           <span class="shrink-0 text-cp-text-secondary">{{ window.heading }}</span>

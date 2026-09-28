@@ -83,7 +83,7 @@ async fn reset_client_key_budget_in_transaction(
         daily_used_usd = case when $2 then 0 else daily_used_usd end,
         daily_start = case when $2 and daily_end > $4 then $4 else daily_start end,
         weekly_used_usd = case when $3 then 0 else weekly_used_usd end,
-        weekly_start = case when $3 and weekly_end > $4 then $4 else weekly_start end
+        weekly_start = case when $3 and (weekly_end > $4 or weekly_controller is not null) then $4 else weekly_start end
         where client_api_key_id = $1",
     )
     .bind(command.id.as_str())
@@ -177,6 +177,15 @@ impl PgClientBudgetStore {
         advance_windows(&mut tx, key_id.as_str(), now)
             .await
             .map_err(|_| unavailable())?;
+        let waiting: bool = sqlx::query_scalar("select weekly_controller is not null and weekly_end <= $2 from client_key_budget_windows where client_api_key_id=$1")
+            .bind(key_id.as_str()).bind(now).fetch_one(&mut *tx).await.map_err(|_| unavailable())?;
+        if waiting {
+            return Err(GatewayError::new(
+                GatewayErrorKind::RateLimited,
+                "waiting for account weekly window update",
+            )
+            .with_client_code("key_weekly_window_waiting"));
+        }
         if limits.is_limited() {
             let window = sqlx::query(
                 "select daily_used_usd::text, weekly_used_usd::text, daily_end, weekly_end
@@ -260,7 +269,7 @@ async fn settle_in_transaction(
     if changed == 1 {
         sqlx::query("update client_key_budget_windows set
                 daily_used_usd = daily_used_usd + case when $3 >= daily_start and $3 < daily_end then $2::text::numeric else 0 end,
-                weekly_used_usd = weekly_used_usd + case when $3 >= weekly_start and $3 < weekly_end then $2::text::numeric else 0 end
+                weekly_used_usd = weekly_used_usd + case when $3 >= weekly_start and ($3 < weekly_end or weekly_controller is not null) then $2::text::numeric else 0 end
                 where client_api_key_id = $1")
                 .bind(key).bind(charge.amount_usd.canonical()).bind(DateTime::<Utc>::from(charge.completed_at))
                 .execute(&mut **tx).await?;
@@ -287,7 +296,7 @@ impl ClientBudgetPort for PgClientBudgetStore {
     }
 }
 
-async fn advance_windows(
+pub(super) async fn advance_windows(
     tx: &mut Transaction<'_, Postgres>,
     key: &str,
     now: DateTime<Utc>,
@@ -300,9 +309,9 @@ async fn advance_windows(
             daily_start = case when client_key_budget_windows.daily_end <= $2 then excluded.daily_start else client_key_budget_windows.daily_start end,
             daily_end = case when client_key_budget_windows.daily_end <= $2 then excluded.daily_end else client_key_budget_windows.daily_end end,
             daily_used_usd = case when client_key_budget_windows.daily_end <= $2 then 0 else client_key_budget_windows.daily_used_usd end,
-            weekly_start = case when client_key_budget_windows.weekly_end <= $2 then excluded.weekly_start else client_key_budget_windows.weekly_start end,
-            weekly_end = case when client_key_budget_windows.weekly_end <= $2 then excluded.weekly_end else client_key_budget_windows.weekly_end end,
-            weekly_used_usd = case when client_key_budget_windows.weekly_end <= $2 then 0 else client_key_budget_windows.weekly_used_usd end")
+            weekly_start = case when client_key_budget_windows.weekly_controller is null and client_key_budget_windows.weekly_end <= $2 then excluded.weekly_start else client_key_budget_windows.weekly_start end,
+            weekly_end = case when client_key_budget_windows.weekly_controller is null and client_key_budget_windows.weekly_end <= $2 then excluded.weekly_end else client_key_budget_windows.weekly_end end,
+            weekly_used_usd = case when client_key_budget_windows.weekly_controller is null and client_key_budget_windows.weekly_end <= $2 then 0 else client_key_budget_windows.weekly_used_usd end")
         .bind(key).bind(now).execute(&mut **tx).await?;
     Ok(())
 }
@@ -320,10 +329,12 @@ pub(super) async fn load_client_key_budgets(
         .collect::<Vec<_>>();
     let rows = sqlx::query(
         "select k.id, k.daily_limit_usd::text, k.weekly_limit_usd::text,
+        w.weekly_controller, coalesce(w.weekly_control_revision,0) as weekly_control_revision,
+        coalesce(w.weekly_controller is not null and w.weekly_end <= now(),false) as weekly_waiting,
         (case when w.daily_end > now() then w.daily_used_usd else 0 end)::text as daily_used,
-        (case when w.weekly_end > now() then w.weekly_used_usd else 0 end)::text as weekly_used,
+        (case when w.weekly_controller is not null or w.weekly_end > now() then w.weekly_used_usd else 0 end)::text as weekly_used,
         case when w.daily_end > now() then w.daily_end end as daily_end,
-        case when w.weekly_end > now() then w.weekly_end end as weekly_end
+        case when w.weekly_controller is not null or w.weekly_end > now() then w.weekly_end end as weekly_end
         from client_api_keys k left join client_key_budget_windows w on w.client_api_key_id = k.id
         where k.id = any($1)",
     )
@@ -341,6 +352,12 @@ pub(super) async fn load_client_key_budgets(
         budgets.insert(
             row.get::<String, _>("id"),
             ClientBudgetStatus {
+                weekly_controller: row.get("weekly_controller"),
+                weekly_control_revision: u64::try_from(
+                    row.get::<i64, _>("weekly_control_revision"),
+                )
+                .map_err(|_| postgres_unavailable("decode weekly control revision"))?,
+                weekly_waiting: row.get("weekly_waiting"),
                 limits: ClientBudgetLimits {
                     daily_usd: parse("daily_limit_usd")?,
                     weekly_usd: parse("weekly_limit_usd")?,

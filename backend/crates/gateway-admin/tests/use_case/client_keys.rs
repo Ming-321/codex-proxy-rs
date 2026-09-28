@@ -33,6 +33,28 @@ struct TestClientKeyStore {
 
 #[async_trait]
 impl ClientKeyStore for TestClientKeyStore {
+    async fn weekly_budget_control(
+        &self,
+        _: &gateway_core::policy::ClientApiKeyId,
+    ) -> AdminStoreResult<gateway_admin::model::weekly_budget::WeeklyBudgetControl> {
+        Err(AdminStoreError::new(
+            AdminStoreErrorKind::Unavailable,
+            "weekly budget",
+            "unused",
+        ))
+    }
+    async fn change_weekly_budget(
+        &self,
+        _: gateway_admin::model::weekly_budget::ChangeWeeklyBudget,
+        _: gateway_admin::model::client_keys::ClientKeyBudgetMutationOrigin,
+        _: &MutationContext,
+    ) -> AdminStoreResult<gateway_admin::model::weekly_budget::WeeklyBudgetControl> {
+        Err(AdminStoreError::new(
+            AdminStoreErrorKind::Unavailable,
+            "weekly budget",
+            "unused",
+        ))
+    }
     async fn update_client_key_budget_limits(
         &self,
         _: gateway_admin::model::client_keys::UpdateClientKeyBudgetLimits,

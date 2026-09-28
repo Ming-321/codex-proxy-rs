@@ -28,6 +28,16 @@ use super::{map_store_error, publish_committed};
 /// API 消费的 Client Key 管理服务。
 #[async_trait]
 pub trait ClientKeyService: Send + Sync {
+    async fn weekly_budget_control(
+        &self,
+        id: &ClientApiKeyId,
+    ) -> Result<crate::model::weekly_budget::WeeklyBudgetControl, AdminError>;
+    async fn change_weekly_budget(
+        &self,
+        context: &MutationContext,
+        command: crate::model::weekly_budget::ChangeWeeklyBudget,
+        origin: ClientKeyBudgetMutationOrigin,
+    ) -> Result<crate::model::weekly_budget::WeeklyBudgetControl, AdminError>;
     async fn get(&self, id: &ClientApiKeyId) -> Result<ClientKeyRecord, AdminError>;
     async fn list(&self, query: ClientKeyListQuery) -> Result<ClientKeyPage, AdminError>;
     async fn reveal(&self, id: &ClientApiKeyId) -> Result<ClientKeySecret, AdminError>;
@@ -96,9 +106,35 @@ impl ClientKeyService for DefaultClientKeyService {
             .map_err(|error| map_store_error(error, "client API key"))?
             .ok_or_else(|| AdminError::not_found("Client API Key 不存在"))
     }
+    async fn weekly_budget_control(
+        &self,
+        id: &ClientApiKeyId,
+    ) -> Result<crate::model::weekly_budget::WeeklyBudgetControl, AdminError> {
+        self.store
+            .weekly_budget_control(id)
+            .await
+            .map_err(|e| map_store_error(e, "weekly budget control"))
+    }
+
+    async fn change_weekly_budget(
+        &self,
+        context: &MutationContext,
+        command: crate::model::weekly_budget::ChangeWeeklyBudget,
+        origin: ClientKeyBudgetMutationOrigin,
+    ) -> Result<crate::model::weekly_budget::WeeklyBudgetControl, AdminError> {
+        self.store
+            .change_weekly_budget(command, origin, context)
+            .await
+            .map_err(|e| map_store_error(e, "weekly budget control"))
+    }
 
     async fn budget(&self, id: &ClientApiKeyId) -> Result<ClientBudgetStatus, AdminError> {
-        self.get(id).await.map(|key| key.budget)
+        self.store
+            .get_client_key(id)
+            .await
+            .map_err(|error| map_store_error(error, "client API key"))?
+            .map(|key| key.budget)
+            .ok_or_else(|| AdminError::not_found("Client API Key 不存在"))
     }
 
     async fn update_budget_limits(

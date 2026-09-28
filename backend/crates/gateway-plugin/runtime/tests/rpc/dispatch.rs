@@ -324,6 +324,8 @@ async fn managed_resources_require_their_domains_and_control_plane_stages() {
         ("host.keys.reset_budget", Permission::KeyBudgets),
         ("host.keys.get_budget", Permission::KeyBudgets),
         ("host.keys.update_budget_limits", Permission::KeyBudgets),
+        ("host.keys.weekly_control.get", Permission::KeyBudgets),
+        ("host.keys.weekly_control.change", Permission::KeyBudgets),
         (
             "host.quota_observations.refresh",
             Permission::QuotaObservations,
