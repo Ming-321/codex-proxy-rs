@@ -305,6 +305,7 @@ pub trait ClientKeyStore: Send + Sync {
         &self,
         command: crate::model::client_keys::ChangeClientLimitBinding,
         context: &MutationContext,
+        origin: crate::model::client_keys::ClientLimitBindingMutationOrigin,
     ) -> AdminStoreResult<crate::model::client_keys::ClientLimitBinding>;
 
     /// 按已验证的 ID 读取资料，不读取完整明文 Key。

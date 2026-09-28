@@ -1,4 +1,4 @@
-//! 插件 Client Key 管理；复用管理服务，只开放非秘密目录与预算操作。
+//! 插件 Client Key 管理；复用原生服务，按独立访问域开放非秘密操作。
 
 use std::sync::Arc;
 
@@ -35,6 +35,28 @@ impl DefaultPluginClientKeyAccess {
 
 #[async_trait]
 impl PluginClientKeyAccess for DefaultPluginClientKeyAccess {
+    async fn limit_binding(
+        &self,
+        id: &ClientApiKeyId,
+    ) -> Result<crate::model::client_keys::ClientLimitBinding, AdminError> {
+        self.service.limit_binding(id).await
+    }
+
+    async fn change_limit_binding(
+        &self,
+        owner: &PluginResourceOwner,
+        command: crate::model::client_keys::ChangeClientLimitBinding,
+        context: &MutationContext,
+    ) -> Result<crate::model::client_keys::ClientLimitBinding, AdminError> {
+        self.service
+            .change_limit_binding(
+                context,
+                command,
+                crate::model::client_keys::ClientLimitBindingMutationOrigin::Plugin(owner.clone()),
+            )
+            .await
+    }
+
     async fn facts(&self, id: &ClientApiKeyId) -> Result<PluginClientKeyFacts, AdminError> {
         let key = self.service.get(id).await?;
         Ok(PluginClientKeyFacts {

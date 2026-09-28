@@ -4,7 +4,9 @@ use chrono::{DateTime, Utc};
 use gateway_admin::{
     model::{
         MutationActor, MutationContext,
-        client_keys::{ChangeClientLimitBinding, ClientLimitBinding},
+        client_keys::{
+            ChangeClientLimitBinding, ClientLimitBinding, ClientLimitBindingMutationOrigin,
+        },
     },
     ports::store::{AdminStoreError, AdminStoreErrorKind, AdminStoreResult},
 };
@@ -112,21 +114,36 @@ pub(super) async fn change(
     pool: &PgPool,
     command: ChangeClientLimitBinding,
     context: &MutationContext,
+    origin: ClientLimitBindingMutationOrigin,
 ) -> AdminStoreResult<ClientLimitBinding> {
     if command.source_key_id.as_ref() == Some(&command.id) {
         return Err(conflict("解绑请使用 null 来源；不允许自引用"));
     }
-    let actor = match &context.actor {
-        MutationActor::AdminSession { admin_user_id } => json!({"adminSession":admin_user_id}),
-        MutationActor::AdminApiKey => json!({"adminApiKey":true}),
-        MutationActor::System => json!({"system":true}),
+    let actor = match (&origin, &context.actor) {
+        (ClientLimitBindingMutationOrigin::Plugin(owner), _) => json!({
+            "pluginInstance": owner.instance_id,
+            "instanceRevision": owner.revision.get(),
+            "artifactSha256": owner.artifact_sha256,
+        }),
+        (_, MutationActor::AdminSession { admin_user_id }) => json!({"adminSession":admin_user_id}),
+        (_, MutationActor::AdminApiKey) => json!({"adminApiKey":true}),
+        (_, MutationActor::System) => json!({"system":true}),
     };
     let operation = json!({"actor":actor,"expectedRevision":command.expected_revision,"sourceKeyId":command.source_key_id.as_ref().map(ClientApiKeyId::as_str)});
-    let mut tx = pool.begin().await.map_err(unavailable)?;
-    sqlx::query("select config_revision from runtime_settings where id=1 for update")
-        .execute(&mut *tx)
-        .await
-        .map_err(unavailable)?;
+    // 重试也先复验当前实例授权，不能用已提交操作绕过撤权。
+    let mut tx = match &origin {
+        ClientLimitBindingMutationOrigin::Admin => {
+            let mut tx = pool.begin().await.map_err(unavailable)?;
+            sqlx::query("select config_revision from runtime_settings where id=1 for update")
+                .execute(&mut *tx)
+                .await
+                .map_err(unavailable)?;
+            tx
+        }
+        ClientLimitBindingMutationOrigin::Plugin(owner) => {
+            super::plugins::begin_authorized_mutation(pool, owner, "key_limit_bindings").await?
+        }
+    };
     let ids = vec![
         command.id.as_str(),
         command
@@ -200,19 +217,26 @@ pub(super) async fn change(
         .bind(command.id.as_str()).bind(command.source_key_id.as_ref().map(ClientApiKeyId::as_str))
         .bind(next).bind(i64::try_from(config_revision.get()).map_err(|_| conflict("配置版本已耗尽"))?).bind(operation)
         .execute(&mut *tx).await.map_err(unavailable)?;
-    super::append_admin_audit_event_in_transaction(
-        &mut tx,
-        mutation_audit(
-            context,
-            "change_limit_binding",
-            "client_api_key",
-            command.id.as_str(),
-            vec!["limit_source_key_id".to_owned()],
-        ),
-        config_revision,
-    )
-    .await
-    .map_err(|error| admin_store_error(RESOURCE, error))?;
+    let mut audit = mutation_audit(
+        context,
+        "change_limit_binding",
+        "client_api_key",
+        command.id.as_str(),
+        vec!["limit_source_key_id".to_owned()],
+    );
+    if let ClientLimitBindingMutationOrigin::Plugin(owner) = &origin {
+        audit.actor_kind = super::AdminAuditActorKind::System;
+        audit.actor_admin_user_id = None;
+        audit.actor_ref = format!(
+            "plugin:{}:revision:{}:artifact:{}",
+            owner.instance_id,
+            owner.revision.get(),
+            owner.artifact_sha256
+        );
+    }
+    super::append_admin_audit_event_in_transaction(&mut tx, audit, config_revision)
+        .await
+        .map_err(|error| admin_store_error(RESOURCE, error))?;
     let binding = read(&mut tx, &command.id).await?;
     tx.commit().await.map_err(unavailable)?;
     Ok(binding)

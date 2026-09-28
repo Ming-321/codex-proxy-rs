@@ -141,12 +141,15 @@ flowchart LR
   正文按需读取，透传无需额外读取权限；转换和改写不能绕过 Core 的交付、取消与结算边界。
   数据面插件通过受管 HTTP 已发送或无法证明未发送时，Runtime 把该事实并入 Core 的请求副作用水位，后续不能按
   Provider 的 `not_sent` 结果透明重放。
-- **访问域不跨调用。** `network`、`models`、`accounts`、`data`、`requests`、`public_endpoints`、`groups`、`keys`、`key_budgets`、`quota_observations` 只开放对应资源域；
+- **访问域不跨调用。** `network`、`models`、`accounts`、`data`、`requests`、`public_endpoints`、`groups`、`keys`、`key_budgets`、`key_limit_bindings`、`quota_observations` 只开放对应资源域；
   账号、HTTP、模型、私有状态和日志回调仍绑定有效父调用与阶段。管理页和 CLI 不预绑定 Client Key，模型调用按次
   选择当前 Key；页面 Responses 桥还复核精确实例目标和 `models` 域，并在等待与交付期间持续撤销检查。
   `frontend_authentication` 必须显式配置 principal 到 Key 的映射；公开登录回调使用一次性票据且不继承宿主回调权限。
   `data` 仅向管理、命令和维护阶段提供账号、Key 基础投影与已有额度观测，不提供凭据、预测或 SQL，不进入客户端请求链。
   `key_budgets` 在这三个阶段管理所有 Client Key 的预算查询、日／周金额上限和用量重置，不授予其他 Key 配置、密钥或模型执行权限。
+  `key_limit_bindings` 在这三个阶段管理所有 Client Key 的共享限额关系，无逐 Key 所有权。复用原生绑定事务，
+  通过插件写入来源复验实例、代次、产物及授权；审计与最近操作去重区分插件身份，重试不能绕过撤权。
+  绑定事实独立于插件生命周期，停用或删除插件不解绑；冲突处理与业务确认由插件负责。
   `quota_observations` 在这三个阶段读取及刷新账号额度观测，复用 Provider 管理路径；不暴露凭据或执行上游额度重置。
   两个域分别作用于本地预算和上游观测，不建立账号到 Key 的自动同步关系；`data` 仍仅提供已有事实。
 - **维护只作用于已发布实例。** `maintenance` 由 Host 监督的 Runtime worker 调用，启用、恢复、配置发布和周期补偿共用对账入口。

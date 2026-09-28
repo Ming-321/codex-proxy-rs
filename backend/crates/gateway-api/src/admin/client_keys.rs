@@ -1006,7 +1006,11 @@ where
     let binding = state
         .admin_services()
         .client_keys()
-        .change_limit_binding(&auth.context().mutation_context(), command)
+        .change_limit_binding(
+            &auth.context().mutation_context(),
+            command,
+            gateway_admin::model::client_keys::ClientLimitBindingMutationOrigin::Admin,
+        )
         .await
         .map_err(map_service_error)?;
     Ok(AdminResponse::new(

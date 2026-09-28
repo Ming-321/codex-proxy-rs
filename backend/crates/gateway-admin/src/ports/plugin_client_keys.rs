@@ -1,4 +1,4 @@
-//! 插件 Client Key 非秘密目录与受控预算管理端口。
+//! 插件 Client Key 非秘密目录、预算与共享限额关系管理端口。
 
 use async_trait::async_trait;
 use gateway_core::{engine::budget::ClientBudgetStatus, policy::ClientApiKeyId};
@@ -12,6 +12,18 @@ use crate::model::{
 
 #[async_trait]
 pub trait PluginClientKeyAccess: Send + Sync {
+    async fn limit_binding(
+        &self,
+        id: &ClientApiKeyId,
+    ) -> Result<crate::model::client_keys::ClientLimitBinding, AdminError>;
+
+    async fn change_limit_binding(
+        &self,
+        owner: &PluginResourceOwner,
+        command: crate::model::client_keys::ChangeClientLimitBinding,
+        context: &MutationContext,
+    ) -> Result<crate::model::client_keys::ClientLimitBinding, AdminError>;
+
     async fn facts(&self, id: &ClientApiKeyId) -> Result<PluginClientKeyFacts, AdminError>;
 
     async fn budget(&self, id: &ClientApiKeyId) -> Result<ClientBudgetStatus, AdminError>;

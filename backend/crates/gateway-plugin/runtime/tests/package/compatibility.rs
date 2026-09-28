@@ -98,6 +98,7 @@ fn assert_exhaustive_permission(permission: Permission) {
         | Permission::Groups
         | Permission::Keys
         | Permission::KeyBudgets
+        | Permission::KeyLimitBindings
         | Permission::QuotaObservations => {}
     }
 }

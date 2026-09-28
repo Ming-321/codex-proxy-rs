@@ -723,8 +723,9 @@ impl ClientKeyStore for PgAdminClientKeyStore {
         &self,
         command: gateway_admin::model::client_keys::ChangeClientLimitBinding,
         context: &MutationContext,
+        origin: gateway_admin::model::client_keys::ClientLimitBindingMutationOrigin,
     ) -> AdminStoreResult<gateway_admin::model::client_keys::ClientLimitBinding> {
-        super::client_limit_bindings::change(&self.keys.pool, command, context).await
+        super::client_limit_bindings::change(&self.keys.pool, command, context, origin).await
     }
 
     async fn update_client_key_budget_limits(

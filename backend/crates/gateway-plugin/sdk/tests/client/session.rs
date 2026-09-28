@@ -156,6 +156,30 @@ impl PluginHandler for TestHandler {
                         vec![],
                     ))
                 }
+                "get_limit_binding" => {
+                    let result = call.host.get_key_limit_binding(
+                        gateway_plugin_sdk::call::key_limit_bindings::GetKeyLimitBindingRequest {
+                            client_key_id: "key_1".into(),
+                        },
+                    ).await?;
+                    Ok(CallReply::unary(
+                        serde_json::to_value(result).unwrap(),
+                        vec![],
+                    ))
+                }
+                "change_limit_binding" => {
+                    let result = call.host.change_key_limit_binding(
+                        gateway_plugin_sdk::call::key_limit_bindings::ChangeKeyLimitBindingRequest {
+                            client_key_id: "key_1".into(),
+                            source_key_id: Some("source".into()),
+                            expected_revision: 0,
+                        },
+                    ).await?;
+                    Ok(CallReply::unary(
+                        serde_json::to_value(result).unwrap(),
+                        vec![],
+                    ))
+                }
                 "update_budget_limits" => {
                     let result = call
                         .host
@@ -1584,6 +1608,18 @@ async fn quiesce_rejects_new_calls_and_shutdown_closes_the_session() {
 #[tokio::test]
 async fn typed_key_and_quota_calls_keep_payloads_and_do_not_retry_failures() {
     for (entry, method, request, response) in [
+        (
+            "get_limit_binding",
+            "host.keys.get_limit_binding",
+            json!({"client_key_id":"key_1"}),
+            json!({"client_key_id":"key_1","source_key_id":"key_1","revision":0,"config_revision":3,"binding_config_revision":null,"loaded_config_revision":null,"source_enabled":true}),
+        ),
+        (
+            "change_limit_binding",
+            "host.keys.change_limit_binding",
+            json!({"client_key_id":"key_1","source_key_id":"source","expected_revision":0}),
+            json!({"client_key_id":"key_1","source_key_id":"source","revision":1,"config_revision":4,"binding_config_revision":4,"loaded_config_revision":3,"source_enabled":true}),
+        ),
         (
             "key_facts",
             "host.data.keys.get",

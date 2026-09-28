@@ -42,6 +42,13 @@ pub struct ChangeClientLimitBinding {
     pub expected_revision: u64,
 }
 
+/// 授权来源来自宿主上下文，不表示插件独占该绑定。
+#[derive(Debug, Clone)]
+pub enum ClientLimitBindingMutationOrigin {
+    Admin,
+    Plugin(PluginResourceOwner),
+}
+
 /// Client Key 列表保持旧 HTTP 合同允许的完整非零 `u16` 页大小。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct ClientKeyPageSize(NonZeroU16);

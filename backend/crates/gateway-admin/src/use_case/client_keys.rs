@@ -36,6 +36,7 @@ pub trait ClientKeyService: Send + Sync {
         &self,
         context: &MutationContext,
         command: crate::model::client_keys::ChangeClientLimitBinding,
+        origin: crate::model::client_keys::ClientLimitBindingMutationOrigin,
     ) -> Result<crate::model::client_keys::ClientLimitBinding, AdminError>;
     async fn get(&self, id: &ClientApiKeyId) -> Result<ClientKeyRecord, AdminError>;
     async fn list(&self, query: ClientKeyListQuery) -> Result<ClientKeyPage, AdminError>;
@@ -118,10 +119,11 @@ impl ClientKeyService for DefaultClientKeyService {
         &self,
         context: &MutationContext,
         command: crate::model::client_keys::ChangeClientLimitBinding,
+        origin: crate::model::client_keys::ClientLimitBindingMutationOrigin,
     ) -> Result<crate::model::client_keys::ClientLimitBinding, AdminError> {
         let mut binding = self
             .store
-            .change_limit_binding(command, context)
+            .change_limit_binding(command, context, origin)
             .await
             .map_err(|error| map_store_error(error, "client limit binding"))?;
         publish_committed(self.snapshot.as_ref(), binding.config_revision).await?;

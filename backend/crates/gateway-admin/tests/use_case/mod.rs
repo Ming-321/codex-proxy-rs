@@ -660,6 +660,7 @@ impl ClientKeyStore for UnavailableStore {
         &self,
         _: gateway_admin::model::client_keys::ChangeClientLimitBinding,
         _: &MutationContext,
+        _: gateway_admin::model::client_keys::ClientLimitBindingMutationOrigin,
     ) -> gateway_admin::ports::store::AdminStoreResult<
         gateway_admin::model::client_keys::ClientLimitBinding,
     > {

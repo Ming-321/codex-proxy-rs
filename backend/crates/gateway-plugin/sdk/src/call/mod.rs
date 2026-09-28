@@ -5,6 +5,7 @@ pub mod data;
 pub mod frontend_authentication;
 pub mod host;
 pub mod key_budgets;
+pub mod key_limit_bindings;
 pub mod management;
 pub mod middleware;
 pub mod model;

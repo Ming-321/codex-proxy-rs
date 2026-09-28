@@ -152,12 +152,13 @@ pub enum Permission {
     Groups,
     Keys,
     KeyBudgets,
+    KeyLimitBindings,
     QuotaObservations,
 }
 
 impl Permission {
     /// 当前公开访问域，安装摘要与授权校验复用同一集合。
-    pub const ALL: [Self; 10] = [
+    pub const ALL: [Self; 11] = [
         Self::Network,
         Self::Models,
         Self::Accounts,
@@ -167,6 +168,7 @@ impl Permission {
         Self::Groups,
         Self::Keys,
         Self::KeyBudgets,
+        Self::KeyLimitBindings,
         Self::QuotaObservations,
     ];
 
@@ -182,6 +184,7 @@ impl Permission {
             Self::Groups => "groups",
             Self::Keys => "keys",
             Self::KeyBudgets => "key_budgets",
+            Self::KeyLimitBindings => "key_limit_bindings",
             Self::QuotaObservations => "quota_observations",
         }
     }
@@ -199,6 +202,7 @@ impl Permission {
             Self::Groups => "专用账号分组",
             Self::Keys => "专用 API Key",
             Self::KeyBudgets => "API Key 预算",
+            Self::KeyLimitBindings => "共享限额关系",
             Self::QuotaObservations => "账号额度观测",
         }
     }
@@ -224,6 +228,9 @@ impl Permission {
             }
             Self::KeyBudgets => {
                 "查询所有现有及未来新增 Key 的预算、修改日／周金额上限和重置用量，包括管理员和其他插件创建的 Key；不读取密钥或修改其他配置"
+            }
+            Self::KeyLimitBindings => {
+                "读取和修改所有现有及未来 Client Key 的原生限额来源，影响预算、并发、RPM 和等待队列；不读取 Key 明文凭据，停用插件不解除共享关系"
             }
         }
     }

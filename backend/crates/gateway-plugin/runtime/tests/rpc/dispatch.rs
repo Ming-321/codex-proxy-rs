@@ -324,6 +324,11 @@ async fn managed_resources_require_their_domains_and_control_plane_stages() {
         ("host.keys.reset_budget", Permission::KeyBudgets),
         ("host.keys.get_budget", Permission::KeyBudgets),
         ("host.keys.update_budget_limits", Permission::KeyBudgets),
+        ("host.keys.get_limit_binding", Permission::KeyLimitBindings),
+        (
+            "host.keys.change_limit_binding",
+            Permission::KeyLimitBindings,
+        ),
         (
             "host.quota_observations.refresh",
             Permission::QuotaObservations,
@@ -353,7 +358,7 @@ async fn managed_resources_require_their_domains_and_control_plane_stages() {
                         Stage::Management | Stage::CommandLine | Stage::Maintenance
                     )
                 {
-                    assert!(reply.is_ok());
+                    assert!(reply.is_ok(), "{method} during {stage:?}");
                 } else {
                     assert_permission_denied(reply);
                 }

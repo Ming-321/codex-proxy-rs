@@ -201,6 +201,7 @@ async fn plugin_budget_callback_rejects_bound_member_updates_and_accepts_explici
                 actor: gateway_admin::model::MutationActor::System,
                 request_id: "binding-fixture".into(),
             },
+            gateway_admin::model::client_keys::ClientLimitBindingMutationOrigin::Admin,
         )
         .await
         .unwrap();
@@ -429,6 +430,24 @@ struct HoldCommittedReply {
 
 #[async_trait::async_trait]
 impl PluginClientKeyAccess for HoldCommittedReply {
+    async fn limit_binding(
+        &self,
+        id: &ClientApiKeyId,
+    ) -> Result<gateway_admin::model::client_keys::ClientLimitBinding, AdminError> {
+        self.inner.limit_binding(id).await
+    }
+
+    async fn change_limit_binding(
+        &self,
+        owner: &PluginResourceOwner,
+        command: gateway_admin::model::client_keys::ChangeClientLimitBinding,
+        context: &MutationContext,
+    ) -> Result<gateway_admin::model::client_keys::ClientLimitBinding, AdminError> {
+        self.inner
+            .change_limit_binding(owner, command, context)
+            .await
+    }
+
     async fn facts(&self, id: &ClientApiKeyId) -> Result<PluginClientKeyFacts, AdminError> {
         self.inner.facts(id).await
     }

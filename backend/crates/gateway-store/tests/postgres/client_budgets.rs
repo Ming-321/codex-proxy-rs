@@ -864,6 +864,7 @@ async fn bound_budget_updates_reject_without_mutation_but_full_edits_preserve_lo
                 expected_revision: 0,
             },
             &context(),
+            gateway_admin::model::client_keys::ClientLimitBindingMutationOrigin::Admin,
         )
         .await
         .unwrap();
@@ -961,6 +962,7 @@ async fn bound_budget_updates_reject_without_mutation_but_full_edits_preserve_lo
                 expected_revision: binding.revision,
             },
             &context(),
+            gateway_admin::model::client_keys::ClientLimitBindingMutationOrigin::Admin,
         )
         .await
         .unwrap();
