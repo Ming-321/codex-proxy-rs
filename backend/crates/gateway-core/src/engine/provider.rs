@@ -22,7 +22,9 @@ use crate::engine::middleware::{
     MiddlewareHeader, MiddlewareNext, MiddlewareRequest, MiddlewareResponse,
 };
 use crate::error::{PreDeliveryRetry, ProviderError, ProviderErrorKind};
-use crate::event::{EventSequenceValidator, GatewayEvent, ProtocolWireEvent, ProviderEvent};
+use crate::event::{
+    EventSequenceError, EventSequenceValidator, GatewayEvent, ProtocolWireEvent, ProviderEvent,
+};
 use crate::identity::ProviderKind;
 use crate::operation::Operation;
 use crate::policy::ClientApiKeyId;
@@ -216,7 +218,7 @@ pub struct ProviderStream {
     _lease: Box<dyn ResourceLease>,
     native_response_translator: Option<Box<dyn NativeResponseTranslator>>,
     account_feedback: Option<ProviderStreamAccountFeedback>,
-    validator: EventSequenceValidator,
+    validator: Result<EventSequenceValidator, EventSequenceError>,
     strict_canonical_seen: bool,
     terminated: bool,
 }
@@ -323,7 +325,7 @@ impl ProviderStream {
             _lease: Box::new(lease),
             native_response_translator: None,
             account_feedback: None,
-            validator: EventSequenceValidator::new(),
+            validator: Ok(EventSequenceValidator::new()),
             strict_canonical_seen: false,
             terminated: false,
         }
@@ -857,23 +859,25 @@ impl Stream for ProviderStream {
         match this.events.as_mut().poll_next(context) {
             Poll::Pending => Poll::Pending,
             Poll::Ready(Some(Ok(event))) => {
-                // 带 wire 的 canonical facts 只是旁路观测：wire 才是客户端协议的
-                // 权威表达。只有 canonical-only Provider 输出需要以状态机作为交付条件。
-                if event.wire_event().is_none() && !event.canonical_facts().is_empty() {
-                    this.strict_canonical_seen = true;
-                    for fact in event.canonical_facts() {
-                        if this.validator.observe(fact).is_err() {
-                            this.terminated = true;
-                            let error = ProviderError::new(
-                                ProviderErrorKind::Protocol,
-                                UpstreamSendState::Sent,
-                            );
-                            if let Some(feedback) = this.account_feedback.as_mut() {
-                                feedback.report_failure(&error);
-                            }
-                            return Poll::Ready(Some(Err(error)));
-                        }
+                // 纯 wire 流的 facts 仍只是旁路观测；一旦交付 canonical-only
+                // 事件，就必须校验完整事实序列，不能漏掉带 wire 的开始或终态。
+                this.strict_canonical_seen |=
+                    event.wire_event().is_none() && !event.canonical_facts().is_empty();
+                for fact in event.canonical_facts() {
+                    if let Ok(validator) = &mut this.validator
+                        && let Err(error) = validator.observe(fact)
+                    {
+                        this.validator = Err(error);
                     }
+                }
+                if this.strict_canonical_seen && this.validator.is_err() {
+                    this.terminated = true;
+                    let error =
+                        ProviderError::new(ProviderErrorKind::Protocol, UpstreamSendState::Sent);
+                    if let Some(feedback) = this.account_feedback.as_mut() {
+                        feedback.report_failure(&error);
+                    }
+                    return Poll::Ready(Some(Err(error)));
                 }
                 if let Some(feedback) = this.account_feedback.as_mut() {
                     feedback.observe(&event);
@@ -890,7 +894,10 @@ impl Stream for ProviderStream {
             Poll::Ready(None) => {
                 this.terminated = true;
                 let validation = if this.strict_canonical_seen {
-                    this.validator.finish()
+                    this.validator
+                        .as_ref()
+                        .map_err(Clone::clone)
+                        .and_then(EventSequenceValidator::finish)
                 } else {
                     Ok(())
                 };

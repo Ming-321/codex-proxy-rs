@@ -103,6 +103,7 @@ use crate::transport::{
 mod execution;
 mod failure;
 mod observation;
+mod upstream_adapter;
 mod workers;
 pub(crate) use workers::ClientReleaseServices;
 
@@ -472,9 +473,18 @@ impl Provider for CodexProvider {
                 UpstreamSendState::NotSent,
             ));
         };
+        let adapter = context.upstream_adapter(candidate.provider(), upstream_model)?;
+        if adapter.is_none()
+            && generate
+                .provider_session_state(PROVIDER_NAME)
+                .is_some_and(|state| state.extension_owner().is_some())
+        {
+            return Err(continuation_replay_required_error("scope_unavailable"));
+        }
         // 其他协议必须先取得真实账号，再按固定 attempt 阶段调用转换器；选号前不能
         // 把未知正文当成 OpenAI wire 解释会话、亲和或传输字段。
-        let preselection = (generate.protocol_payload().protocol() == PROVIDER_NAME)
+        let preselection = (adapter.is_none()
+            && generate.protocol_payload().protocol() == PROVIDER_NAME)
             .then(|| self.prepare_generate_request(generate, upstream_model, &context))
             .transpose()?;
         let (selection_session_affinity, selection_cyber_policy_key, requires_websocket) =
@@ -539,6 +549,18 @@ impl Provider for CodexProvider {
                 account_id,
                 Box::new(move |operation, middleware_headers| {
                     Box::pin(async move {
+                        if let Some(adapter) = adapter {
+                            return provider.execute_upstream_adapter(
+                                operation,
+                                middleware_headers,
+                                terminal_model,
+                                terminal_context,
+                                lease,
+                                account_selection_wait_ms,
+                                frozen_requirements,
+                                adapter,
+                            );
+                        }
                         provider
                             .execute_selected_generate(
                                 operation,

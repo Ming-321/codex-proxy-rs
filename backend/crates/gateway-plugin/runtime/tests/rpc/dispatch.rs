@@ -148,6 +148,49 @@ async fn registration_and_configuration_reject_network_and_model_callbacks() {
 }
 
 #[tokio::test]
+async fn upstream_connections_require_their_own_grant_and_exact_execution_stage() {
+    let methods = [
+        "host.upstream.http.do",
+        "host.upstream.http.do_stream",
+        "host.upstream.http.stream_read",
+        "host.upstream.http.stream_close",
+        "host.upstream.websocket.open",
+        "host.upstream.websocket.send",
+        "host.upstream.websocket.read",
+        "host.upstream.websocket.close",
+    ];
+    let callbacks = Arc::new(Callbacks::default());
+    let (_cache, session) = session_with_permissions(
+        Arc::clone(&callbacks),
+        vec![Permission::UpstreamConnections],
+    )
+    .await;
+    for method in methods {
+        assert!(
+            invoke_callback(&session, Stage::Upstream, method)
+                .await
+                .is_ok()
+        );
+        for stage in [
+            Stage::Request,
+            Stage::Attempt,
+            Stage::Management,
+            Stage::Observation,
+            Stage::Registration,
+        ] {
+            assert_permission_denied(invoke_callback(&session, stage, method).await);
+        }
+    }
+    session.shutdown(Duration::from_secs(1)).await;
+    let (_cache, session) =
+        session_with_permissions(callbacks, vec![Permission::Network, Permission::Accounts]).await;
+    for method in methods {
+        assert_permission_denied(invoke_callback(&session, Stage::Upstream, method).await);
+    }
+    session.shutdown(Duration::from_secs(1)).await;
+}
+
+#[tokio::test]
 async fn active_stages_use_resource_domains_without_operation_whitelists() {
     let callbacks = Arc::new(Callbacks::default());
     let (_cache, session) = session(Arc::clone(&callbacks)).await;

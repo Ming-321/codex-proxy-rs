@@ -10,6 +10,7 @@ mod model;
 pub(crate) mod private_state;
 mod resources;
 mod scope;
+pub(crate) mod upstream;
 
 use std::{
     collections::BTreeMap,
@@ -87,6 +88,7 @@ pub(crate) struct PluginCallbacks {
 struct HttpAuthorization {
     network: NetworkPolicy,
     authorized: bool,
+    upstream_authorized: bool,
 }
 
 struct CallResources {
@@ -155,6 +157,9 @@ impl PluginCallbacks {
             http_authorization: Arc::new(HttpAuthorization {
                 network: ports.network,
                 authorized: grants.iter().any(|grant| grant.permission == "network"),
+                upstream_authorized: grants
+                    .iter()
+                    .any(|grant| grant.permission == "upstream_connections"),
             }),
             scopes: Mutex::new(BTreeMap::new()),
             pending_middleware: Mutex::new(BTreeMap::new()),
@@ -216,6 +221,25 @@ impl PluginCallbacks {
             context,
             NetworkScope::for_call(context).with_execution_effects(effects),
         )
+    }
+
+    pub(crate) fn prepare_upstream(
+        &self,
+        context: &CallContext,
+        managed: Arc<upstream::ManagedUpstream>,
+        extension_scope: gateway_core::engine::extensions::ExtensionCallScope,
+    ) -> Result<Arc<NetworkScope>, PluginFault> {
+        if context.stage != gateway_plugin_sdk::Stage::Upstream
+            || !self.http_authorization.upstream_authorized
+            || context.account_id.as_deref() != Some(managed.account.account_id().as_str())
+            || context.credential_revision != Some(managed.account.credential_revision().get())
+        {
+            return Err(denied());
+        }
+        let mut scope = NetworkScope::new(context, managed.account.outbound_proxy().cloned())
+            .with_upstream(managed);
+        scope.extension_scope = extension_scope;
+        self.register_scope(context, scope)
     }
 
     pub(crate) fn prepare_management(
@@ -480,20 +504,25 @@ impl CallbackHandler for PluginCallbacks {
                     .call(&context, scope, &method, params, &payload)
                     .await;
             }
+            let http = http::HttpCallbacks {
+                client: &http,
+                authorization: &authorization,
+                scope,
+                call: &call,
+                maximum_payload,
+            };
+            if method.starts_with("host.upstream.") {
+                if !authorization.upstream_authorized
+                    || context.stage != gateway_plugin_sdk::Stage::Upstream
+                {
+                    return Err(denied());
+                }
+                return upstream::dispatch(&http, &method, params, payload).await;
+            }
             if !authorization.authorized {
                 return Err(denied());
             }
-            http::dispatch(
-                &http,
-                &authorization,
-                scope,
-                &call,
-                &method,
-                params,
-                payload,
-                maximum_payload,
-            )
-            .await
+            http.dispatch(&method, params, payload).await
         })
     }
 }

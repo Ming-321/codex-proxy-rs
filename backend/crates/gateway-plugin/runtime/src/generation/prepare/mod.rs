@@ -120,6 +120,7 @@ pub(super) struct PreparedSet {
     _observers: Option<Arc<dyn RequestObserverPlan>>,
     _policies: Option<Arc<dyn RequestPolicyPlan>>,
     _middleware: Option<Arc<dyn MiddlewarePlan>>,
+    upstream_adapters: Option<Arc<dyn gateway_core::engine::upstream_adapter::UpstreamAdapterPlan>>,
     _authentication:
         Option<Arc<dyn gateway_core::engine::authentication::FrontendAuthenticationPlan>>,
     sessions: Vec<PreparedInstance>,
@@ -137,6 +138,7 @@ struct PreparedContributions {
     commands: Vec<Arc<crate::adapter::command_line::PluginCommand>>,
     management: Vec<crate::adapter::management::ManagementEntry>,
     policy_entries: Vec<crate::adapter::policy::PolicyEntry>,
+    upstream_entries: Vec<crate::adapter::upstream_adapter::AdapterEntry>,
     authentication_entries:
         Vec<crate::adapter::frontend_authentication::FrontendAuthenticationEntry>,
     model_aliases: Vec<gateway_core::routing::ContributedModelAlias>,
@@ -150,6 +152,7 @@ impl PreparedContributions {
         self.management.extend(other.management);
         self.model_aliases.extend(other.model_aliases);
         self.policy_entries.extend(other.policy_entries);
+        self.upstream_entries.extend(other.upstream_entries);
         self.authentication_entries
             .extend(other.authentication_entries);
     }
@@ -173,6 +176,12 @@ impl PreparedSet {
 }
 
 impl ExtensionSetLease for PreparedSet {
+    fn upstream_adapters(
+        &self,
+    ) -> Option<Arc<dyn gateway_core::engine::upstream_adapter::UpstreamAdapterPlan>> {
+        self.upstream_adapters.clone()
+    }
+
     fn is_ready(&self) -> bool {
         self.sessions_ready() && self.can_serve()
     }
@@ -456,6 +465,9 @@ impl PluginRuntime {
                     contributions
                         .policy_entries
                         .extend(crate::adapter::policy::unavailable_entries(instance)?);
+                    contributions.upstream_entries.extend(
+                        crate::adapter::upstream_adapter::unavailable_entries(instance)?,
+                    );
                     if let Some(entry) =
                         crate::adapter::frontend_authentication::unavailable_entry(instance)
                     {
@@ -471,6 +483,7 @@ impl PluginRuntime {
             commands,
             management,
             policy_entries,
+            upstream_entries,
             authentication_entries,
             model_aliases,
         } = contributions;
@@ -535,6 +548,10 @@ impl PluginRuntime {
             _observers: observers,
             _policies: policies,
             _middleware: middleware,
+            upstream_adapters:
+                crate::adapter::upstream_adapter::PluginUpstreamAdapterPlan::compile(
+                    upstream_entries,
+                )?,
             _authentication: authentication,
             sessions,
             commands,
@@ -865,6 +882,10 @@ impl PluginPreparation for PluginRuntime {
             crate::adapter::observer::validate_bindings(package.manifest(), &instance.bindings)?;
             crate::adapter::policy::validate_bindings(package.manifest(), &instance.bindings)?;
             crate::adapter::catalog::validate_bindings(package.manifest(), &instance.bindings)?;
+            crate::adapter::upstream_adapter::validate_bindings(
+                package.manifest(),
+                &instance.bindings,
+            )?;
             crate::adapter::frontend_authentication::validate_bindings(
                 package.manifest(),
                 &instance.bindings,

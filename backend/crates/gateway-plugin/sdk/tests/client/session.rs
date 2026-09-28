@@ -301,12 +301,12 @@ impl PluginHandler for TestHandler {
     }
 }
 
-struct HostPeer {
-    reader: ReadHalf<DuplexStream>,
-    writer: WriteHalf<DuplexStream>,
+pub(super) struct HostPeer {
+    pub(super) reader: ReadHalf<DuplexStream>,
+    pub(super) writer: WriteHalf<DuplexStream>,
 }
 
-async fn start_session<H: PluginHandler>(
+pub(super) async fn start_session<H: PluginHandler>(
     handler: H,
 ) -> (HostPeer, JoinHandle<Result<(), SessionError>>) {
     start_session_with_capacity(handler, MAXIMUM_STREAM_CHUNK_BYTES * 2).await
@@ -603,7 +603,13 @@ fn middleware_request() -> MiddlewareRequestHead {
     }
 }
 
-async fn send_call(host: &mut HostPeer, id: u64, method: &str, params: Value, payload: Vec<u8>) {
+pub(super) async fn send_call(
+    host: &mut HostPeer,
+    id: u64,
+    method: &str,
+    params: Value,
+    payload: Vec<u8>,
+) {
     send_call_with_timeout(host, id, method, params, payload, Duration::from_secs(1)).await;
 }
 
@@ -637,14 +643,14 @@ async fn send_control(host: &mut HostPeer, message: Message) {
         .unwrap();
 }
 
-async fn receive(host: &mut HostPeer) -> Frame {
+pub(super) async fn receive(host: &mut HostPeer) -> Frame {
     tokio::time::timeout(Duration::from_secs(1), read_frame(&mut host.reader))
         .await
         .expect("plugin response timed out")
         .expect("plugin response frame must be valid")
 }
 
-async fn shutdown(host: &mut HostPeer, task: JoinHandle<Result<(), SessionError>>) {
+pub(super) async fn shutdown(host: &mut HostPeer, task: JoinHandle<Result<(), SessionError>>) {
     send_control(host, Message::Shutdown).await;
     tokio::time::timeout(Duration::from_secs(1), task)
         .await

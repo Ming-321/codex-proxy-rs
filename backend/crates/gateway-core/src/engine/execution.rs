@@ -973,6 +973,11 @@ impl DefaultExecutionService {
             .iter()
             .map(|group| group.id().clone())
             .collect::<Vec<_>>();
+        let upstream_adapters = request
+            .client
+            .snapshot
+            .extensions()
+            .and_then(|set| set.upstream_adapters());
         let middleware = self.middlewares.as_ref().and_then(|middlewares| {
             let generation = request.client.snapshot.extensions()?.clone();
             middlewares.resolve(&generation)
@@ -1167,6 +1172,7 @@ impl DefaultExecutionService {
                 CoordinationExtensions::new(continuation, request_observation.clone())
                     .with_response_control(authorization.response_control.clone())
                     .with_request_policy(request_policy)
+                    .with_upstream_adapters(upstream_adapters)
                     .with_execution_effects(
                         execution_effects,
                         authorization.execution_effects_baseline,

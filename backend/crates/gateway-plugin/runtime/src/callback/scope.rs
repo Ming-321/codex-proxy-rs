@@ -13,6 +13,7 @@ pub(crate) struct NetworkScope {
     pub(super) proxy: Option<OutboundProxy>,
     pub(super) extension_scope: gateway_core::engine::extensions::ExtensionCallScope,
     execution_effects: Option<Arc<ExecutionEffects>>,
+    pub(super) upstream: Option<Arc<super::upstream::ManagedUpstream>>,
 }
 
 impl NetworkScope {
@@ -24,6 +25,7 @@ impl NetworkScope {
             proxy,
             extension_scope: Default::default(),
             execution_effects: None,
+            upstream: None,
         }
     }
 
@@ -33,6 +35,12 @@ impl NetworkScope {
 
     pub(super) fn with_execution_effects(mut self, effects: Arc<ExecutionEffects>) -> Self {
         self.execution_effects = Some(effects);
+        self
+    }
+
+    pub(super) fn with_upstream(mut self, managed: Arc<super::upstream::ManagedUpstream>) -> Self {
+        self.execution_effects = managed.effects.clone();
+        self.upstream = Some(managed);
         self
     }
 
@@ -50,9 +58,22 @@ impl NetworkScope {
             && context.credential_revision == self.credential_revision
     }
 
-    pub(super) fn start_http(&self) -> HttpAttempt {
+    pub(super) fn start_upstream(
+        &self,
+        purpose: Option<gateway_plugin_sdk::call::upstream_adapter::UpstreamPathPurpose>,
+    ) -> HttpAttempt {
         HttpAttempt {
-            effects: self.execution_effects.clone(),
+            effects: if purpose
+                == Some(gateway_plugin_sdk::call::upstream_adapter::UpstreamPathPurpose::Inference)
+            {
+                None
+            } else {
+                self.execution_effects.clone()
+            },
+            upstream: self
+                .upstream
+                .as_ref()
+                .map(|managed| Arc::clone(&managed.send_state)),
             completed: false,
         }
     }
@@ -61,6 +82,7 @@ impl NetworkScope {
 pub(super) struct HttpAttempt {
     effects: Option<Arc<ExecutionEffects>>,
     completed: bool,
+    upstream: Option<Arc<super::upstream::SendWatermark>>,
 }
 
 impl HttpAttempt {
@@ -70,6 +92,9 @@ impl HttpAttempt {
     }
 
     fn observe(&self, observed: UpstreamSendState) {
+        if let Some(upstream) = &self.upstream {
+            upstream.observe(observed);
+        }
         if observed != UpstreamSendState::NotSent
             && let Some(effects) = &self.effects
         {

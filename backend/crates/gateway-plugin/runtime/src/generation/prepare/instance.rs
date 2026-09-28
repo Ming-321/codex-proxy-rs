@@ -57,6 +57,10 @@ impl PluginRuntime {
                     &instance.bindings,
                 )?;
                 crate::adapter::policy::validate_bindings(package.manifest(), &instance.bindings)?;
+                crate::adapter::upstream_adapter::validate_bindings(
+                    package.manifest(),
+                    &instance.bindings,
+                )?;
                 crate::adapter::frontend_authentication::validate_bindings(
                     package.manifest(),
                     &instance.bindings,
@@ -235,6 +239,13 @@ impl PluginRuntime {
         )?);
         let model_aliases =
             crate::adapter::catalog::prepare(&manifest, &instance, &session).await?;
+        let upstream_entries = crate::adapter::upstream_adapter::prepare(
+            &manifest,
+            &instance,
+            Arc::clone(&session),
+            Arc::clone(&callbacks),
+        )
+        .await?;
         sessions.push(PreparedInstance {
             instance_id,
             artifact_sha256: instance.artifact_sha256,
@@ -251,6 +262,7 @@ impl PluginRuntime {
             commands,
             management,
             policy_entries,
+            upstream_entries,
             authentication_entries,
             model_aliases,
         })

@@ -45,6 +45,7 @@ pub fn contribution_for_id(
         Capability::ModelCatalog => "modelCatalog",
         Capability::RetryPolicy => "retryPolicy",
         Capability::Middleware => "middleware",
+        Capability::UpstreamAdapter => "upstreamAdapter",
         Capability::RequestLifecycle => "requestLifecycle",
         Capability::WebSocketObserver => "webSocketObserver",
         Capability::Usage => "usage",
