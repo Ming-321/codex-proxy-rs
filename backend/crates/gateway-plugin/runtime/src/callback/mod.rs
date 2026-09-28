@@ -469,6 +469,7 @@ impl CallbackHandler for PluginCallbacks {
                     | gateway_plugin_sdk::call::data::KEYS_GET
                     | gateway_plugin_sdk::call::data::QUOTA_GET
                     | gateway_plugin_sdk::call::data::QUOTA_REFRESH
+                    | gateway_plugin_sdk::call::quota_forecasts::GET_WEEKLY
             ) {
                 return data.call(&context, &method, params, &payload).await;
             }

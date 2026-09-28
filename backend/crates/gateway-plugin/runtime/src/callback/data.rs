@@ -1,11 +1,15 @@
 use std::sync::Arc;
 
 use gateway_admin::model::{
-    PageSize, plugins::instances::PluginPermissionGrant,
-    provider_credentials::PluginAccountListQuery,
+    AdminError, PageSize,
+    plugins::instances::PluginPermissionGrant,
+    provider_credentials::{AccountUsagePeriod, PluginAccountListQuery},
 };
 use gateway_core::{account::ProviderAccountId, policy::ClientApiKeyId, routing::ProviderKind};
-use gateway_plugin_sdk::{CallContext, PluginFault, Stage, call::data};
+use gateway_plugin_sdk::{
+    CallContext, PluginFault, Stage,
+    call::{data, quota_forecasts},
+};
 
 use super::{
     accounts::PluginAccountPortSlot, admin::map_admin_error, denied, invalid,
@@ -18,6 +22,7 @@ pub(super) struct PluginData {
     keys: Arc<PluginClientKeyPortSlot>,
     data_authorized: bool,
     quota_authorized: bool,
+    forecast_authorized: bool,
 }
 
 impl PluginData {
@@ -33,6 +38,9 @@ impl PluginData {
             quota_authorized: grants
                 .iter()
                 .any(|grant| grant.permission == "quota_observations"),
+            forecast_authorized: grants
+                .iter()
+                .any(|grant| grant.permission == "quota_forecasts"),
         }
     }
 
@@ -48,6 +56,7 @@ impl PluginData {
             data::ACCOUNTS_LIST | data::KEYS_GET => self.data_authorized,
             data::QUOTA_GET => self.data_authorized || self.quota_authorized,
             data::QUOTA_REFRESH => self.quota_authorized,
+            quota_forecasts::GET_WEEKLY => self.forecast_authorized,
             _ => false,
         };
         if !authorized
@@ -62,6 +71,41 @@ impl PluginData {
             return Err(invalid());
         }
         let payload = match method {
+            quota_forecasts::GET_WEEKLY => {
+                let query: quota_forecasts::WeeklyQuotaForecastQuery =
+                    serde_json::from_slice(payload).map_err(|_| invalid())?;
+                let id = ProviderAccountId::new(query.account_id).map_err(|_| invalid())?;
+                let report = self
+                    .accounts
+                    .upgrade()
+                    .map_err(map_admin_error)?
+                    .quota_forecast(&id)
+                    .await
+                    .map_err(map_admin_error)?;
+                let weekly = report
+                    .forecasts
+                    .into_iter()
+                    .find(|forecast| forecast.period == AccountUsagePeriod::Weekly)
+                    .ok_or_else(|| map_admin_error(AdminError::internal("宿主周额度预测缺失")))?;
+                serde_json::to_vec(&quota_forecasts::WeeklyQuotaForecast {
+                    account_id: report.account_id,
+                    generated_at_ms: report.generated_at.timestamp_millis(),
+                    estimated_usd: weekly.estimated_usd,
+                    remaining_usd: weekly.remaining_usd,
+                    extrapolated: weekly.extrapolated,
+                    low_sample: weekly.low_sample,
+                    incomplete_cost: weekly.incomplete_cost,
+                    unavailable_reason: weekly.unavailable_reason.map(str::to_owned),
+                    source: weekly
+                        .source
+                        .map(|source| quota_forecasts::QuotaForecastSource {
+                            label: source.label,
+                            used_percent: source.used_percent,
+                            observed_at_ms: source.observed_at.map(|time| time.timestamp_millis()),
+                            reset_at_ms: source.reset_at.timestamp_millis(),
+                        }),
+                })
+            }
             data::KEYS_GET => {
                 let query: data::ClientKeyFactsQuery =
                     serde_json::from_slice(payload).map_err(|_| invalid())?;

@@ -227,6 +227,7 @@ fn callback_allowed(method: &str, stage: Stage, permissions: &[Permission]) -> b
                 | "host.data.keys.get"
                 | "host.data.quota.get"
                 | "host.quota_observations.refresh"
+                | "host.quota_forecasts.get_weekly"
                 | "host.groups.ensure"
                 | "host.groups.change_members"
                 | "host.keys.ensure"
@@ -281,6 +282,14 @@ fn callback_allowed(method: &str, stage: Stage, permissions: &[Permission]) -> b
             ) =>
         {
             Permission::QuotaObservations
+        }
+        "host.quota_forecasts.get_weekly"
+            if matches!(
+                stage,
+                Stage::Management | Stage::CommandLine | Stage::Maintenance
+            ) =>
+        {
+            Permission::QuotaForecasts
         }
         "host.groups.ensure" | "host.groups.change_members"
             if matches!(
