@@ -34,9 +34,7 @@ use crate::account::{
     ProviderAccountId,
 };
 use crate::engine::continuation::{ContinuationBinding, NativeContinuationPin};
-use crate::error::{
-    GatewayError, ProviderConnectionObservation, ProviderError, ProviderErrorKind, StoreError,
-};
+use crate::error::{GatewayError, ProviderConnectionObservation, ProviderError, StoreError};
 use crate::event::ProviderEvent;
 use crate::identity::ProviderKind;
 use crate::lifecycle::CancellationToken;
@@ -119,39 +117,6 @@ impl AttemptTrigger {
         match self {
             Self::Initial => "initial",
             Self::AccountRetry => "account_retry",
-        }
-    }
-}
-
-/// 一次实际上游调用的诊断结果。
-///
-/// 该事实只描述调用结果，不参与跨请求的路由屏蔽。
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum ProviderAttemptOutcome {
-    /// 上游流自然完成且通过 canonical event 序列校验。
-    Succeeded { provider_kind: ProviderKind },
-    /// 上游打开或流式阶段返回了稳定 Provider 错误。
-    Failed {
-        provider_kind: ProviderKind,
-        error_kind: ProviderErrorKind,
-    },
-}
-
-impl ProviderAttemptOutcome {
-    /// 返回本次调用实际归属的 Provider。
-    #[must_use]
-    pub const fn provider_kind(&self) -> &ProviderKind {
-        match self {
-            Self::Succeeded { provider_kind } | Self::Failed { provider_kind, .. } => provider_kind,
-        }
-    }
-
-    /// 成功返回 `None`，失败返回稳定 Provider 错误分类。
-    #[must_use]
-    pub const fn error_kind(&self) -> Option<ProviderErrorKind> {
-        match self {
-            Self::Succeeded { .. } => None,
-            Self::Failed { error_kind, .. } => Some(*error_kind),
         }
     }
 }

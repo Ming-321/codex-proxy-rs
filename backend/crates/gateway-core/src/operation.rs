@@ -403,7 +403,7 @@ struct GeneratePayload {
     protocol_payload: ProtocolPayload,
     provider_session_state: Option<ProviderSessionState>,
     source_requirements: Option<CapabilityRequirements>,
-    middleware_requirements: Option<(CapabilityRequirements, CapabilityRequirements)>,
+    inherited_capability_requirements: Option<CapabilityRequirements>,
 }
 
 impl GenerateRequest {
@@ -418,7 +418,7 @@ impl GenerateRequest {
                 protocol_payload,
                 provider_session_state: None,
                 source_requirements: None,
-                middleware_requirements: None,
+                inherited_capability_requirements: None,
             }),
         }
     }
@@ -518,7 +518,7 @@ impl GenerateRequest {
         }
         let mut requirements = CapabilityRequirements::new(OperationKind::Generate)
             .with_requested_output_tokens(self.max_output_tokens());
-        if let Some((_, inherited)) = &self.payload.middleware_requirements {
+        if let Some(inherited) = &self.payload.inherited_capability_requirements {
             for feature in inherited.features() {
                 requirements = requirements.require(*feature);
             }
@@ -873,9 +873,8 @@ pub enum Operation {
 }
 
 impl Operation {
-    pub(crate) fn with_middleware_requirements(
+    pub(crate) fn with_inherited_capability_requirements(
         self,
-        original: CapabilityRequirements,
         inherited: CapabilityRequirements,
     ) -> Result<Self, OperationError> {
         let Self::Generate(mut request) = self else {
@@ -883,19 +882,8 @@ impl Operation {
                 field: "middleware capabilities",
             });
         };
-        Arc::make_mut(&mut request.payload).middleware_requirements = Some((original, inherited));
+        Arc::make_mut(&mut request.payload).inherited_capability_requirements = Some(inherited);
         Ok(Self::Generate(request))
-    }
-
-    /// 请求转换前的需求仅供诊断，选路始终使用有效上游需求。
-    #[must_use]
-    pub fn original_capability_requirements(&self) -> CapabilityRequirements {
-        if let Self::Generate(request) = self
-            && let Some((original, _)) = &request.payload.middleware_requirements
-        {
-            return original.clone();
-        }
-        self.capability_requirements()
     }
 
     /// 把协议正文编码为中间件可见的原始字节；不包含非 wire context 或会话状态。

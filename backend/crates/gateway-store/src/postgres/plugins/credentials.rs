@@ -1,3 +1,4 @@
+use gateway_admin::model::audit::MutationAuditOperation;
 use gateway_admin::{
     model::{
         MutationContext, Revision,
@@ -78,8 +79,7 @@ pub(super) async fn save(
         &mut tx,
         mutation_audit(
             context,
-            "create",
-            "plugin_source_credential",
+            MutationAuditOperation::PluginSourceCredentialCreate,
             &credential.info.id,
             vec!["credential".into()],
         ),
@@ -112,8 +112,7 @@ pub(super) async fn delete_unused(
             tx,
             mutation_audit(
                 context,
-                "delete",
-                "plugin_source_credential",
+                MutationAuditOperation::PluginSourceCredentialDelete,
                 &id.to_string(),
                 vec!["credential".into()],
             ),
@@ -155,8 +154,7 @@ pub(super) async fn delete(
         &mut tx,
         mutation_audit(
             context,
-            "delete",
-            "plugin_source_credential",
+            MutationAuditOperation::PluginSourceCredentialDelete,
             id,
             vec!["credential".into()],
         ),

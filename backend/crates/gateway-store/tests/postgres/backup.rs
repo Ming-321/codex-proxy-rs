@@ -4,8 +4,8 @@ use chrono::Utc;
 use secrecy::SecretString;
 
 use gateway_admin::model::backup::{
-    BackupRecordSeed, BackupSettings, BackupStatus, BackupTriggerKind, UpdateBackupScheduleCommand,
-    UpdateBackupStorageCommand,
+    BackupRecordSeed, BackupSettings, BackupStatus, BackupStatusTransition, BackupTriggerKind,
+    UpdateBackupScheduleCommand, UpdateBackupStorageCommand,
 };
 use gateway_admin::model::{MutationActor, MutationContext};
 use gateway_admin::ports::backup::{BackupRepository, StatusTransitionUpdate};
@@ -34,6 +34,10 @@ fn context() -> MutationContext {
         actor: MutationActor::System,
         request_id: "store-test".to_owned(),
     }
+}
+
+fn transition(from: BackupStatus, to: BackupStatus) -> BackupStatusTransition {
+    BackupStatusTransition::try_new(from, to).expect("legal backup status transition")
 }
 
 fn storage_command(endpoint: &str) -> UpdateBackupStorageCommand {
@@ -187,8 +191,7 @@ async fn backup_lifecycle_transitions_through_deleting_and_hard_delete() {
     let uploading = repository
         .transition_status(
             &record.id,
-            BackupStatus::Dumping,
-            BackupStatus::Uploading,
+            transition(BackupStatus::Dumping, BackupStatus::Uploading),
             update,
             Utc::now(),
         )
@@ -201,8 +204,7 @@ async fn backup_lifecycle_transitions_through_deleting_and_hard_delete() {
     let completed = repository
         .transition_status(
             &record.id,
-            BackupStatus::Uploading,
-            BackupStatus::Completed,
+            transition(BackupStatus::Uploading, BackupStatus::Completed),
             StatusTransitionUpdate::default(),
             Utc::now(),
         )
@@ -260,8 +262,7 @@ async fn active_task_unique_index_blocks_second_queued() {
     repository
         .transition_status(
             &claimed.id,
-            BackupStatus::Dumping,
-            BackupStatus::Failed,
+            transition(BackupStatus::Dumping, BackupStatus::Failed),
             StatusTransitionUpdate {
                 error_code: Some("backup.pg_dump_failed".to_owned()),
                 error_message: Some("boom".to_owned()),

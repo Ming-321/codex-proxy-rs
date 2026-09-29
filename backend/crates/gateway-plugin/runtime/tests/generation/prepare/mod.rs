@@ -268,7 +268,7 @@ async fn diagnostics_distinguish_running_failed_preparation_and_draining_generat
         .await
         .unwrap();
 
-    let running = PluginPreparation::runtime_diagnostics(
+    let running = gateway_admin::ports::plugins::PluginRuntimeDiagnostics::runtime_diagnostics(
         &runtime,
         &snapshot,
         Some(snapshot.config_revision.get()),
@@ -294,7 +294,7 @@ async fn diagnostics_distinguish_running_failed_preparation_and_draining_generat
             .await
             .is_err()
     );
-    let diagnostics = PluginPreparation::runtime_diagnostics(
+    let diagnostics = gateway_admin::ports::plugins::PluginRuntimeDiagnostics::runtime_diagnostics(
         &runtime,
         &failed,
         Some(snapshot.config_revision.get()),
@@ -314,7 +314,7 @@ async fn diagnostics_distinguish_running_failed_preparation_and_draining_generat
     disabled.config_revision = Revision::new(3).unwrap();
     disabled.instances[0].revision = Revision::new(3).unwrap();
     disabled.instances[0].enabled = false;
-    let diagnostics = PluginPreparation::runtime_diagnostics(
+    let diagnostics = gateway_admin::ports::plugins::PluginRuntimeDiagnostics::runtime_diagnostics(
         &runtime,
         &disabled,
         Some(snapshot.config_revision.get()),
@@ -344,7 +344,12 @@ async fn preparing_diagnostics_never_wait_for_the_serialized_prepare_io() {
 
     let diagnostics = tokio::time::timeout(
         std::time::Duration::from_millis(100),
-        PluginPreparation::runtime_diagnostics(&runtime, &diagnostic_snapshot, None, None),
+        gateway_admin::ports::plugins::PluginRuntimeDiagnostics::runtime_diagnostics(
+            &runtime,
+            &diagnostic_snapshot,
+            None,
+            None,
+        ),
     )
     .await
     .expect("diagnostics must not wait for plugin startup")
@@ -375,7 +380,7 @@ async fn diagnostics_report_a_published_process_fault_without_plugin_details() {
     .await
     .expect("worker exit observed");
 
-    let diagnostics = PluginPreparation::runtime_diagnostics(
+    let diagnostics = gateway_admin::ports::plugins::PluginRuntimeDiagnostics::runtime_diagnostics(
         &runtime,
         &snapshot,
         Some(snapshot.config_revision.get()),
@@ -436,7 +441,7 @@ async fn restart_circuit_caps_short_lived_crashes_and_a_new_revision_recovers() 
     );
     assert_eq!(startup_count(&marker), 3);
 
-    let diagnostics = PluginPreparation::runtime_diagnostics(
+    let diagnostics = gateway_admin::ports::plugins::PluginRuntimeDiagnostics::runtime_diagnostics(
         &runtime,
         &snapshot,
         Some(snapshot.config_revision.get()),
@@ -545,7 +550,7 @@ async fn restart_circuit_ignores_planned_generation_shutdown() {
         .await
         .expect("first generation");
     let instance = &snapshot.instances[0];
-    PluginPreparation::quiesce_instance(
+    gateway_admin::ports::plugins::PluginStateLifecycle::quiesce_instance(
         &runtime,
         &instance.id,
         &instance.artifact_sha256,
@@ -598,9 +603,11 @@ async fn restart_circuit_counts_exit_before_the_candidate_is_indexed() {
         "open circuit must gate process spawn"
     );
 
-    let diagnostics = PluginPreparation::runtime_diagnostics(&runtime, &snapshot, None, None)
-        .await
-        .expect("runtime diagnostics");
+    let diagnostics = gateway_admin::ports::plugins::PluginRuntimeDiagnostics::runtime_diagnostics(
+        &runtime, &snapshot, None, None,
+    )
+    .await
+    .expect("runtime diagnostics");
     assert_eq!(
         diagnostics["instance-one"]
             .failure
@@ -694,9 +701,11 @@ async fn restart_circuit_does_not_let_an_older_generation_clear_newer_failures()
     snapshot.config_revision = Revision::new(5).unwrap();
     snapshot.instances[1].revision = Revision::new(5).unwrap();
     snapshot.instances[1].configuration = serde_json::json!({"revision":5});
-    let circuit = PluginPreparation::runtime_diagnostics(&runtime, &snapshot, None, None)
-        .await
-        .unwrap();
+    let circuit = gateway_admin::ports::plugins::PluginRuntimeDiagnostics::runtime_diagnostics(
+        &runtime, &snapshot, None, None,
+    )
+    .await
+    .unwrap();
     assert_eq!(
         circuit["instance-one"]
             .failure
@@ -707,10 +716,14 @@ async fn restart_circuit_does_not_let_an_older_generation_clear_newer_failures()
     let recovered = PluginPreparation::prepare(&runtime, snapshot.clone())
         .await
         .expect("an older failed instance is isolated during unrelated recovery");
-    let diagnostics =
-        PluginPreparation::runtime_diagnostics(&runtime, &snapshot, Some(5), Some(&recovered))
-            .await
-            .unwrap();
+    let diagnostics = gateway_admin::ports::plugins::PluginRuntimeDiagnostics::runtime_diagnostics(
+        &runtime,
+        &snapshot,
+        Some(5),
+        Some(&recovered),
+    )
+    .await
+    .unwrap();
     assert_eq!(
         diagnostics["instance-one"]
             .failure
@@ -764,14 +777,15 @@ async fn restart_circuit_restores_an_older_failure_after_candidate_shutdown() {
 
     tokio::time::timeout(Duration::from_secs(2), async {
         loop {
-            let diagnostics = PluginPreparation::runtime_diagnostics(
-                &runtime,
-                &snapshot,
-                Some(1),
-                Some(&published),
-            )
-            .await
-            .expect("runtime diagnostics");
+            let diagnostics =
+                gateway_admin::ports::plugins::PluginRuntimeDiagnostics::runtime_diagnostics(
+                    &runtime,
+                    &snapshot,
+                    Some(1),
+                    Some(&published),
+                )
+                .await
+                .expect("runtime diagnostics");
             if diagnostics["instance-one"]
                 .failure
                 .as_ref()
@@ -791,10 +805,14 @@ async fn restart_circuit_restores_an_older_failure_after_candidate_shutdown() {
     let recovered = PluginPreparation::prepare(&runtime, snapshot.clone())
         .await
         .expect("an older failed instance is isolated during unrelated recovery");
-    let diagnostics =
-        PluginPreparation::runtime_diagnostics(&runtime, &snapshot, Some(3), Some(&recovered))
-            .await
-            .unwrap();
+    let diagnostics = gateway_admin::ports::plugins::PluginRuntimeDiagnostics::runtime_diagnostics(
+        &runtime,
+        &snapshot,
+        Some(3),
+        Some(&recovered),
+    )
+    .await
+    .unwrap();
     assert_eq!(
         diagnostics["instance-one"]
             .failure
@@ -876,10 +894,14 @@ async fn restoring_a_failed_plugin_keeps_other_instances_ready_and_reports_only_
         .await
         .expect("one failed plugin must not stop restoration");
     assert!(generation.can_serve());
-    let diagnostics =
-        PluginPreparation::runtime_diagnostics(&runtime, &snapshot, Some(1), Some(&generation))
-            .await
-            .unwrap();
+    let diagnostics = gateway_admin::ports::plugins::PluginRuntimeDiagnostics::runtime_diagnostics(
+        &runtime,
+        &snapshot,
+        Some(1),
+        Some(&generation),
+    )
+    .await
+    .unwrap();
     assert_eq!(
         diagnostics["failed-plugin"].status,
         PluginInstanceRuntimeStatus::PreparationFailed
@@ -919,10 +941,14 @@ async fn a_published_process_crash_preserves_the_serving_snapshot_and_other_plug
     wait_until_unready(&generation).await;
     assert!(generation.can_serve());
     assert!(!generation.is_ready());
-    let diagnostics =
-        PluginPreparation::runtime_diagnostics(&runtime, &snapshot, Some(1), Some(&generation))
-            .await
-            .unwrap();
+    let diagnostics = gateway_admin::ports::plugins::PluginRuntimeDiagnostics::runtime_diagnostics(
+        &runtime,
+        &snapshot,
+        Some(1),
+        Some(&generation),
+    )
+    .await
+    .unwrap();
     assert_eq!(
         diagnostics["instance-one"].status,
         PluginInstanceRuntimeStatus::Running
@@ -957,10 +983,14 @@ async fn an_incompatible_host_quarantines_the_plugin_with_a_specific_version_err
         .unwrap();
     assert!(restored.can_serve());
     let snapshot = store.snapshot.lock().unwrap().clone();
-    let diagnostics =
-        PluginPreparation::runtime_diagnostics(&runtime, &snapshot, Some(1), Some(&restored))
-            .await
-            .unwrap();
+    let diagnostics = gateway_admin::ports::plugins::PluginRuntimeDiagnostics::runtime_diagnostics(
+        &runtime,
+        &snapshot,
+        Some(1),
+        Some(&restored),
+    )
+    .await
+    .unwrap();
     let failure = diagnostics["instance-one"].failure.as_ref().unwrap();
     assert!(
         failure

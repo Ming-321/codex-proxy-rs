@@ -12,7 +12,7 @@ use gateway_admin::model::settings::{
     AdminApiKey, AdminApiKeyMutation, ModelMappings, ReplaceRuntimeSettings,
     RotationStrategy as AdminRotationStrategy, RuntimeSettings as AdminRuntimeSettings,
 };
-use gateway_admin::model::{MutationActor, MutationContext, Revision as AdminRevision};
+use gateway_admin::model::{MutationContext, Revision as AdminRevision};
 use gateway_admin::ports::backup::BackupStorePorts;
 use gateway_admin::ports::store::{
     AdminAccountStorePorts, AdminStoreError, AdminStoreErrorKind, AdminStorePorts,

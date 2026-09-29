@@ -7,6 +7,7 @@ mod plugin_distribution;
 mod pricing;
 mod process;
 mod proxy_probe;
+mod retention;
 mod serve;
 mod support;
 mod system_update;

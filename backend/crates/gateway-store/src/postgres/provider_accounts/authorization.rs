@@ -93,7 +93,7 @@ async fn commit_authorization_in_transaction(
                 },
                 command.settings,
                 context,
-                "authorize",
+                gateway_admin::model::audit::MutationAuditOperation::ProviderAccountAuthorize,
                 command
                     .pending
                     .outbound_proxy_id()
@@ -120,8 +120,12 @@ async fn commit_authorization_in_transaction(
             {
                 return Err(invalid_receipt());
             }
-            let prepared =
-                admin_adapter::prepare_rotation(*prepared, None, context, "reauthorize")?;
+            let prepared = admin_adapter::prepare_rotation(
+                *prepared,
+                None,
+                context,
+                gateway_admin::model::audit::MutationAuditOperation::ProviderAccountReauthorize,
+            )?;
             let result =
                 repository::rotate_provider_account_admin_in_transaction(transaction, prepared)
                     .await

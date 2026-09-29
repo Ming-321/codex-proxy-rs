@@ -38,7 +38,8 @@ use crate::engine::nested::{
     NestedModelExecutionRequest,
 };
 use crate::engine::observation::{
-    FrozenRequestObservationContext, RequestObservationDispatch, RequestObserverExtensionIndex,
+    FrozenRequestObservationContext, RequestObservationDispatch, RequestObservationScope,
+    RequestObserverExtensionIndex,
 };
 use crate::engine::policy::{
     ModelRouteDecision, RequestPolicyContext, RequestPolicyExtensionIndex,
@@ -1100,8 +1101,10 @@ impl DefaultExecutionService {
                 FrozenRequestObservationContext::new(
                     request_id.clone(),
                     request.client.snapshot.revision(),
-                    request.client.policy.key_id().clone(),
-                    account_group_ids.clone(),
+                    RequestObservationScope::new(
+                        request.client.policy.key_id().clone(),
+                        account_group_ids.clone(),
+                    ),
                     request.operation.kind(),
                     request.target.public_model().cloned(),
                     authorization.extension_scope.clone(),
@@ -2097,7 +2100,7 @@ impl DefaultExecutionService {
                     provider_kind: observed.provider_kind.clone(),
                     account_id: observed.account_id.clone(),
                     upstream_model_id: observed.upstream_model.clone(),
-                    error: provider_error.clone(),
+                    error: provider_error.stable_snapshot(),
                     latency,
                 })
                 .await

@@ -10,6 +10,7 @@ pub struct StoreBundle {
     admin_ports: AdminStorePorts,
     core_ports: CoreStorePorts,
     provider_ports: ProviderStorePorts,
+    retention: Arc<dyn gateway_admin::ports::retention::RetentionStore>,
     worker_leader_lease: Arc<dyn WorkerLeaderLeasePort>,
     health_probes: Vec<Arc<dyn HealthProbe>>,
     worker_contributions: Vec<WorkerContribution>,
@@ -31,6 +32,11 @@ impl StoreBundle {
     #[must_use]
     pub fn provider_ports(&self) -> ProviderStorePorts {
         self.provider_ports.clone()
+    }
+
+    #[must_use]
+    pub fn retention(&self) -> Arc<dyn gateway_admin::ports::retention::RetentionStore> {
+        Arc::clone(&self.retention)
     }
 
     #[must_use]
@@ -256,7 +262,6 @@ async fn connect(
                 execution_writer,
                 client_key_usage_writer,
                 admission_release_writer,
-                retention,
             )?,
             None,
         ),
@@ -273,6 +278,7 @@ async fn connect(
         admin_ports,
         core_ports,
         provider_ports,
+        retention,
         worker_leader_lease,
         health_probes,
         worker_contributions,

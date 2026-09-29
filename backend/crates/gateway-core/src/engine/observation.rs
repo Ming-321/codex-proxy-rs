@@ -66,6 +66,35 @@ impl WebSocketResponseAttempt {
     }
 }
 
+/// 请求观察使用的冻结 Client Key 与账号组范围。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RequestObservationScope {
+    client_key_id: ClientApiKeyId,
+    account_group_ids: Arc<[AccountGroupId]>,
+}
+
+impl RequestObservationScope {
+    #[must_use]
+    pub fn new(client_key_id: ClientApiKeyId, mut account_group_ids: Vec<AccountGroupId>) -> Self {
+        account_group_ids.sort();
+        account_group_ids.dedup();
+        Self {
+            client_key_id,
+            account_group_ids: account_group_ids.into(),
+        }
+    }
+
+    #[must_use]
+    pub const fn client_key_id(&self) -> &ClientApiKeyId {
+        &self.client_key_id
+    }
+
+    #[must_use]
+    pub fn account_group_ids(&self) -> &[AccountGroupId] {
+        &self.account_group_ids
+    }
+}
+
 /// 实际上游 WebSocket 响应事件的只读观察。
 ///
 /// Key 与账号组只用于 Runtime 匹配冻结绑定，不得进入插件 wire；`wire` 保留策略加工前
@@ -75,8 +104,7 @@ pub struct WebSocketResponseObservation {
     event_id: String,
     request_id: ModelRequestId,
     config_revision: ConfigRevision,
-    client_key_id: Option<ClientApiKeyId>,
-    account_group_ids: Arc<[AccountGroupId]>,
+    client_scope: RequestObservationScope,
     extension_scope: ExtensionCallScope,
     operation: OperationKind,
     requested_model: Option<PublicModelId>,
@@ -86,11 +114,12 @@ pub struct WebSocketResponseObservation {
 }
 
 impl WebSocketResponseObservation {
-    /// 创建一个尚未附加冻结 Key/组/公开模型范围的实际上游事件。
+    /// 创建一个已附加冻结 Key/组范围、尚未附加公开模型范围的实际上游事件。
     #[must_use]
     pub fn new(
         request_id: ModelRequestId,
         config_revision: ConfigRevision,
+        client_scope: RequestObservationScope,
         operation: OperationKind,
         attempt: WebSocketResponseAttempt,
         sequence: u64,
@@ -104,8 +133,7 @@ impl WebSocketResponseObservation {
             ),
             request_id,
             config_revision,
-            client_key_id: None,
-            account_group_ids: Arc::from([]),
+            client_scope,
             extension_scope: ExtensionCallScope::default(),
             operation,
             requested_model: None,
@@ -113,19 +141,6 @@ impl WebSocketResponseObservation {
             sequence,
             wire,
         }
-    }
-
-    #[must_use]
-    pub fn with_client_scope(
-        mut self,
-        client_key_id: ClientApiKeyId,
-        mut account_group_ids: Vec<AccountGroupId>,
-    ) -> Self {
-        account_group_ids.sort();
-        account_group_ids.dedup();
-        self.client_key_id = Some(client_key_id);
-        self.account_group_ids = account_group_ids.into();
-        self
     }
 
     #[must_use]
@@ -166,13 +181,13 @@ impl WebSocketResponseObservation {
     }
 
     #[must_use]
-    pub const fn client_key_id(&self) -> Option<&ClientApiKeyId> {
-        self.client_key_id.as_ref()
+    pub const fn client_key_id(&self) -> &ClientApiKeyId {
+        self.client_scope.client_key_id()
     }
 
     #[must_use]
     pub fn account_group_ids(&self) -> &[AccountGroupId] {
-        &self.account_group_ids
+        self.client_scope.account_group_ids()
     }
 
     #[must_use]
@@ -227,8 +242,7 @@ pub struct RequestObservation {
     event_id: String,
     request_id: ModelRequestId,
     config_revision: ConfigRevision,
-    client_key_id: Option<ClientApiKeyId>,
-    account_group_ids: Arc<[AccountGroupId]>,
+    client_scope: RequestObservationScope,
     extension_scope: ExtensionCallScope,
     operation: OperationKind,
     requested_model: Option<PublicModelId>,
@@ -251,11 +265,12 @@ pub struct RequestObservation {
 }
 
 impl RequestObservation {
-    /// 创建一个不带 Provider、模型、用量或错误详情的最终事实。
+    /// 创建一个带冻结 Key/组范围、不带 Provider、模型、用量或错误详情的最终事实。
     #[must_use]
     pub fn new(
         request_id: ModelRequestId,
         config_revision: ConfigRevision,
+        client_scope: RequestObservationScope,
         operation: OperationKind,
         outcome: RequestObservationOutcome,
         send_state: UpstreamSendState,
@@ -265,8 +280,7 @@ impl RequestObservation {
             event_id: format!("{}:terminal", request_id.as_str()),
             request_id,
             config_revision,
-            client_key_id: None,
-            account_group_ids: Arc::from([]),
+            client_scope,
             extension_scope: ExtensionCallScope::default(),
             operation,
             requested_model: None,
@@ -287,19 +301,6 @@ impl RequestObservation {
             timings: ModelRequestTimings::default(),
             completed_at,
         }
-    }
-
-    #[must_use]
-    pub fn with_client_scope(
-        mut self,
-        client_key_id: ClientApiKeyId,
-        mut account_group_ids: Vec<AccountGroupId>,
-    ) -> Self {
-        account_group_ids.sort();
-        account_group_ids.dedup();
-        self.client_key_id = Some(client_key_id);
-        self.account_group_ids = account_group_ids.into();
-        self
     }
 
     #[must_use]
@@ -414,13 +415,13 @@ impl RequestObservation {
     }
 
     #[must_use]
-    pub const fn client_key_id(&self) -> Option<&ClientApiKeyId> {
-        self.client_key_id.as_ref()
+    pub const fn client_key_id(&self) -> &ClientApiKeyId {
+        self.client_scope.client_key_id()
     }
 
     #[must_use]
     pub fn account_group_ids(&self) -> &[AccountGroupId] {
-        &self.account_group_ids
+        self.client_scope.account_group_ids()
     }
 
     #[must_use]
@@ -568,8 +569,7 @@ struct RequestObservationDispatchState {
 pub(super) struct FrozenRequestObservationContext {
     request_id: ModelRequestId,
     config_revision: ConfigRevision,
-    client_key_id: ClientApiKeyId,
-    account_group_ids: Arc<[AccountGroupId]>,
+    client_scope: RequestObservationScope,
     operation: OperationKind,
     requested_model: Option<PublicModelId>,
     extension_scope: ExtensionCallScope,
@@ -580,19 +580,15 @@ impl FrozenRequestObservationContext {
     pub(super) fn new(
         request_id: ModelRequestId,
         config_revision: ConfigRevision,
-        client_key_id: ClientApiKeyId,
-        mut account_group_ids: Vec<AccountGroupId>,
+        client_scope: RequestObservationScope,
         operation: OperationKind,
         requested_model: Option<PublicModelId>,
         extension_scope: ExtensionCallScope,
     ) -> Self {
-        account_group_ids.sort();
-        account_group_ids.dedup();
         Self {
             request_id,
             config_revision,
-            client_key_id,
-            account_group_ids: account_group_ids.into(),
+            client_scope,
             operation,
             requested_model,
             extension_scope,
@@ -622,8 +618,7 @@ impl RequestObservationDispatch {
             event_id: self.event_id(),
             request_id: self.state.context.request_id.clone(),
             config_revision: self.state.context.config_revision,
-            client_key_id: Some(self.state.context.client_key_id.clone()),
-            account_group_ids: Arc::clone(&self.state.context.account_group_ids),
+            client_scope: self.state.context.client_scope.clone(),
             extension_scope: self.state.context.extension_scope.clone(),
             operation: self.state.context.operation,
             requested_model: self.state.context.requested_model.clone(),
@@ -655,14 +650,11 @@ impl RequestObservationDispatch {
         let mut observation = WebSocketResponseObservation::new(
             self.state.context.request_id.clone(),
             self.state.context.config_revision,
+            self.state.context.client_scope.clone(),
             self.state.context.operation,
             attempt,
             sequence,
             wire,
-        )
-        .with_client_scope(
-            self.state.context.client_key_id.clone(),
-            self.state.context.account_group_ids.to_vec(),
         )
         .with_extension_scope(self.state.context.extension_scope.clone());
         if let Some(model) = self.state.context.requested_model.clone() {
@@ -700,8 +692,7 @@ impl RequestObservationDispatch {
             event_id: self.event_id(),
             request_id: self.state.context.request_id.clone(),
             config_revision: self.state.context.config_revision,
-            client_key_id: Some(self.state.context.client_key_id.clone()),
-            account_group_ids: Arc::clone(&self.state.context.account_group_ids),
+            client_scope: self.state.context.client_scope.clone(),
             extension_scope: self.state.context.extension_scope.clone(),
             operation: self.state.context.operation,
             requested_model: self.state.context.requested_model.clone(),

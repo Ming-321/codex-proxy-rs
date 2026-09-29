@@ -791,7 +791,7 @@ impl Provider for RetryTestProvider {
         );
         Ok(ProviderStream::new(
             metadata,
-            futures::stream::iter([Err(self.error.clone())]),
+            futures::stream::iter([Err(self.error.stable_snapshot())]),
             (),
         ))
     }
@@ -2457,10 +2457,7 @@ fn final_observation_is_emitted_once_for_success_rejection_and_detached_cancella
 }
 
 fn assert_observation_scope(observation: &RequestObservation) {
-    assert_eq!(
-        observation.client_key_id().map(ClientApiKeyId::as_str),
-        Some("key_start_test")
-    );
+    assert_eq!(observation.client_key_id().as_str(), "key_start_test");
     assert_eq!(
         observation
             .account_group_ids()

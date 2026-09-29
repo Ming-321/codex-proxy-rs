@@ -210,6 +210,7 @@ const ADAPTER_PUBLIC_MODULES: &[(&str, &[&str])] = &[
             "plugin_distribution",
             "process",
             "proxy_probe",
+            "retention",
             "serve",
             "system_update",
             "workers",

@@ -1467,12 +1467,6 @@ impl CapabilitiesNext {
                 ));
                 let operation = request.apply_capabilities(operation)?;
                 assert!(
-                    operation
-                        .original_capability_requirements()
-                        .features()
-                        .contains(&gateway_core::operation::Feature::JsonSchema)
-                );
-                assert!(
                     !operation
                         .capability_requirements()
                         .features()

@@ -216,7 +216,7 @@ impl MiddlewareRequest {
             effective = effective.require(*feature);
         }
         operation
-            .with_middleware_requirements(original, effective)
+            .with_inherited_capability_requirements(effective)
             .map_err(|_| MiddlewareError::InvalidState)
     }
 

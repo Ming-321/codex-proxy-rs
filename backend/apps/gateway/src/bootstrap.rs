@@ -378,6 +378,7 @@ async fn launch(
     );
 
     let mut plan = store.take_worker_contributions();
+    plan.push(gateway_host::retention::worker(store.retention())?);
     plan.extend(core.take_worker_contributions());
     plan.extend(openai.take_worker_contributions());
     plan.extend(xai.take_worker_contributions());

@@ -2,7 +2,6 @@ import type {
   PluginArtifact,
   PluginArtifactMetadata,
   PluginInstance,
-  PluginInstanceRuntimeStatus,
   PluginObserverEvent,
   PluginSource,
   PluginUpdateSource,
@@ -120,21 +119,6 @@ export function pluginCapabilityForContribution(
   )?.[0]
 }
 
-export const PLUGIN_RUNTIME_STATUS_LABELS: Record<PluginInstanceRuntimeStatus, string> = {
-  disabled: '已停用',
-  awaiting_publication: '等待发布',
-  preparing: '准备中',
-  running: '已启用',
-  blocked: '发布阻塞',
-  preparation_failed: '准备失败',
-  faulted: '运行故障',
-  draining: '排空中',
-}
-
-export function pluginRuntimeStatusLabel(status: PluginInstanceRuntimeStatus) {
-  return PLUGIN_RUNTIME_STATUS_LABELS[status]
-}
-
 export function sourceLabel(source: PluginSource | PluginUpdateSource) {
   switch (source.kind) {
     case 'builtin':
@@ -171,34 +155,4 @@ export function artifactForInstance(instance: PluginInstance, artifacts: PluginA
 
 export function cloneJsonValue<T>(value: T): T {
   return JSON.parse(JSON.stringify(value)) as T
-}
-
-export function configurationForSchema(
-  schemaValue: Record<string, unknown>,
-  current: Record<string, unknown> = {},
-  excludedFields: string[] = [],
-) {
-  const schema = schemaValue as JsonSchema
-  let result: Record<string, unknown> = cloneJsonValue(current)
-  for (const [name, property] of Object.entries(schema.properties ?? {})) {
-    if (!excludedFields.includes(name) && !Object.hasOwn(result, name) && property.default !== undefined) {
-      // 计算属性保留 __proto__ 等合法 JSON 字段，不触发普通对象的原型 setter
-      result = { ...result, [name]: cloneJsonValue(property.default) }
-    }
-  }
-  return result
-}
-
-export function pluginIdOptions(artifacts: PluginArtifact[]) {
-  const names = new Map<string, string>()
-  for (const artifact of artifacts)
-    names.set(artifact.metadata.pluginId, artifact.metadata.displayName)
-  return [...names].map(([value, name]) => ({ value, label: `${name} · ${value}` }))
-}
-
-export function uniquePluginArtifacts(artifacts: PluginArtifact[]) {
-  return [...artifacts].sort((left, right) => {
-    const byId = left.metadata.pluginId.localeCompare(right.metadata.pluginId)
-    return byId || right.metadata.version.localeCompare(left.metadata.version, undefined, { numeric: true })
-  })
 }

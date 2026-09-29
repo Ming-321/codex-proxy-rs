@@ -1,4 +1,5 @@
 use async_trait::async_trait;
+use gateway_admin::model::audit::MutationAuditOperation;
 use gateway_admin::model::plugins::distribution::{SourceCredential, SourceCredentialInfo};
 use gateway_admin::{
     model::{
@@ -268,8 +269,7 @@ impl PluginStore for PgPluginStore {
             &mut transaction,
             mutation_audit(
                 context,
-                "install",
-                "plugin_artifact",
+                MutationAuditOperation::PluginArtifactInstall,
                 &metadata.plugin_id,
                 vec!["artifact".into(), "source".into()],
             ),
@@ -315,8 +315,7 @@ impl PluginStore for PgPluginStore {
                 &mut transaction,
                 mutation_audit(
                     context,
-                    "accept",
-                    "plugin_artifact",
+                    MutationAuditOperation::PluginArtifactAccept,
                     digest,
                     vec!["acceptedAt".into()],
                 ),
@@ -373,8 +372,7 @@ impl PluginStore for PgPluginStore {
             &mut transaction,
             mutation_audit(
                 context,
-                "delete",
-                "plugin_artifact",
+                MutationAuditOperation::PluginArtifactDelete,
                 &id,
                 vec!["artifact".into()],
             ),

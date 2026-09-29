@@ -102,12 +102,12 @@ impl BindingScope {
     pub(crate) fn matches_route(&self, input: &ModelRouteInput) -> bool {
         // Router 执行时 Provider 尚未产生；带 Provider 条件的绑定在编译时拒绝。
         !self.has_provider_condition()
-            && self.matches_identity(Some(input.client_key_id()), input.account_group_ids())
+            && self.matches_identity(input.client_key_id(), input.account_group_ids())
             && self.matches_model(Some(input.requested_model().as_str()))
     }
 
     pub(crate) fn matches_schedule(&self, input: &AccountScheduleInput) -> bool {
-        self.matches_identity(Some(input.client_key_id()), input.account_group_ids())
+        self.matches_identity(input.client_key_id(), input.account_group_ids())
             && self.matches_provider(Some(input.provider()))
             && self.matches_model(input.model())
     }
@@ -119,7 +119,7 @@ impl BindingScope {
         provider: Option<&ProviderKind>,
         model: Option<&str>,
     ) -> bool {
-        self.matches_identity(Some(client_key), account_groups)
+        self.matches_identity(client_key, account_groups)
             && self.matches_provider(provider)
             && self.matches_model(model)
     }
@@ -133,11 +133,10 @@ impl BindingScope {
 
     fn matches_identity(
         &self,
-        client_key: Option<&ClientApiKeyId>,
+        client_key: &ClientApiKeyId,
         account_groups: &[AccountGroupId],
     ) -> bool {
-        (self.client_keys.is_empty()
-            || client_key.is_some_and(|key| self.client_keys.contains(key)))
+        (self.client_keys.is_empty() || self.client_keys.contains(client_key))
             && (self.account_groups.is_empty()
                 || account_groups
                     .iter()

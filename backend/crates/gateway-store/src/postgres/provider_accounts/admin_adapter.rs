@@ -1,5 +1,6 @@
 //! `gateway-admin` 账号端口的 PostgreSQL adapter。
 
+use gateway_admin::model::audit::MutationAuditOperation;
 use std::collections::BTreeMap;
 use std::sync::Arc;
 
@@ -229,7 +230,7 @@ impl PgAdminAccountStore {
         prepared: PreparedCredentialImport,
         settings: Option<AccountImportSettings>,
         context: &MutationContext,
-        action: &str,
+        action: MutationAuditOperation,
         outbound_proxy: Option<gateway_admin::model::proxies::ImportProxyBinding>,
     ) -> AdminStoreResult<CredentialImportResult> {
         let command = prepare_import(prepared, settings, context, action, outbound_proxy)?;
@@ -246,7 +247,7 @@ impl PgAdminAccountStore {
         prepared: PreparedCredentialRotationFacts,
         settings: Option<UpdateAccount>,
         context: &MutationContext,
-        action: &str,
+        action: MutationAuditOperation,
     ) -> AdminStoreResult<CredentialMutationResult> {
         let account_id = prepared.account_id.clone();
         let command = prepare_rotation(prepared, settings, context, action)?;
@@ -588,7 +589,7 @@ impl AccountStore for PgAdminAccountStore {
                 command.prepared,
                 command.settings,
                 context,
-                "import_document",
+                MutationAuditOperation::ProviderAccountImportDocument,
                 command.outbound_proxy,
             )
             .await?;
@@ -620,7 +621,7 @@ impl AccountStore for PgAdminAccountStore {
             command.prepared,
             command.settings,
             context,
-            "rotate_credential",
+            MutationAuditOperation::ProviderAccountRotateCredential,
         )
         .await
     }
@@ -637,8 +638,13 @@ impl AccountStore for PgAdminAccountStore {
                 "credential refresh cannot change account settings",
             ));
         }
-        self.commit_prepared_rotation(command.prepared, None, context, "refresh_credential")
-            .await
+        self.commit_prepared_rotation(
+            command.prepared,
+            None,
+            context,
+            MutationAuditOperation::ProviderAccountRefreshCredential,
+        )
+        .await
     }
 
     async fn update_account(
@@ -681,8 +687,7 @@ impl AccountStore for PgAdminAccountStore {
                 outbound_proxy: command.outbound_proxy,
                 audit: mutation_audit(
                     context,
-                    "update",
-                    "provider_account",
+                    MutationAuditOperation::ProviderAccountUpdate,
                     &command.account_id,
                     changed_fields,
                 ),
@@ -730,13 +735,7 @@ impl AccountStore for PgAdminAccountStore {
                 let revision = bump_config_revision_in_transaction(&mut transaction).await?;
                 append_admin_audit_event_in_transaction(
                     &mut transaction,
-                    mutation_audit(
-                        context,
-                        "adapt_concurrency",
-                        "provider_account",
-                        account_id.as_str(),
-                        vec!["concurrency_limit".to_owned()],
-                    ),
+                    mutation_audit(context, MutationAuditOperation::ProviderAccountAdaptConcurrency, account_id.as_str(), vec!["concurrency_limit".to_owned()]),
                     revision,
                 )
                 .await?;
@@ -780,8 +779,7 @@ impl AccountStore for PgAdminAccountStore {
                 account_id: account_id.as_str().to_owned(),
                 audit: mutation_audit(
                     context,
-                    "recover",
-                    "provider_account",
+                    MutationAuditOperation::ProviderAccountRecover,
                     account_id.as_str(),
                     vec!["status".to_owned(), "quota".to_owned()],
                 ),
@@ -848,8 +846,7 @@ impl AccountStore for PgAdminAccountStore {
                 outbound_proxy: command.outbound_proxy,
                 audit: mutation_audit(
                     context,
-                    "batch_update",
-                    "provider_account",
+                    MutationAuditOperation::ProviderAccountBatchUpdate,
                     &audit_target,
                     changed_fields,
                 ),
@@ -887,8 +884,7 @@ impl AccountStore for PgAdminAccountStore {
                 account_ids: command.account_ids,
                 audit: mutation_audit(
                     context,
-                    "delete",
-                    "provider_account",
+                    MutationAuditOperation::ProviderAccountDelete,
                     &audit_target,
                     Vec::new(),
                 ),
@@ -941,8 +937,7 @@ impl AccountStore for PgAdminAccountStore {
                     &mut transaction,
                     mutation_audit(
                         context,
-                        "export_credentials",
-                        "provider_account",
+                        MutationAuditOperation::ProviderAccountExportCredentials,
                         account_id,
                         Vec::new(),
                     ),
@@ -963,7 +958,7 @@ pub(super) fn prepare_import(
     prepared: PreparedCredentialImport,
     settings: Option<AccountImportSettings>,
     context: &MutationContext,
-    action: &str,
+    action: MutationAuditOperation,
     outbound_proxy: Option<gateway_admin::model::proxies::ImportProxyBinding>,
 ) -> AdminStoreResult<ImportProviderAccounts> {
     let provider_kind = prepared.provider_kind.as_str().to_owned();
@@ -997,13 +992,7 @@ pub(super) fn prepare_import(
             provider_kind: provider_kind.clone(),
         },
         accounts,
-        audit: mutation_audit(
-            context,
-            action,
-            "provider_account",
-            &provider_kind,
-            changed_fields,
-        ),
+        audit: mutation_audit(context, action, &provider_kind, changed_fields),
     })
 }
 
@@ -1062,7 +1051,7 @@ pub(super) fn prepare_rotation(
     prepared: PreparedCredentialRotationFacts,
     settings: Option<UpdateAccount>,
     context: &MutationContext,
-    action: &str,
+    action: MutationAuditOperation,
 ) -> AdminStoreResult<RotateProviderAccount> {
     let account_id = prepared.account_id.clone();
     let scope = ProviderAccountAdminScope {
@@ -1103,13 +1092,7 @@ pub(super) fn prepare_rotation(
             preserve_profile: prepared.preserve_profile,
             preserve_credential_state: prepared.preserve_credential_state,
         },
-        audit: mutation_audit(
-            context,
-            action,
-            "provider_account",
-            account_id.as_str(),
-            changed_fields,
-        ),
+        audit: mutation_audit(context, action, account_id.as_str(), changed_fields),
     })
 }
 

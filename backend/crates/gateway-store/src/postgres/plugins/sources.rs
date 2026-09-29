@@ -1,3 +1,4 @@
+use gateway_admin::model::audit::MutationAuditOperation;
 use gateway_admin::{
     model::{
         MutationContext, Revision,
@@ -69,8 +70,7 @@ pub(super) async fn change(
         &mut tx,
         mutation_audit(
             context,
-            "change_source",
-            "plugin_source",
+            MutationAuditOperation::PluginSourceChangeSource,
             &binding.plugin_id,
             vec!["source".into(), "policy".into(), "outbound_proxy".into()],
         ),
@@ -128,8 +128,7 @@ pub(super) async fn delete_if_unused(
             tx,
             mutation_audit(
                 context,
-                "delete",
-                "plugin_source",
+                MutationAuditOperation::PluginSourceDelete,
                 plugin_id,
                 vec!["source".into(), "policy".into(), "outbound_proxy".into()],
             ),

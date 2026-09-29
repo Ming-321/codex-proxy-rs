@@ -257,7 +257,6 @@ async fn native_response_translation_keeps_raw_xai_and_delivery_state_independen
         )
         .await
         .expect("native response stream");
-    assert!(stream.has_native_response_translator());
 
     let mut added_was_deferred = false;
     let mut done_expanded = false;
@@ -332,7 +331,6 @@ async fn pass_through_middleware_projects_native_response_once() {
         )
         .await
         .expect("native response stream");
-    assert!(!stream.has_native_response_translator());
 
     let mut client_events = 0;
     while let Some(event) = stream.next().await {
@@ -3915,7 +3913,6 @@ async fn cancellation_before_poll_never_calls_transport() {
         )
         .await
         .expect("prepared stream");
-    assert!(!stream.has_native_response_translator());
     cancellation.cancel();
     let error = stream
         .next()

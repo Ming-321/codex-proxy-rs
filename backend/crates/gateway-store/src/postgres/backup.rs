@@ -5,12 +5,14 @@
 
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};
+use gateway_admin::model::audit::MutationAuditOperation;
 use secrecy::{ExposeSecret as _, SecretString};
 use sqlx::{PgPool, Postgres, Row as _, Transaction};
 
 use gateway_admin::model::backup::{
     BackupRecord, BackupRecordListQuery, BackupRecordPage, BackupRecordSeed, BackupSettings,
-    BackupStatus, BackupTriggerKind, UpdateBackupScheduleCommand, UpdateBackupStorageCommand,
+    BackupStatus, BackupStatusTransition, BackupTriggerKind, UpdateBackupScheduleCommand,
+    UpdateBackupStorageCommand,
 };
 use gateway_admin::model::{MutationContext, Revision as AdminRevision};
 use gateway_admin::ports::backup::{BackupRepository, StatusTransitionUpdate};
@@ -118,8 +120,7 @@ impl BackupRepository for PgBackupRepository {
             }
             let audit = crate::mutation_audit(
                 context,
-                "backup.s3_config_updated",
-                "backup_settings",
+                MutationAuditOperation::BackupStorageUpdate,
                 "1",
                 changed,
             );
@@ -184,8 +185,7 @@ impl BackupRepository for PgBackupRepository {
 
             let audit = crate::mutation_audit(
                 context,
-                "backup.schedule_updated",
-                "backup_settings",
+                MutationAuditOperation::BackupScheduleUpdate,
                 "1",
                 vec![
                     "schedule_enabled".to_owned(),
@@ -460,8 +460,7 @@ impl BackupRepository for PgBackupRepository {
     async fn transition_status(
         &self,
         id: &str,
-        from: BackupStatus,
-        to: BackupStatus,
+        transition: BackupStatusTransition,
         update: StatusTransitionUpdate,
         now: DateTime<Utc>,
     ) -> AdminStoreResult<Option<BackupRecord>> {
@@ -487,7 +486,7 @@ impl BackupRepository for PgBackupRepository {
                         attempt_count, error_code, error_message, started_at, completed_at, expires_at,
                         created_at, updated_at",
         )
-        .bind(to.as_str())
+        .bind(transition.to().as_str())
         .bind(size_bytes)
         .bind(update.sha256.as_deref())
         .bind(update.error_code.as_deref())
@@ -495,7 +494,7 @@ impl BackupRepository for PgBackupRepository {
         .bind(update.completed_at)
         .bind(now)
         .bind(id)
-        .bind(from.as_str())
+        .bind(transition.from().as_str())
         .fetch_optional(&self.pool)
         .await
         .map_err(|_| store_unavailable("transition backup task"))?

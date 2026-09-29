@@ -10,6 +10,7 @@ pub mod plugin_distribution;
 pub mod pricing;
 pub mod process;
 pub mod proxy_probe;
+pub mod retention;
 pub mod serve;
 pub mod system_update;
 pub mod workers;

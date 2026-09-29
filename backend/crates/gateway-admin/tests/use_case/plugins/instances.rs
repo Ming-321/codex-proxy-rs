@@ -242,7 +242,10 @@ impl PluginPreparation for LifecycleFixture {
             Arc::new(Lease),
         ))
     }
+}
 
+#[async_trait]
+impl gateway_admin::ports::plugins::PluginRuntimeDiagnostics for LifecycleFixture {
     async fn runtime_diagnostics(
         &self,
         _: &PluginInstanceSnapshot,
@@ -251,7 +254,10 @@ impl PluginPreparation for LifecycleFixture {
     ) -> Option<BTreeMap<String, PluginInstanceRuntime>> {
         self.data.lock().unwrap().diagnostics.clone()
     }
+}
 
+#[async_trait]
+impl gateway_admin::ports::plugins::PluginStateLifecycle for LifecycleFixture {
     async fn activate_state(
         &self,
         _: &ExtensionSetReference,

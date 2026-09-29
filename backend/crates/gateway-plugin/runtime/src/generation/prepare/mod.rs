@@ -904,7 +904,10 @@ impl PluginPreparation for PluginRuntime {
         self.prepare_snapshot(snapshot, Some(required_revision))
             .await
     }
+}
 
+#[async_trait]
+impl gateway_admin::ports::plugins::PluginRuntimeDiagnostics for PluginRuntime {
     async fn runtime_diagnostics(
         &self,
         snapshot: &PluginInstanceSnapshot,
@@ -954,7 +957,10 @@ impl PluginPreparation for PluginRuntime {
                 .collect(),
         )
     }
+}
 
+#[async_trait]
+impl gateway_admin::ports::plugins::PluginStateLifecycle for PluginRuntime {
     async fn activate_state(
         &self,
         prepared: &ExtensionSetReference,

@@ -28,6 +28,18 @@ impl AdminAuditActorKind {
     }
 }
 
+impl From<gateway_admin::model::auth::AuditActorKind> for AdminAuditActorKind {
+    fn from(value: gateway_admin::model::auth::AuditActorKind) -> Self {
+        use gateway_admin::model::auth::AuditActorKind;
+        match value {
+            AuditActorKind::AdminSession => Self::AdminSession,
+            AuditActorKind::AdminApiKey => Self::AdminApiKey,
+            AuditActorKind::System => Self::System,
+            AuditActorKind::Anonymous => Self::Anonymous,
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct AdminAuditEvent {
     pub id: String,

@@ -16,8 +16,8 @@ use tracing::{info, warn};
 
 use crate::{
     model::backup::{
-        BackupError, BackupObjectMetadata, BackupRecord, BackupStatus, BackupStorageConfig,
-        BackupTriggerKind, build_backup_seed, code,
+        BackupError, BackupObjectMetadata, BackupRecord, BackupStatus, BackupStatusTransition,
+        BackupStorageConfig, BackupTriggerKind, build_backup_seed, code,
     },
     ports::backup::{
         BackupObjectStorePort, BackupRepository, DatabaseDumpPort, DumpRequest,
@@ -224,8 +224,7 @@ impl BackupTask {
                     .repository
                     .transition_status(
                         &record.id,
-                        BackupStatus::Dumping,
-                        BackupStatus::Uploading,
+                        status_transition(BackupStatus::Dumping, BackupStatus::Uploading)?,
                         update,
                         now,
                     )
@@ -274,8 +273,7 @@ impl BackupTask {
             self.repository
                 .transition_status(
                     &record.id,
-                    BackupStatus::Uploading,
-                    BackupStatus::Completed,
+                    status_transition(BackupStatus::Uploading, BackupStatus::Completed)?,
                     StatusTransitionUpdate::default(),
                     now,
                 )
@@ -402,8 +400,7 @@ impl BackupTask {
             .repository
             .transition_status(
                 &record.id,
-                BackupStatus::Dumping,
-                BackupStatus::Uploading,
+                status_transition(BackupStatus::Dumping, BackupStatus::Uploading)?,
                 update,
                 now,
             )
@@ -471,8 +468,7 @@ impl BackupTask {
                     .repository
                     .transition_status(
                         &record.id,
-                        BackupStatus::Uploading,
-                        BackupStatus::Completed,
+                        status_transition(BackupStatus::Uploading, BackupStatus::Completed)?,
                         StatusTransitionUpdate::default(),
                         Utc::now(),
                     )
@@ -555,7 +551,12 @@ impl BackupTask {
         };
         let _ = self
             .repository
-            .transition_status(&record.id, record.status, BackupStatus::Failed, update, now)
+            .transition_status(
+                &record.id,
+                status_transition(record.status, BackupStatus::Failed)?,
+                update,
+                now,
+            )
             .await
             .map_err(repo_error)?;
         let _ = self.dump.cleanup_staging(&record.id).await;
@@ -637,6 +638,14 @@ fn classify_dump_error(error: BackupError) -> (&'static str, &'static str) {
         code::STAGING_SPACE_EXHAUSTED => (code::STAGING_SPACE_EXHAUSTED, "暂存磁盘空间不足"),
         _ => (code::PG_DUMP_FAILED, "数据库导出失败"),
     }
+}
+
+fn status_transition(
+    from: BackupStatus,
+    to: BackupStatus,
+) -> Result<BackupStatusTransition, WorkerTaskError> {
+    BackupStatusTransition::try_new(from, to)
+        .ok_or_else(|| WorkerTaskError::safe("backup status transition is invalid"))
 }
 
 fn repo_error(error: crate::ports::store::AdminStoreError) -> WorkerTaskError {

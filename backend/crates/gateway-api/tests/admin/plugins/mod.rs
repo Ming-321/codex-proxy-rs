@@ -606,6 +606,27 @@ impl gateway_admin::ports::plugin_management::PluginManagement for TestPluginPor
 }
 
 #[async_trait]
+impl gateway_admin::ports::plugins::PluginStateLifecycle for TestPluginPorts {
+    async fn activate_state(
+        &self,
+        _: &gateway_core::runtime::extensions::ExtensionSetReference,
+        _: &gateway_admin::model::plugins::instances::PluginInstance,
+    ) -> Result<(), AdminError> {
+        Ok(())
+    }
+    async fn quiesce_instance(&self, _: &str, _: &str, _: gateway_admin::model::Revision) {
+        panic!("unexpected instance drain")
+    }
+    async fn migrate_state(
+        &self,
+        _: &gateway_core::runtime::extensions::ExtensionSetReference,
+        _: gateway_admin::model::plugins::state::PluginStateTransition,
+    ) -> Result<(), AdminError> {
+        panic!("unexpected state migration")
+    }
+}
+
+#[async_trait]
 impl gateway_admin::ports::plugins::PluginPreparation for TestPluginPorts {
     async fn configuration_ready(
         &self,
@@ -627,7 +648,10 @@ impl gateway_admin::ports::plugins::PluginPreparation for TestPluginPorts {
     ) -> Result<gateway_core::runtime::extensions::ExtensionSetReference, AdminError> {
         Err(AdminError::invalid("unused plugin fixture"))
     }
+}
 
+#[async_trait]
+impl gateway_admin::ports::plugins::PluginRuntimeDiagnostics for TestPluginPorts {
     async fn runtime_diagnostics(
         &self,
         snapshot: &gateway_admin::model::plugins::instances::PluginInstanceSnapshot,

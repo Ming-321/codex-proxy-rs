@@ -14,9 +14,9 @@ use gateway_admin::{
         auth::AdminAuditEvent,
         backup::{
             BackupError, BackupObjectMetadata, BackupRecord, BackupRecordListQuery,
-            BackupRecordPage, BackupRecordSeed, BackupSettings, BackupStatus, BackupStorageConfig,
-            BackupTriggerKind, ConnectionTestResult, UpdateBackupScheduleCommand,
-            UpdateBackupStorageCommand,
+            BackupRecordPage, BackupRecordSeed, BackupSettings, BackupStatus,
+            BackupStatusTransition, BackupStorageConfig, BackupTriggerKind, ConnectionTestResult,
+            UpdateBackupScheduleCommand, UpdateBackupStorageCommand,
         },
     },
     ports::{
@@ -330,19 +330,18 @@ impl BackupRepository for FakeBackupRepository {
     async fn transition_status(
         &self,
         id: &str,
-        from: BackupStatus,
-        to: BackupStatus,
+        transition: BackupStatusTransition,
         update: StatusTransitionUpdate,
         now: DateTime<Utc>,
     ) -> AdminStoreResult<Option<BackupRecord>> {
         let mut records = self.records.lock().expect("records");
         let Some(record) = records
             .iter_mut()
-            .find(|record| record.id == id && record.status == from)
+            .find(|record| record.id == id && record.status == transition.from())
         else {
             return Ok(None);
         };
-        record.status = to;
+        record.status = transition.to();
         if let Some(size) = update.size_bytes {
             record.size_bytes = Some(size);
         }
@@ -356,7 +355,11 @@ impl BackupRepository for FakeBackupRepository {
             record.error_message = Some(message);
         }
         record.completed_at = update.completed_at.or_else(|| {
-            matches!(to, BackupStatus::Completed | BackupStatus::Failed).then_some(now)
+            matches!(
+                transition.to(),
+                BackupStatus::Completed | BackupStatus::Failed
+            )
+            .then_some(now)
         });
         record.updated_at = now;
         Ok(Some(record.clone()))

@@ -1,5 +1,6 @@
 //! 按 Key 串行检查限额，并幂等累计已取得的 USD 费用。
 
+use gateway_admin::model::audit::MutationAuditOperation;
 use std::{collections::BTreeMap, sync::Mutex, time::Duration};
 
 use chrono::{DateTime, Utc};
@@ -104,8 +105,7 @@ async fn reset_client_key_budget_in_transaction(
         tx,
         mutation_audit(
             context,
-            "reset_budget",
-            "client_api_key",
+            MutationAuditOperation::ClientApiKeyResetBudget,
             command.id.as_str(),
             fields,
         ),

@@ -356,7 +356,7 @@ impl ProviderConnectionObservation {
 /// 投影不能覆盖 [`ProviderError`] 中用于诊断和记账的真实上游事实。
 ///
 /// 该值不属于稳定诊断事实，不能进入日志或持久化。它刻意不实现 [`Clone`]；
-/// [`ProviderError`] 的普通 clone 会丢弃它，只有最终失败的原对象才能把响应交给
+/// [`ProviderError::stable_snapshot`] 会丢弃它，只有最终失败的原对象才能把响应交给
 /// 原客户端协议，或由认证管理端的账号连接测试显式复制到请求局部结果。
 #[derive(PartialEq, Eq)]
 pub struct ClientVisibleUpstreamResponse {
@@ -575,11 +575,6 @@ impl ProviderError {
     pub const fn with_replay_safe(mut self) -> Self {
         self.replay_safe = true;
         self
-    }
-
-    /// 原地标记 Provider 已证明本次失败可从已交付的状态检查点安全恢复。
-    pub const fn set_replay_safe(&mut self) {
-        self.replay_safe = true;
     }
 
     /// 允许 Core 仅在客户端尚未收到任何事件时执行一次受预算约束的换号恢复。
@@ -850,8 +845,8 @@ impl ProviderError {
 
     /// 取走只供本次重试/提交决策使用的原子客户端事件。
     ///
-    /// Core 必须在克隆错误、记录中间失败或构造终态前调用本方法，避免原始 wire
-    /// 进入诊断或持久化对象。
+    /// Core 必须在创建稳定快照、记录中间失败或构造终态前调用本方法，避免原始
+    /// wire 进入诊断或持久化对象。
     #[must_use]
     pub fn take_atomic_client_events(&mut self) -> Vec<ProviderEvent> {
         self.atomic_client_events
@@ -864,10 +859,12 @@ impl ProviderError {
     pub fn has_atomic_client_events(&self) -> bool {
         self.atomic_client_events.is_some()
     }
-}
 
-impl Clone for ProviderError {
-    fn clone(&self) -> Self {
+    /// 复制可安全进入诊断和持久化边界的稳定错误事实。
+    ///
+    /// 请求局部的原始上游响应与尚未提交的客户端事件不会进入快照。
+    #[must_use]
+    pub fn stable_snapshot(&self) -> Self {
         Self {
             kind: self.kind,
             send_state: self.send_state,

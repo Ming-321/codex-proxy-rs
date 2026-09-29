@@ -164,6 +164,44 @@ impl gateway_admin::ports::plugin_management::PluginManagement for TestPluginPor
 }
 
 #[async_trait]
+impl gateway_admin::ports::plugins::PluginRuntimeDiagnostics for TestPluginPorts {
+    async fn runtime_diagnostics(
+        &self,
+        _: &gateway_admin::model::plugins::instances::PluginInstanceSnapshot,
+        _: Option<u64>,
+        _: Option<&gateway_core::runtime::extensions::ExtensionSetReference>,
+    ) -> Option<
+        std::collections::BTreeMap<
+            String,
+            gateway_admin::model::plugins::instances::PluginInstanceRuntime,
+        >,
+    > {
+        None
+    }
+}
+
+#[async_trait]
+impl gateway_admin::ports::plugins::PluginStateLifecycle for TestPluginPorts {
+    async fn activate_state(
+        &self,
+        _: &gateway_core::runtime::extensions::ExtensionSetReference,
+        _: &gateway_admin::model::plugins::instances::PluginInstance,
+    ) -> Result<(), AdminError> {
+        panic!("unexpected state activation")
+    }
+    async fn quiesce_instance(&self, _: &str, _: &str, _: gateway_admin::model::Revision) {
+        panic!("unexpected instance drain")
+    }
+    async fn migrate_state(
+        &self,
+        _: &gateway_core::runtime::extensions::ExtensionSetReference,
+        _: gateway_admin::model::plugins::state::PluginStateTransition,
+    ) -> Result<(), AdminError> {
+        panic!("unexpected state migration")
+    }
+}
+
+#[async_trait]
 impl gateway_admin::ports::plugins::PluginPreparation for TestPluginPorts {
     async fn configuration_ready(
         &self,

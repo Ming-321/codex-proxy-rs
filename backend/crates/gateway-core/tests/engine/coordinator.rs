@@ -25,8 +25,7 @@ use gateway_core::engine::provider::{
 use gateway_core::engine::{
     AttemptContext, AttemptCoordinator, AttemptRecord, AttemptTransport, CommitRequirement,
     ContinuationAttempt, EngineError, ExecutionOutcome, ExecutionStore, GatewayEngine,
-    IntermediateFailure, ModelRequestFinalization, ModelRequestId, NewModelRequest,
-    ProviderAttemptOutcome, RecoveryReport,
+    IntermediateFailure, ModelRequestFinalization, ModelRequestId, NewModelRequest, RecoveryReport,
 };
 use gateway_core::error::{
     ClientVisibleUpstreamError, ClientVisibleUpstreamResponse, ContinuationFailure,
@@ -838,12 +837,6 @@ fn success_updates_one_model_request_and_persists_usage() {
     block_on(session.commit_downstream(Some(200))).expect("commit response");
 
     assert!(session.is_finalized());
-    assert_eq!(
-        session.provider_attempt_outcomes(),
-        &[ProviderAttemptOutcome::Succeeded {
-            provider_kind: ProviderKind::new("openai").expect("provider"),
-        }]
-    );
     let state = store.state.lock().expect("store lock");
     assert_eq!(state.created, 1);
     assert_eq!(state.attempts.len(), 1);
@@ -2150,13 +2143,6 @@ fn required_account_disables_account_retry_after_stream_creation() {
         error,
         gateway_core::engine::EngineError::Provider(_)
     ));
-    assert_eq!(
-        session.provider_attempt_outcomes(),
-        &[ProviderAttemptOutcome::Failed {
-            provider_kind: ProviderKind::new("openai").expect("provider"),
-            error_kind: ProviderErrorKind::Unavailable,
-        }]
-    );
     assert_eq!(provider.contexts.lock().expect("contexts lock").len(), 1);
     assert_eq!(provider.scripts.lock().expect("scripts lock").len(), 1);
     let state = store.state.lock().expect("store lock");
@@ -3911,13 +3897,6 @@ fn structural_event_before_replay_safe_failure_should_switch_account_before_comm
     assert_eq!(first.into_provider_events().len(), 1);
     block_on(session.commit_downstream(Some(200))).expect("commit first event");
     block_on(session.next_event()).expect_err("committed stream failure must not be replayed");
-    assert_eq!(
-        session.provider_attempt_outcomes(),
-        &[ProviderAttemptOutcome::Failed {
-            provider_kind: ProviderKind::new("openai").expect("provider"),
-            error_kind: ProviderErrorKind::Transport,
-        }]
-    );
     assert_eq!(provider.contexts.lock().expect("contexts lock").len(), 1);
     let state = store.state.lock().expect("store lock");
     assert_eq!(state.commits, 1);
@@ -4000,7 +3979,6 @@ fn no_eligible_account_before_stream_records_failure_without_fabricating_an_atte
             gateway_core::engine::EngineError::Provider(ref error)
                 if error.kind() == kind
         ));
-        assert!(session.provider_attempt_outcomes().is_empty());
         assert!(session.is_finalized());
         block_on(session.record_client_status(status)).expect("HTTP error status");
         block_on(session.cancel_and_finalize()).expect("repeated finalization");
@@ -4265,7 +4243,6 @@ fn deadline_during_preparation_records_failure_without_an_upstream_attempt() {
         block_on(session.next_event()),
         Err(EngineError::Deadline)
     ));
-    assert!(session.provider_attempt_outcomes().is_empty());
     assert!(session.is_finalized());
     assert_eq!(provider.contexts.lock().unwrap().len(), 1);
     let state = store.state.lock().unwrap();
@@ -4534,7 +4511,7 @@ fn charged_terminal_write_resumes_without_replacing_success_failure_or_send_fact
 }
 
 #[test]
-fn deadline_after_commit_is_incomplete_without_provider_circuit_failure() {
+fn deadline_after_commit_is_persisted_as_incomplete() {
     let operation = generate_operation();
     let route_plan = plan(&operation);
     let (coordinator, store, _) = coordinator(vec![Script::HangingStream {
@@ -4565,16 +4542,13 @@ fn deadline_after_commit_is_incomplete_without_provider_circuit_failure() {
     let error = block_on(session.next_event()).expect_err("deadline elapses mid-stream");
 
     assert!(matches!(error, EngineError::Deadline));
-    // 网关自身请求预算到期不是上游超时；已在交付中的长流集中到期
-    // 不得作为 provider Timeout 计入熔断。
-    assert!(session.provider_attempt_outcomes().is_empty());
     let state = store.state.lock().expect("store lock");
     assert_eq!(state.finalizations[0].outcome, ExecutionOutcome::Incomplete);
     assert!(state.finalizations[0].committed);
 }
 
 #[test]
-fn deadline_before_first_event_records_no_provider_circuit_failure() {
+fn deadline_before_first_event_is_persisted_as_failed_attempt() {
     let operation = generate_operation();
     let route_plan = plan(&operation);
     let (coordinator, store, _) = coordinator(vec![Script::HangingStream {
@@ -4594,7 +4568,6 @@ fn deadline_before_first_event_records_no_provider_circuit_failure() {
     let error = block_on(session.next_event()).expect_err("deadline elapses before first event");
 
     assert!(matches!(error, EngineError::Deadline));
-    assert!(session.provider_attempt_outcomes().is_empty());
     let state = store.state.lock().expect("store lock");
     assert_eq!(state.attempts.len(), 1);
     assert_eq!(state.finalizations[0].outcome, ExecutionOutcome::Failed);

@@ -456,9 +456,7 @@ fn wire_observation(observation: &RequestObservation) -> RequestCompleted {
         request_id: observation.request_id().as_str().to_owned(),
         config_revision: observation.config_revision().get(),
         operation: observation.operation().as_str().to_owned(),
-        client_key_id: observation
-            .client_key_id()
-            .map(|key| key.as_str().to_owned()),
+        client_key_id: Some(observation.client_key_id().as_str().to_owned()),
         account_id: observation
             .account_id()
             .map(|account| account.as_str().to_owned()),

@@ -203,10 +203,6 @@ fn capability_declaration_preserves_original_semantics_and_recomputes_upstream_n
         .apply_capabilities(body_operation(&converted))
         .unwrap();
     assert_eq!(
-        operation.original_capability_requirements(),
-        body_operation(&original).capability_requirements()
-    );
-    assert_eq!(
         operation.capability_requirements().features(),
         &[Feature::Tools, Feature::Reasoning].into()
     );

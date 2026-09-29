@@ -14,8 +14,8 @@ use gateway_core::{
     engine::{
         ModelRequestId, ModelRequestTimings,
         observation::{
-            RequestObservation, RequestObservationOutcome, WebSocketResponseAttempt,
-            WebSocketResponseObservation,
+            RequestObservation, RequestObservationOutcome, RequestObservationScope,
+            WebSocketResponseAttempt, WebSocketResponseObservation,
         },
     },
     error::GatewayErrorKind,
@@ -142,6 +142,20 @@ async fn setup_instances(
 }
 
 fn observation(id: &str, outcome: RequestObservationOutcome) -> RequestObservation {
+    observation_with_scope(
+        id,
+        outcome,
+        "client-key-observed",
+        vec![AccountGroupId::new("grp_11111111111111111111111111111111").unwrap()],
+    )
+}
+
+fn observation_with_scope(
+    id: &str,
+    outcome: RequestObservationOutcome,
+    client_key_id: &str,
+    account_group_ids: Vec<AccountGroupId>,
+) -> RequestObservation {
     let send_state = if outcome == RequestObservationOutcome::Rejected {
         UpstreamSendState::NotSent
     } else {
@@ -150,6 +164,10 @@ fn observation(id: &str, outcome: RequestObservationOutcome) -> RequestObservati
     RequestObservation::new(
         ModelRequestId::new(id).unwrap(),
         ConfigRevision::new(1).unwrap(),
+        RequestObservationScope::new(
+            ClientApiKeyId::new(client_key_id).unwrap(),
+            account_group_ids,
+        ),
         OperationKind::Generate,
         outcome,
         send_state,
@@ -172,6 +190,10 @@ fn websocket_observation(
     WebSocketResponseObservation::new(
         ModelRequestId::new(id).unwrap(),
         ConfigRevision::new(1).unwrap(),
+        RequestObservationScope::new(
+            ClientApiKeyId::new("client-key-observed").unwrap(),
+            vec![AccountGroupId::new("grp_11111111111111111111111111111111").unwrap()],
+        ),
         OperationKind::Generate,
         WebSocketResponseAttempt::new(
             ProviderKind::new("openai").unwrap(),
@@ -180,10 +202,6 @@ fn websocket_observation(
         ),
         sequence,
         ProtocolWireEvent::json("openai", Some("response.output_text.delta".into()), body).unwrap(),
-    )
-    .with_client_scope(
-        ClientApiKeyId::new("client-key-observed").unwrap(),
-        vec![AccountGroupId::new("grp_11111111111111111111111111111111").unwrap()],
     )
     .with_requested_model(PublicModelId::new("gpt-observed").unwrap())
 }
@@ -640,8 +658,10 @@ async fn client_scope_filters_observations_and_exposes_only_the_key_identifier()
 
     plan.dispatch(
         generation.clone(),
-        observation("req_scope_match", RequestObservationOutcome::Rejected).with_client_scope(
-            ClientApiKeyId::new("client-key-observed").unwrap(),
+        observation_with_scope(
+            "req_scope_match",
+            RequestObservationOutcome::Rejected,
+            "client-key-observed",
             vec![AccountGroupId::new(matching_group).unwrap()],
         ),
     );
@@ -682,8 +702,7 @@ async fn client_scope_filters_observations_and_exposes_only_the_key_identifier()
     ] {
         plan.dispatch(
             generation.clone(),
-            observation(request_id, RequestObservationOutcome::Rejected)
-                .with_client_scope(ClientApiKeyId::new(key).unwrap(), groups),
+            observation_with_scope(request_id, RequestObservationOutcome::Rejected, key, groups),
         );
     }
     tokio::time::sleep(Duration::from_millis(100)).await;

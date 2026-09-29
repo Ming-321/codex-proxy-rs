@@ -1,3 +1,4 @@
+use gateway_admin::model::audit::MutationAuditOperation;
 use std::collections::{BTreeMap, BTreeSet};
 
 use gateway_admin::{
@@ -308,8 +309,7 @@ async fn save_inner(
             &mut tx,
             mutation_audit(
                 context,
-                "configure",
-                "plugin_instance",
+                MutationAuditOperation::PluginInstanceConfigure,
                 &replacement.id,
                 vec!["enabled".into()],
             ),
@@ -333,8 +333,7 @@ async fn save_inner(
         &mut tx,
         mutation_audit(
             context,
-            "configure",
-            "plugin_instance",
+            MutationAuditOperation::PluginInstanceConfigure,
             &instance.id,
             vec![
                 "artifact".into(),
@@ -385,8 +384,7 @@ pub(super) async fn delete(
         &mut tx,
         mutation_audit(
             context,
-            "delete",
-            "plugin_instance",
+            MutationAuditOperation::PluginInstanceDelete,
             id,
             vec!["instance".into()],
         ),

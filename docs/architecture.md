@@ -59,10 +59,10 @@ flowchart TB
 | `backend/apps/plugin-cli`（包名 `codex-proxy-plugin-cli`） | `cpr-plugin package` 校验作者清单并生成平台元数据、资源摘要与归档；内部仅依赖 SDK，不参与网关运行时加载 |
 | `gateway-protocol` | 跨层共享的 OpenAI wire contract、SSE 编解码与无业务 owner 的解析事实，不依赖其他 workspace crate |
 | `gateway-core` | operation、canonical event、请求快照、路由、admission、attempt 协调、交付边界和计量 |
-| `gateway-admin` | 管理领域、Key 用量查询、Provider/Store 端口、审计语义和备份策略 |
+| `gateway-admin` | 管理领域、Key 用量查询、Provider/Store 端口、审计语义、备份与历史保留策略 |
 | `gateway-api` | HTTP/WS/SSE 解码与交付、Admin 与 Key 用量 wire、静态 Web UI；不直接访问 Store 或具体 Provider |
 | `gateway-store` | PostgreSQL、Redis、S3/R2、`pg_dump` 适配器；不拥有业务策略 |
-| `gateway-host` | 配置加载、日志、HTTP 生命周期、Worker 监督、系统更新及外部价格源适配 |
+| `gateway-host` | 配置加载、日志、HTTP 生命周期、Worker 监督与历史保留任务、系统更新及外部价格源适配 |
 | `gateway-plugin/sdk`（包名 `gateway-plugin-sdk`） | 公开插件清单与线协议，独立于网关领域；异步收发通过可选 `io` feature 提供 |
 | `gateway-plugin/runtime`（包名 `gateway-plugin-runtime`） | 插件包校验、能力适配、双向 RPC 与发布集合；通过 Host 管理子进程和受管 HTTP |
 | `providers/openai` | OpenAI OAuth、账号选择、目录、额度、Responses/Images/Search transport |
@@ -77,6 +77,10 @@ flowchart TB
 2. Provider 之间不互相依赖，也不决定跨 Provider fallback
 3. API 只调用 Core/Admin 抽象；Store 只实现端口
 4. 具体实现只在组合根相遇
+
+管理变更的审计动作、实体分类与 actor 投影由 Admin 的类型化操作和审计意图定义。
+Store 按端口命令与实际提交结果选择操作、补齐稳定实体标识和物理差异，在同一事务写入配置 revision 与审计记录；
+适配器不另定义动作和实体分类字符串，也不为生成审计而在事务外重复读取旧值
 
 `frontend/` 是独立的 Node 项目，自行管理依赖、pnpm 配置、锁文件和 ESLint；仓库根目录不建立前端 workspace。
 管理端与独立示例仓库分别依赖 `@codex-proxy/ui` 的固定 GitHub 标签或提交，通过锁文件固定实际提交并校验源码归档完整性，不要求同级源码目录。安装与构建许可见 [开发环境](development.md#环境与依赖)。
@@ -122,7 +126,7 @@ flowchart LR
   公开列表、详情、原生目录和受管模型查询复用相同别名与账号访问范围，不另维护插件专用目录
 - **重试由 Core 裁决**：`retry_policy` 只能停止或继续 Core 已允许的恢复路径；绑定按确定顺序委托，故障回退宿主。
   发送、交付、续接、外部副作用、预算和取消限制不进入插件控制面，策略返回后继续复核
-- **转换声明不替代正文事实**：middleware v3 在 request 阶段声明具体承担的功能和额外上游需求，原始需求保留用于诊断，实际正文与未承担的原始功能仍参与选路。
+- **转换声明不替代正文事实**：middleware v3 在 request 阶段声明具体承担的功能和额外上游需求，逐层继承尚未承担的需求，实际正文与有效需求共同参与选路。
   attempt 阶段拒绝需求声明。没有改写的正文、header 和响应帧在相同网关边界保留原字节与顺序
 
 - **安装意味着完整信任**：只读校验不持久化；上传、URL 和 GitHub 的确认安装记录对精确摘要的信任，
@@ -132,6 +136,8 @@ flowchart LR
   读取和重复安装不重写已有 JSON，废弃字段通过迁移清理；新增必填字段或改变语义时须提供迁移。包清单、RPC 与能力合同仍按 SDK 校验，运行兼容性由宿主版本范围及清单、协议、能力版本决定
 - **一份发布快照**：数据面和管理页面使用同一不可变扩展集合；CLI 复用准备与调用合同，按次读取持久化配置。
   新配置准备成功后才提交发布，在途请求持有旧集合直到结束；管理目标和回调另按当前身份与版本复验
+- **发布能力显式实现**：Admin 分别定义准备、运行诊断和状态生命周期端口，完整发布实现必须满足全部合同。
+  诊断可以明确返回不可用；状态激活、实例排空与迁移必须由实现显式处理，不以缺省空操作或静默成功代替
 - **插件故障按实例隔离**：恢复时将启动失败的实例及其错误保留在发布集合中，正常实例和原生能力继续发布；
   用户正在修改的实例仍须准备成功才能提交。集合区分进程就绪、可继续服务与需要后台重建，单个进程退出不撤销全部请求快照。
   故障绑定保留原有作用范围和拒绝／委托策略，入口认证故障不降级为其他认证方式；宿主配置存储与 revision 无法确认时仍停止新请求
@@ -733,7 +739,8 @@ Provider metadata 的 `upstreamServiceTier`，不改写客户端收到的响应�
 
 Worker 由各 Bundle 贡献、由 Host 统一监督：
 
-- Store：过期请求恢复、历史保留和 PostgreSQL/Redis 观测队列
+- Store：过期请求恢复和 PostgreSQL/Redis 观测队列
+- Host：历史保留任务，持有每小时调度、单轮行数/批数/时长预算、取消和日志；Admin 校验保留窗口，Store 执行有界批量删除
 - Core：`runtime` owner 的 RuntimeSnapshot 周期对账和 Redis change 订阅
 - Admin：S3/R2 备份 daemon，负责调度、执行、删除收敛与保留清理；
   以及账号冻结恢复 worker（容量熔断的自适应并发下调与到期探测解冻）

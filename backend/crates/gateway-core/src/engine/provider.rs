@@ -359,12 +359,6 @@ impl ProviderStream {
         self
     }
 
-    /// 返回本次 stream 是否需要原生响应转换。
-    #[must_use]
-    pub const fn has_native_response_translator(&self) -> bool {
-        self.native_response_translator.is_some()
-    }
-
     /// 在 Core 已记录原始事实且完成 `BeforeTranslation` 后执行原生转换。
     ///
     /// # Errors

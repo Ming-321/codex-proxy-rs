@@ -404,15 +404,6 @@ export function getPluginInstances(options: RequestOptions = {}) {
   })
 }
 
-export function createPluginInstance(data: ConfigurePluginInstanceRequest, options: RequestOptions = {}) {
-  return request<PluginInstanceMutationResponse>({
-    url: '/api/admin/plugins/instances',
-    method: 'POST',
-    data,
-    ...options,
-  })
-}
-
 export function updatePluginInstance(data: { id: string, instance: ConfigurePluginInstanceRequest }, options: RequestOptions = {}) {
   return request<PluginInstanceMutationResponse>({
     url: '/api/admin/plugins/instances/update',

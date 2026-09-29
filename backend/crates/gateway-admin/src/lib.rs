@@ -272,11 +272,6 @@ impl AdminServices {
         self.observability.as_ref()
     }
 
-    #[must_use]
-    pub fn settings_handle(&self) -> Arc<dyn SettingsService> {
-        self.settings.clone()
-    }
-
     pub fn settings(&self) -> &dyn SettingsService {
         self.settings.as_ref()
     }

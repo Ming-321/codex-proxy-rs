@@ -17,8 +17,8 @@ use crate::model::{
     MutationContext,
     backup::{
         BackupError, BackupObjectMetadata, BackupRecord, BackupRecordListQuery, BackupRecordPage,
-        BackupRecordSeed, BackupSettings, BackupStatus, BackupStorageConfig, ConnectionTestResult,
-        UpdateBackupScheduleCommand, UpdateBackupStorageCommand,
+        BackupRecordSeed, BackupSettings, BackupStatusTransition, BackupStorageConfig,
+        ConnectionTestResult, UpdateBackupScheduleCommand, UpdateBackupStorageCommand,
     },
 };
 use crate::ports::store::AdminStoreResult;
@@ -96,8 +96,7 @@ pub trait BackupRepository: Send + Sync {
     async fn transition_status(
         &self,
         id: &str,
-        from: BackupStatus,
-        to: BackupStatus,
+        transition: BackupStatusTransition,
         update: StatusTransitionUpdate,
         now: DateTime<Utc>,
     ) -> AdminStoreResult<Option<BackupRecord>>;
@@ -333,8 +332,7 @@ impl BackupRepository for UnavailableBackupRepository {
     async fn transition_status(
         &self,
         _id: &str,
-        _from: BackupStatus,
-        _to: BackupStatus,
+        _transition: BackupStatusTransition,
         _update: StatusTransitionUpdate,
         _now: DateTime<Utc>,
     ) -> AdminStoreResult<Option<BackupRecord>> {

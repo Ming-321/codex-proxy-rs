@@ -8,6 +8,7 @@ use super::super::{
 use super::PgPluginStore;
 use crate::{admin_revision, admin_store_error, mutation_audit};
 use async_trait::async_trait;
+use gateway_admin::model::audit::MutationAuditOperation;
 use gateway_admin::{
     model::{
         MutationContext,
@@ -65,7 +66,7 @@ fn validate_resource_key(key: &str) -> AdminStoreResult<()> {
 async fn finish<T>(
     mut tx: Transaction<'_, Postgres>,
     context: &MutationContext,
-    kind: &str,
+    kind: MutationAuditOperation,
     id: &str,
     changed: bool,
     value: T,
@@ -74,13 +75,7 @@ async fn finish<T>(
         let revision = bump_config_revision_in_transaction(&mut tx)
             .await
             .map_err(|e| admin_store_error("plugin resource", e))?;
-        let audit = mutation_audit(
-            context,
-            "plugin_reconcile",
-            kind,
-            id,
-            vec!["plugin_owned_resource".to_owned()],
-        );
+        let audit = mutation_audit(context, kind, id, vec!["plugin_owned_resource".to_owned()]);
         append_admin_audit_event_in_transaction(&mut tx, audit, revision)
             .await
             .map_err(|e| admin_store_error("plugin resource", e))?;
@@ -123,7 +118,15 @@ impl PluginResourceStore for PgPluginStore {
         .await
         .map_err(|_| unavailable())?
         {
-            return finish(tx, context, "account_group", "", false, resource(&row)?).await;
+            return finish(
+                tx,
+                context,
+                MutationAuditOperation::AccountGroupPluginReconcile,
+                "",
+                false,
+                resource(&row)?,
+            )
+            .await;
         }
         insert_account_group_in_transaction(&mut tx, &command)
             .await
@@ -142,7 +145,7 @@ impl PluginResourceStore for PgPluginStore {
         finish(
             tx,
             context,
-            "account_group",
+            MutationAuditOperation::AccountGroupPluginReconcile,
             command.id.as_str(),
             true,
             value,
@@ -181,7 +184,15 @@ impl PluginResourceStore for PgPluginStore {
         .await
         .map_err(|_| unavailable())?
         {
-            return finish(tx, context, "client_api_key", "", false, resource(&row)?).await;
+            return finish(
+                tx,
+                context,
+                MutationAuditOperation::ClientApiKeyPluginReconcile,
+                "",
+                false,
+                resource(&row)?,
+            )
+            .await;
         }
         let group_ids: Vec<String> = sqlx::query_scalar("select group_id from plugin_group_resources where instance_id=$1 and resource_key=any($2::text[])")
             .bind(instance)
@@ -219,7 +230,15 @@ impl PluginResourceStore for PgPluginStore {
             name: key.name.trim().to_owned(),
             enabled: true,
         };
-        finish(tx, context, "client_api_key", &key.id, true, value).await
+        finish(
+            tx,
+            context,
+            MutationAuditOperation::ClientApiKeyPluginReconcile,
+            &key.id,
+            true,
+            value,
+        )
+        .await
     }
 
     async fn change_members(
@@ -274,7 +293,7 @@ impl PluginResourceStore for PgPluginStore {
         finish(
             tx,
             context,
-            "account_group",
+            MutationAuditOperation::AccountGroupPluginReconcile,
             &group,
             added + removed > 0,
             GroupMembersChanged { added, removed },

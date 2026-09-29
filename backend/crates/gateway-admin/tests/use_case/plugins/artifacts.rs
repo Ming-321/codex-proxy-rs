@@ -96,6 +96,44 @@ impl ExtensionSetLease for Lease {
 }
 
 #[async_trait]
+impl gateway_admin::ports::plugins::PluginRuntimeDiagnostics for Fixture {
+    async fn runtime_diagnostics(
+        &self,
+        _: &gateway_admin::model::plugins::instances::PluginInstanceSnapshot,
+        _: Option<u64>,
+        _: Option<&gateway_core::runtime::extensions::ExtensionSetReference>,
+    ) -> Option<
+        std::collections::BTreeMap<
+            String,
+            gateway_admin::model::plugins::instances::PluginInstanceRuntime,
+        >,
+    > {
+        None
+    }
+}
+
+#[async_trait]
+impl gateway_admin::ports::plugins::PluginStateLifecycle for Fixture {
+    async fn activate_state(
+        &self,
+        _: &gateway_core::runtime::extensions::ExtensionSetReference,
+        _: &gateway_admin::model::plugins::instances::PluginInstance,
+    ) -> Result<(), AdminError> {
+        Ok(())
+    }
+    async fn quiesce_instance(&self, _: &str, _: &str, _: gateway_admin::model::Revision) {
+        panic!("unexpected instance drain")
+    }
+    async fn migrate_state(
+        &self,
+        _: &gateway_core::runtime::extensions::ExtensionSetReference,
+        _: gateway_admin::model::plugins::state::PluginStateTransition,
+    ) -> Result<(), AdminError> {
+        panic!("unexpected state migration")
+    }
+}
+
+#[async_trait]
 impl PluginPreparation for Fixture {
     async fn configuration_ready(
         &self,

@@ -4,6 +4,7 @@ use std::num::{NonZeroU16, NonZeroU64};
 
 pub mod account_groups;
 pub mod accounts;
+pub mod audit;
 pub mod auth;
 pub mod backup;
 pub mod client_distribution;
@@ -19,6 +20,7 @@ pub mod provider_credentials;
 pub mod proxies;
 pub mod quota_forecast;
 pub mod quota_forecast_sampling;
+pub mod retention;
 pub mod settings;
 pub mod system;
 

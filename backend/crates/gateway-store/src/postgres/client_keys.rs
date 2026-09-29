@@ -1,5 +1,6 @@
 //! 明文 `client_api_keys` 的 PostgreSQL owner。
 
+use gateway_admin::model::audit::MutationAuditOperation;
 use std::{
     collections::{BTreeMap, BTreeSet},
     fmt,
@@ -783,8 +784,7 @@ impl ClientKeyStore for PgAdminClientKeyStore {
             &mut tx,
             mutation_audit(
                 context,
-                "update_budget_limits",
-                "client_api_key",
+                MutationAuditOperation::ClientApiKeyUpdateBudgetLimits,
                 command.id.as_str(),
                 fields,
             ),
@@ -884,8 +884,7 @@ impl ClientKeyStore for PgAdminClientKeyStore {
                 },
                 mutation_audit(
                     context,
-                    "create",
-                    "client_api_key",
+                    MutationAuditOperation::ClientApiKeyCreate,
                     id.as_str(),
                     [
                         "name",
@@ -935,8 +934,7 @@ impl ClientKeyStore for PgAdminClientKeyStore {
                 },
                 mutation_audit(
                     context,
-                    "update",
-                    "client_api_key",
+                    MutationAuditOperation::ClientApiKeyUpdate,
                     id.as_str(),
                     [
                         "name",
@@ -971,8 +969,9 @@ impl ClientKeyStore for PgAdminClientKeyStore {
                 command.enabled,
                 mutation_audit(
                     context,
-                    if command.enabled { "enable" } else { "disable" },
-                    "client_api_key",
+                    MutationAuditOperation::ClientApiKeyEnabled {
+                        enabled: command.enabled,
+                    },
                     id.as_str(),
                     vec!["enabled".to_owned()],
                 ),
@@ -992,8 +991,7 @@ impl ClientKeyStore for PgAdminClientKeyStore {
                 command.id.as_str(),
                 mutation_audit(
                     context,
-                    "delete",
-                    "client_api_key",
+                    MutationAuditOperation::ClientApiKeyDelete,
                     command.id.as_str(),
                     Vec::new(),
                 ),

@@ -315,6 +315,10 @@ async fn observation_callbacks_use_typed_state_crud_and_reject_undeclared_namesp
         RequestObservation::new(
             ModelRequestId::new("req_state").unwrap(),
             ConfigRevision::new(1).unwrap(),
+            gateway_core::engine::observation::RequestObservationScope::new(
+                gateway_core::policy::ClientApiKeyId::new("client-key-state").unwrap(),
+                vec![],
+            ),
             OperationKind::Generate,
             RequestObservationOutcome::Succeeded,
             UpstreamSendState::Sent,
