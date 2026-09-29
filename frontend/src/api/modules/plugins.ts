@@ -216,6 +216,7 @@ export interface PluginInstance {
   artifactSha256: string
   enabled: boolean
   configurationRequired: boolean
+  compatibilityWarning: string | null
   configuration: Record<string, unknown>
   secretFields: string[]
   bindings: PluginCapabilityBinding[]

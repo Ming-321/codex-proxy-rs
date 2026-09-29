@@ -6,7 +6,7 @@ use secrecy::ExposeSecret;
 use super::PluginsService;
 use crate::{
     model::{
-        AdminError, MutationContext, Revision,
+        AdminError, AdminErrorKind, MutationContext, Revision,
         plugins::instances::{
             ConfigurePluginInstance, PluginInstance, PluginInstanceMutation,
             PluginInstanceReplacement, PluginInstanceRuntime, PluginInstanceRuntimeStatus,
@@ -18,6 +18,36 @@ use crate::{
 };
 
 impl PluginsService {
+    /// 只校验固定包体，不启动插件；停用的旧版本仍需向管理端说明不能启用的原因。
+    async fn compatibility_warning(&self, digest: &str) -> Result<Option<String>, AdminError> {
+        // 运行宿主和摘要固定，缓存纯静态结论，避免管理页轮询反复解包。
+        // 只缓存有限数量的确定结果，暂时性错误仍可重试。
+        let mut cache = self.compatibility.lock().await;
+        if let Some(warning) = cache.get(digest) {
+            return Ok(warning.clone());
+        }
+        let artifact = self
+            .store
+            .load_artifact(digest)
+            .await
+            .map_err(|error| map_store_error(error, "plugin"))?;
+        let warning = match self
+            .inspector
+            .inspect(artifact.archive, Some(digest.to_owned()))
+            .await
+        {
+            Ok(_) => None,
+            Err(error) if error.kind() == AdminErrorKind::Invalid => {
+                Some(error.message().to_owned())
+            }
+            Err(error) => return Err(error),
+        };
+        if cache.len() < 128 {
+            cache.insert(digest.to_owned(), warning.clone());
+        }
+        Ok(warning)
+    }
+
     pub async fn instances(&self) -> Result<Vec<PluginInstanceView>, AdminError> {
         let snapshot = self
             .store
@@ -52,10 +82,14 @@ impl PluginsService {
             let metadata = artifacts
                 .get(&instance.artifact_sha256)
                 .ok_or_else(|| AdminError::not_found("插件制品不存在"))?;
-            let configuration_required = !self
-                .preparation
-                .configuration_ready(instance.clone(), metadata)
+            let compatibility_warning = self
+                .compatibility_warning(&instance.artifact_sha256)
                 .await?;
+            let configuration_required = compatibility_warning.is_none()
+                && !self
+                    .preparation
+                    .configuration_ready(instance.clone(), metadata)
+                    .await?;
             let runtime = diagnostics.remove(&instance.id).unwrap_or_else(|| {
                 let running = instance.enabled
                     && published_ready
@@ -76,6 +110,7 @@ impl PluginsService {
             });
             views.push(PluginInstanceView {
                 configuration_required,
+                compatibility_warning,
                 running: runtime.status == PluginInstanceRuntimeStatus::Running,
                 published_revision,
                 runtime,
@@ -161,6 +196,13 @@ impl PluginsService {
             .ok_or_else(|| AdminError::not_found("插件制品不存在"))?;
         if artifact.accepted_at.is_none() {
             return Err(AdminError::invalid("请先安装并接受该版本声明的权限"));
+        }
+        if input.enabled
+            && let Some(warning) = self.compatibility_warning(&input.artifact_sha256).await?
+        {
+            return Err(AdminError::invalid(format!(
+                "{warning}，无法启动，请安装兼容版本"
+            )));
         }
         let same_plugin = |digest: &str| {
             artifacts.iter().any(|item| {

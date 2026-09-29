@@ -77,8 +77,25 @@ pub trait SystemUpdatePreflight: Send + Sync {
         candidate: SystemUpdateCandidate,
     ) -> Result<Revision, SystemOperationError>;
 
+    /// 回滚保持严格预检，不能把旧目标当成具有当前重启确认能力的版本。
+    async fn validate_rollback(
+        &self,
+        candidate: SystemUpdateCandidate,
+    ) -> Result<Revision, SystemOperationError> {
+        self.validate(candidate).await
+    }
+
     /// 在文件交换临界点复核全局配置 CAS，不能用较早快照掩盖实例变更。
     async fn confirm_revision(&self, expected: Revision) -> Result<(), SystemOperationError>;
+}
+
+/// 重启临界区内复查候选，确认后停用不兼容插件，再允许进程退出。
+#[async_trait]
+pub trait SystemRestartPreflight: Send + Sync {
+    async fn prepare(
+        &self,
+        candidate: Option<SystemUpdateCandidate>,
+    ) -> Result<(), SystemOperationError>;
 }
 
 /// 版本、自更新、回滚和重启能力；实现唯一归 gateway-host。
@@ -108,5 +125,15 @@ pub trait SystemOperations: Send + Sync {
         preflight: Arc<dyn SystemUpdatePreflight>,
     ) -> Result<SystemOperationAccepted, SystemOperationError>;
 
-    async fn restart(&self) -> Result<SystemOperationAccepted, SystemOperationError>;
+    /// 返回下一次启动实际使用的发行；源码运行没有封存发行清单。
+    async fn restart_candidate(
+        &self,
+    ) -> Result<Option<SystemUpdateCandidate>, SystemOperationError> {
+        Ok(None)
+    }
+
+    async fn restart(
+        &self,
+        preflight: Arc<dyn SystemRestartPreflight>,
+    ) -> Result<SystemOperationAccepted, SystemOperationError>;
 }

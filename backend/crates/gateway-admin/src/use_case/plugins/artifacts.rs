@@ -1,4 +1,7 @@
-use std::{collections::BTreeSet, sync::Arc};
+use std::{
+    collections::{BTreeMap, BTreeSet},
+    sync::Arc,
+};
 
 use gateway_core::runtime::SnapshotControl;
 use sha2::{Digest as _, Sha256};
@@ -49,6 +52,7 @@ pub struct PluginsService {
     pub(super) preparation: Arc<dyn PluginPreparation>,
     pub(super) published: gateway_core::runtime::RuntimeSnapshotHandle,
     pub(super) state: PluginStateService,
+    pub(super) compatibility: tokio::sync::Mutex<BTreeMap<String, Option<String>>>,
 }
 
 impl PluginsService {
@@ -70,6 +74,7 @@ impl PluginsService {
             preparation,
             published,
             state: PluginStateService::new(state),
+            compatibility: tokio::sync::Mutex::new(BTreeMap::new()),
         }
     }
 

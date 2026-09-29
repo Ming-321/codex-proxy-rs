@@ -28,6 +28,8 @@ use gateway_admin::{
 struct Fixture {
     revisions: std::sync::Mutex<Vec<Revision>>,
     requirements: PluginCompatibilityRequirements,
+    instances: Vec<PluginInstance>,
+    disabled: std::sync::Mutex<Vec<String>>,
 }
 
 impl Fixture {
@@ -40,6 +42,8 @@ impl Fixture {
                     .collect(),
             ),
             requirements,
+            instances: vec![instance(true)],
+            disabled: std::sync::Mutex::new(Vec::new()),
         })
     }
 
@@ -95,18 +99,17 @@ impl PluginStore for Fixture {
     async fn load_instances(&self) -> AdminStoreResult<PluginInstanceSnapshot> {
         Ok(PluginInstanceSnapshot {
             config_revision: self.next_revision(),
-            instances: vec![PluginInstance {
-                id: "enabled-fixture".into(),
-                name: "Enabled fixture".into(),
-                artifact_sha256: "a".repeat(64),
-                enabled: true,
-                trusted_process: true,
-                configuration: serde_json::json!({}),
-                secrets: BTreeMap::new(),
-
-                bindings: Vec::new(),
-                revision: Revision::new(1).expect("revision"),
-            }],
+            instances: self
+                .instances
+                .iter()
+                .cloned()
+                .map(|mut instance| {
+                    if self.disabled.lock().unwrap().contains(&instance.id) {
+                        instance.enabled = false;
+                    }
+                    instance
+                })
+                .collect(),
         })
     }
 
@@ -135,6 +138,24 @@ impl PluginStore for Fixture {
         })
     }
 
+    async fn disable_instances(
+        &self,
+        ids: &[String],
+        expected: Revision,
+        _: &MutationContext,
+    ) -> AdminStoreResult<Revision> {
+        let mut revisions = self.revisions.lock().unwrap();
+        if revisions[0] != expected {
+            return Err(gateway_admin::ports::store::AdminStoreError::new(
+                gateway_admin::ports::store::AdminStoreErrorKind::StaleRevision,
+                "plugin",
+                "stale",
+            ));
+        }
+        revisions[0] = Revision::new(expected.get() + 1).unwrap();
+        self.disabled.lock().unwrap().extend_from_slice(ids);
+        Ok(revisions[0])
+    }
     async fn save_instance(
         &self,
         _: PluginInstance,
@@ -273,13 +294,31 @@ impl SystemOperations for PreflightingSystem {
 
     async fn rollback(
         &self,
-        _: Arc<dyn SystemUpdatePreflight>,
+        preflight: Arc<dyn SystemUpdatePreflight>,
     ) -> Result<SystemOperationAccepted, SystemOperationError> {
-        unreachable!()
+        let revision = preflight.validate_rollback(self.candidate.clone()).await?;
+        preflight.confirm_revision(revision).await?;
+        Ok(SystemOperationAccepted::Rollback {
+            operation_id: "fixture".into(),
+            message: "accepted".into(),
+            need_restart: true,
+        })
     }
 
-    async fn restart(&self) -> Result<SystemOperationAccepted, SystemOperationError> {
-        unreachable!()
+    async fn restart_candidate(
+        &self,
+    ) -> Result<Option<SystemUpdateCandidate>, SystemOperationError> {
+        Ok(Some(self.candidate.clone()))
+    }
+    async fn restart(
+        &self,
+        preflight: Arc<dyn gateway_admin::ports::system::SystemRestartPreflight>,
+    ) -> Result<SystemOperationAccepted, SystemOperationError> {
+        preflight.prepare(Some(self.candidate.clone())).await?;
+        Ok(SystemOperationAccepted::Restart {
+            operation_id: "fixture".into(),
+            message: "accepted".into(),
+        })
     }
 }
 
@@ -302,7 +341,7 @@ async fn system_update_accepts_compatible_enabled_plugins_at_the_same_revision()
 }
 
 #[tokio::test]
-async fn system_update_rejects_missing_target_capability_and_revision_changes() {
+async fn rollback_rejects_missing_target_capability() {
     let incompatible = Fixture::new(requirements("^1.0", "executor"), &[7]);
     let services = super::AdminHarness::new()
         .plugins(incompatible.clone(), incompatible)
@@ -311,14 +350,11 @@ async fn system_update_rejects_missing_target_capability_and_revision_changes() 
         }))
         .build()
         .await;
-    assert!(
-        services
-            .system()
-            .perform_update(Some("1.2.0".into()), None)
-            .await
-            .is_err()
-    );
+    assert!(services.system().rollback().await.is_err());
+}
 
+#[tokio::test]
+async fn system_update_rejects_revision_changes() {
     let stale = Fixture::new(requirements("^1.0", "executor"), &[7, 8]);
     let services = super::AdminHarness::new()
         .plugins(stale.clone(), stale)
@@ -334,6 +370,97 @@ async fn system_update_rejects_missing_target_capability_and_revision_changes() 
             .await
             .is_err()
     );
+}
+
+#[tokio::test]
+async fn system_update_accepts_new_plugin_contracts_for_empty_disabled_and_enabled_plugins() {
+    for instances in [vec![], vec![instance(false)], vec![instance(true)]] {
+        let mut fixture = Fixture::new(requirements("^1.0", "executor"), &[7]);
+        Arc::get_mut(&mut fixture)
+            .expect("exclusive fixture")
+            .instances = instances;
+        let mut candidate = candidate("models");
+        let mut manifest: serde_json::Value =
+            serde_json::from_slice(&candidate.release_manifest).unwrap();
+        manifest["plugin_host"] =
+            serde_json::json!({"schema_version": 99, "future_contract": true});
+        candidate.release_manifest = serde_json::to_vec(&manifest).unwrap().into();
+        let services = super::AdminHarness::new()
+            .plugins(fixture.clone(), fixture)
+            .system(Arc::new(PreflightingSystem { candidate }))
+            .build()
+            .await;
+        services
+            .system()
+            .perform_update(Some("1.2.0".into()), None)
+            .await
+            .expect("plugin confirmation is deferred until restart");
+    }
+}
+
+#[tokio::test]
+async fn system_update_keeps_release_identity_validation_without_plugins() {
+    for (field, value) in [
+        ("gateway_version", serde_json::json!("1.3.0")),
+        ("gateway_git_sha", serde_json::json!("invalid")),
+        ("sealed", serde_json::json!(false)),
+        ("schema_version", serde_json::json!(99)),
+    ] {
+        let mut fixture = Fixture::new(requirements("^1.0", "executor"), &[7]);
+        Arc::get_mut(&mut fixture).unwrap().instances.clear();
+        let mut candidate = candidate("executor");
+        let mut manifest: serde_json::Value =
+            serde_json::from_slice(&candidate.release_manifest).unwrap();
+        manifest[field] = value;
+        candidate.release_manifest = serde_json::to_vec(&manifest).unwrap().into();
+        let services = super::AdminHarness::new()
+            .plugins(fixture.clone(), fixture)
+            .system(Arc::new(PreflightingSystem { candidate }))
+            .build()
+            .await;
+        assert!(
+            services
+                .system()
+                .perform_update(Some("1.2.0".into()), None)
+                .await
+                .is_err(),
+            "{field}"
+        );
+    }
+}
+
+#[tokio::test]
+async fn system_update_still_rechecks_revision_without_plugins() {
+    let mut fixture = Fixture::new(requirements("^1.0", "executor"), &[7, 8]);
+    Arc::get_mut(&mut fixture).unwrap().instances.clear();
+    let services = super::AdminHarness::new()
+        .plugins(fixture.clone(), fixture)
+        .system(Arc::new(PreflightingSystem {
+            candidate: candidate("executor"),
+        }))
+        .build()
+        .await;
+    assert!(
+        services
+            .system()
+            .perform_update(Some("1.2.0".into()), None)
+            .await
+            .is_err()
+    );
+}
+
+fn instance(enabled: bool) -> PluginInstance {
+    PluginInstance {
+        id: "enabled-fixture".into(),
+        name: "Enabled fixture".into(),
+        artifact_sha256: "a".repeat(64),
+        enabled,
+        trusted_process: true,
+        configuration: serde_json::json!({}),
+        secrets: BTreeMap::new(),
+        bindings: Vec::new(),
+        revision: Revision::new(1).expect("revision"),
+    }
 }
 
 fn requirements(host_version: &str, capability: &str) -> PluginCompatibilityRequirements {
@@ -364,4 +491,107 @@ fn candidate(capability: &str) -> SystemUpdateCandidate {
         target_version: "1.2.0".into(),
         release_manifest: manifest.into(),
     }
+}
+
+fn context() -> MutationContext {
+    MutationContext {
+        actor: gateway_admin::model::MutationActor::AdminApiKey,
+        request_id: "restart-test".into(),
+    }
+}
+
+#[tokio::test]
+async fn incompatible_restart_requires_exact_confirmation_before_disabling() {
+    let fixture = Fixture::new(requirements("^1.0", "executor"), &[7]);
+    let services = super::AdminHarness::new()
+        .plugins(fixture.clone(), fixture.clone())
+        .system(Arc::new(PreflightingSystem {
+            candidate: candidate("models"),
+        }))
+        .build()
+        .await;
+    let plan = services.system().restart_plan().await.unwrap();
+    assert_eq!(plan.incompatible_plugins.len(), 1);
+    assert_eq!(plan.incompatible_plugins[0].name, "Enabled fixture");
+    assert!(
+        fixture.disabled.lock().unwrap().is_empty(),
+        "检查及取消不能停用插件"
+    );
+    assert!(services.system().restart(None, &context()).await.is_err());
+    for altered in 0..3 {
+        let mut changed = plan.clone();
+        match altered {
+            0 => changed.config_revision += 1,
+            1 => changed.release_manifest_sha256 = Some("b".repeat(64)),
+            _ => changed.incompatible_plugins.clear(),
+        }
+        assert!(
+            services
+                .system()
+                .restart(Some(changed), &context())
+                .await
+                .is_err()
+        );
+        assert!(fixture.disabled.lock().unwrap().is_empty());
+    }
+    services
+        .system()
+        .restart(Some(plan), &context())
+        .await
+        .unwrap();
+    assert_eq!(*fixture.disabled.lock().unwrap(), ["enabled-fixture"]);
+    assert!(
+        services
+            .system()
+            .restart_plan()
+            .await
+            .unwrap()
+            .incompatible_plugins
+            .is_empty()
+    );
+}
+
+#[tokio::test]
+async fn compatible_restart_does_not_change_plugin_configuration() {
+    let fixture = Fixture::new(requirements("^1.0", "executor"), &[7]);
+    let services = super::AdminHarness::new()
+        .plugins(fixture.clone(), fixture.clone())
+        .system(Arc::new(PreflightingSystem {
+            candidate: candidate("executor"),
+        }))
+        .build()
+        .await;
+    assert!(
+        services
+            .system()
+            .restart_plan()
+            .await
+            .unwrap()
+            .incompatible_plugins
+            .is_empty()
+    );
+    services.system().restart(None, &context()).await.unwrap();
+    assert!(fixture.disabled.lock().unwrap().is_empty());
+    assert_eq!(fixture.next_revision().get(), 7);
+}
+
+#[tokio::test]
+async fn changed_configuration_after_restart_check_requires_a_new_confirmation() {
+    let fixture = Fixture::new(requirements("^1.0", "executor"), &[7, 8]);
+    let services = super::AdminHarness::new()
+        .plugins(fixture.clone(), fixture.clone())
+        .system(Arc::new(PreflightingSystem {
+            candidate: candidate("models"),
+        }))
+        .build()
+        .await;
+    let plan = services.system().restart_plan().await.unwrap();
+    assert!(
+        services
+            .system()
+            .restart(Some(plan), &context())
+            .await
+            .is_err()
+    );
+    assert!(fixture.disabled.lock().unwrap().is_empty());
 }

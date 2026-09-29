@@ -51,6 +51,9 @@ impl PluginPackageInspector for PackageInspector {
             let package = ValidatedPackage::read(archive, expected_sha256.as_deref(), limits)
                 .map_err(inspection_error)?;
             let manifest = package.manifest();
+            if !super::compatibility::supports(manifest)? {
+                return Err(AdminError::invalid("插件能力与当前宿主不兼容"));
+            }
             let target = manifest
                 .package_for(&host_version, std::env::consts::OS, std::env::consts::ARCH)
                 .map_err(|_| AdminError::invalid("插件不支持当前网关版本或平台"))?;

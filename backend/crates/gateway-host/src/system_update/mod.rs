@@ -23,8 +23,8 @@ use gateway_admin::model::system::{
     SystemUpdateStatus, SystemVersion,
 };
 use gateway_admin::ports::system::{
-    SystemOperationError, SystemOperationErrorKind, SystemOperations, SystemUpdateCandidate,
-    SystemUpdateEventStream, SystemUpdatePreflight,
+    SystemOperationError, SystemOperationErrorKind, SystemOperations, SystemRestartPreflight,
+    SystemUpdateCandidate, SystemUpdateEventStream, SystemUpdatePreflight,
 };
 use gateway_core::lifecycle::CancellationToken;
 use serde::Deserialize;
@@ -452,14 +452,14 @@ impl ProcessSystemOperations {
         self.events.info(
             Some(operation_id),
             Some("preflight"),
-            "正在检查启用插件与目标版本的兼容性",
+            "正在校验目标发行信息",
         );
         let plugin_revision = preflight.validate(candidate).await?;
         preflight.confirm_revision(plugin_revision).await?;
         self.events.success(
             Some(operation_id),
             Some("preflight"),
-            "启用插件兼容性检查通过",
+            "目标发行信息校验通过，插件兼容性将在重启前检查",
         );
         self.events
             .info(Some(operation_id), Some("replace"), "正在替换应用文件");
@@ -497,6 +497,23 @@ impl ProcessSystemOperations {
             return Err(conflict("当前发行版本不支持此更新通道"));
         }
         Ok(channel)
+    }
+
+    fn installed_restart_candidate(&self) -> Result<Option<SystemUpdateCandidate>, OperationError> {
+        if self.config.build_type == "source" {
+            return Ok(None);
+        }
+        let release_manifest = read_release_manifest(&self.config.official_plugins_dir()?)?;
+        #[derive(Deserialize)]
+        struct ReleaseIdentity {
+            gateway_version: String,
+        }
+        let identity: ReleaseIdentity = serde_json::from_slice(&release_manifest)
+            .map_err(|_| invalid("已安装发行清单缺少目标版本"))?;
+        Ok(Some(SystemUpdateCandidate {
+            target_version: identity.gateway_version,
+            release_manifest,
+        }))
     }
 
     fn reconcile_installation(&self) -> Result<SystemUpdateStatus, OperationError> {
@@ -610,7 +627,7 @@ impl SystemOperations for ProcessSystemOperations {
         let release_manifest =
             read_release_manifest(&rollback_official_plugins_dir(&self.config)?)?;
         let plugin_revision = preflight
-            .validate(SystemUpdateCandidate {
+            .validate_rollback(SystemUpdateCandidate {
                 target_version,
                 release_manifest: Arc::clone(&release_manifest),
             })
@@ -671,7 +688,18 @@ impl SystemOperations for ProcessSystemOperations {
         })
     }
 
-    async fn restart(&self) -> Result<SystemOperationAccepted, OperationError> {
+    async fn restart_candidate(&self) -> Result<Option<SystemUpdateCandidate>, OperationError> {
+        let _operation = self
+            .operation_lock
+            .try_lock()
+            .map_err(|_| conflict("system operation is already running"))?;
+        self.installed_restart_candidate()
+    }
+
+    async fn restart(
+        &self,
+        preflight: Arc<dyn SystemRestartPreflight>,
+    ) -> Result<SystemOperationAccepted, OperationError> {
         // 与 update/rollback 互斥：更新替换文件期间触发自重启会让新进程
         // 载入半成品产物。
         let _operation = self
@@ -680,6 +708,18 @@ impl SystemOperations for ProcessSystemOperations {
             .map_err(|_| conflict("system operation is already running"))?;
         if !self.config.self_restart_enabled {
             return Err(conflict("self restart is disabled"));
+        }
+        let _file_lock = OperationFileLock::acquire(&self.config.update_lock_file)?;
+        let candidate = self.installed_restart_candidate()?;
+        let files = candidate
+            .as_ref()
+            .map(|_| ReleaseFiles::installed(&self.config))
+            .transpose()?;
+        preflight.prepare(candidate).await?;
+        if let Some(files) = files
+            && files != ReleaseFiles::installed(&self.config)?
+        {
+            return Err(conflict("重启检查期间安装文件已变化，请重新确认"));
         }
         let message = if self.config.deployment_mode == "docker" {
             "已安排进程内重启"

@@ -786,3 +786,86 @@ async fn version_settings_survive_upgrade_and_disabled_edits_and_share_the_trans
     assert!(store.configuration_versions(&id).await.unwrap().is_empty());
     database.close().await;
 }
+
+#[tokio::test]
+async fn confirmed_disable_is_atomic_and_preserves_plugin_data() {
+    let Some(database) = TestDatabase::create("confirmed_disable").await else {
+        return;
+    };
+    initialize_revision(&database).await;
+    let store = PgPluginStore::new(database.pool.clone());
+    let installed = store
+        .install_artifact(
+            artifact('a', &["linux-x86_64"]),
+            PluginSource::Upload,
+            &context(),
+        )
+        .await
+        .unwrap();
+    let accepted = store
+        .accept_artifact(&installed.artifact.metadata.sha256, &context())
+        .await
+        .unwrap();
+    let mut expected = accepted.config_revision;
+    let mut ids = Vec::new();
+    for name in ["First", "Second", "Compatible"] {
+        let mut candidate = instance(installed.artifact.metadata.sha256.clone());
+        candidate.name = name.into();
+        candidate.enabled = true;
+        let saved = store
+            .save_instance(candidate, expected, &context())
+            .await
+            .unwrap();
+        expected = saved.config_revision;
+        ids.push(saved.instance.id);
+    }
+    let original = store.load_instances().await.unwrap();
+    for (targets, revision) in [
+        (
+            vec![ids[0].clone(), uuid::Uuid::now_v7().to_string()],
+            expected,
+        ),
+        (
+            ids[..2].to_vec(),
+            Revision::new(expected.get() - 1).unwrap(),
+        ),
+    ] {
+        assert!(
+            store
+                .disable_instances(&targets, revision, &context())
+                .await
+                .is_err()
+        );
+        let unchanged = store.load_instances().await.unwrap();
+        assert_eq!(unchanged.config_revision, expected);
+        assert!(unchanged.instances.iter().all(|item| item.enabled));
+    }
+    let committed = store
+        .disable_instances(&ids[..2], expected, &context())
+        .await
+        .unwrap();
+    assert_eq!(committed.get(), expected.get() + 1);
+    let current = store.load_instances().await.unwrap();
+    for instance in current.instances {
+        let before = original
+            .instances
+            .iter()
+            .find(|item| item.id == instance.id)
+            .unwrap();
+        assert_eq!(instance.enabled, instance.id == ids[2]);
+        assert_eq!(instance.configuration, before.configuration);
+        assert_eq!(instance.bindings, before.bindings);
+        assert_eq!(
+            instance.secrets["token"].expose_secret(),
+            before.secrets["token"].expose_secret()
+        );
+        assert!(
+            store
+                .load_version_configuration(&instance.id, &instance.artifact_sha256)
+                .await
+                .unwrap()
+                .is_some()
+        );
+    }
+    database.close().await;
+}

@@ -1652,7 +1652,8 @@ Provider metadata 分别保留 `requestedServiceTier` 与 `upstreamServiceTier` 
 | `POST` | `/api/admin/system/update` | `{ targetVersion, channel? }` | 受理后台在线更新，返回 `202` |
 | `GET` | `/api/admin/system/update/status` | 无 | 查询当前更新或回滚状态 |
 | `POST` | `/api/admin/system/rollback` | 无 | 回滚到保留的上一版本 |
-| `POST` | `/api/admin/system/restart` | 无 | 请求进程重启 |
+| `GET` | `/api/admin/system/restart/check` | 无 | 只读检查重启目标与启用插件 |
+| `POST` | `/api/admin/system/restart` | `{ confirmation? }` | 复核确认、停用不兼容插件并重启 |
 
 在线更新遵循[版本命名与升级规则](../deploy/README.md#版本命名与升级规则)。版本接口的
 `updateChannel` 由当前版本推导，取值为 `stable`、`alpha`、`beta`、`rc`、`exp`，无法识别时为 `unknown`。
@@ -1675,10 +1676,15 @@ Provider metadata 分别保留 `requestedServiceTier` 与 `upstreamServiceTier` 
 执行，结果通过 `/update/status` 的 `operation` 查询：`status` 为 `idle`、`running`、`succeeded` 或 `failed`，
 终态包含 `finishedAt`，失败原因在 `error` 中。SSE 的 `operationId` 用于关联进度；终态事件发出前状态已落盘。
 连接中断不取消已受理任务；响应丢失时先查询状态，不自动重复提交。打开更新页面时也会恢复最近一次任务。
-下载并解包后，Admin 会以目标发行清单声明的宿主插件合同检查每个启用实例的精确制品；回滚则对备份发行清单
-执行同一检查。两条路径都会在文件交换前后复核同一全局插件配置版本。任一实例不兼容、制品缺失、请求取消或
-配置并发变化都会失败；已交换的二进制、Web 资源和官方插件目录会成组恢复。预检不会自动停用实例、切换插件
-版本或接受其他制品
+下载并解包后校验发行身份，插件不兼容不阻止安装；回滚仍要求启用插件与备份发行兼容。
+两条路径在文件交换前后复核全局配置版本，文件替换失败或取消时成组恢复二进制、Web 资源和官方插件目录
+
+详情响应的 `restartConfirmationSupported=true` 表示运行进程支持重启前确认。
+`restart/check` 返回 `targetVersion`、`releaseManifestSha256`、`configRevision` 和 `incompatiblePlugins`，
+每项包含 `instanceId`、`name`、`reason`，检查不修改插件状态。源码运行的目标版本与发行摘要为空，检查当前宿主兼容性。
+存在不兼容插件时，客户端展示列表并取得确认后，将完整检查结果作为 `confirmation` 提交重启请求。
+服务端在重启锁内重新检查，目标或配置变化返回 `40901`，须重新检查并确认；确认匹配才在单个事务中停用对应插件并发布配置。
+没有不兼容插件时可省略确认，不切换插件版本或接受其他制品。停用保留设置、密钥、版本配置和私有数据
 
 状态响应的 `currentVersion` 表示已安装文件的版本，运行中的版本仍以 `/version` 为准。
 `needRestart=true` 表示已验证的安装文件尚未在当前进程生效，此时应调用重启接口，不能重复发起更新或切换通道。
@@ -1868,7 +1874,8 @@ GitHub 的 `location` 使用 `kind: "github"`、`repository: "owner/repo"`、`ta
 待停用配置必须仍启用且 revision 与确认时一致，否则返回 409，重新读取并确认后再提交
 
 列表项包含 `id`、`name`、`artifactSha256`、`enabled`、`configurationRequired`、`configuration`、
-`secretFields`、`bindings`、`revision`、`running`、`publishedRevision` 和 `runtime`。`configurationRequired`
+`secretFields`、`bindings`、`revision`、`running`、`publishedRevision`、`runtime` 和 `compatibilityWarning`。
+`compatibilityWarning` 为非空字符串时表示该固定制品无法在当前宿主启动，停用实例也返回原因，启用请求会拒绝。`configurationRequired`
 由当前制品 schema 与已保存的普通/敏感配置实时派生，不写入数据库；它只表示仍缺少必填值。停用实例也不能保存
 类型错误、非法 schema 或把敏感字段混入普通配置
 

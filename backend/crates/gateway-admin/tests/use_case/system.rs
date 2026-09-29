@@ -106,7 +106,10 @@ impl SystemOperations for RecordingSystemOperations {
         })
     }
 
-    async fn restart(&self) -> Result<SystemOperationAccepted, SystemOperationError> {
+    async fn restart(
+        &self,
+        _preflight: std::sync::Arc<dyn gateway_admin::ports::system::SystemRestartPreflight>,
+    ) -> Result<SystemOperationAccepted, SystemOperationError> {
         Ok(SystemOperationAccepted::Restart {
             operation_id: "operation-restart".to_owned(),
             message: "accepted".to_owned(),

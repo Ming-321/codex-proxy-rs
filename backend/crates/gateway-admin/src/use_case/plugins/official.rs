@@ -34,7 +34,7 @@ struct SealedReleaseManifest {
     sealed: bool,
     gateway_version: String,
     gateway_git_sha: String,
-    plugin_host: PluginHostCompatibility,
+    plugin_host: serde_json::Value,
     plugins: Vec<OfficialPlugin>,
 }
 
@@ -150,6 +150,7 @@ fn validate_manifest(
     identity: &OfficialPluginReleaseIdentity,
 ) -> Result<ValidatedManifest, AdminError> {
     let manifest = parse_manifest(bytes)?;
+    parse_host_compatibility(manifest.plugin_host)?;
     if manifest.gateway_version != identity.gateway_version
         || manifest.gateway_git_sha != identity.gateway_git_sha
     {
@@ -168,8 +169,39 @@ pub(crate) fn update_compatibility(
     target_version: &str,
 ) -> Result<PluginHostCompatibility, AdminError> {
     let manifest = parse_manifest(bytes)?;
-    (manifest.gateway_version == target_version)
-        .then_some(manifest.plugin_host)
+    if manifest.gateway_version != target_version {
+        return Err(invalid_manifest());
+    }
+    parse_host_compatibility(manifest.plugin_host)
+}
+
+pub(crate) fn validate_update_release(
+    bytes: &[u8],
+    target_version: &str,
+) -> Result<(), AdminError> {
+    let manifest = parse_manifest(bytes)?;
+    if manifest.gateway_version != target_version {
+        return Err(invalid_manifest());
+    }
+    Ok(())
+}
+
+fn parse_host_compatibility(
+    mut value: serde_json::Value,
+) -> Result<PluginHostCompatibility, AdminError> {
+    // 旧更新器要求 v1 与空权限字段，运行兼容性仍由清单、协议和能力版本表达。
+    if value.get("schema_version") == Some(&serde_json::json!(1))
+        && value.get("permissions") == Some(&serde_json::json!([]))
+    {
+        let fields = value.as_object_mut().ok_or_else(invalid_manifest)?;
+        fields.remove("permissions");
+        fields.insert("schema_version".into(), serde_json::json!(2));
+    }
+    let compatibility: PluginHostCompatibility =
+        serde_json::from_value(value).map_err(|_| invalid_manifest())?;
+    compatibility
+        .is_valid()
+        .then_some(compatibility)
         .ok_or_else(invalid_manifest)
 }
 
@@ -183,7 +215,6 @@ fn parse_manifest(bytes: &[u8]) -> Result<SealedReleaseManifest, AdminError> {
         || !manifest.sealed
         || !valid_text(&manifest.gateway_version, MAXIMUM_VERSION_BYTES)
         || !valid_git_sha(&manifest.gateway_git_sha)
-        || !manifest.plugin_host.is_valid()
         || manifest.plugins.len() > MAXIMUM_PLUGINS
     {
         return Err(invalid_manifest());

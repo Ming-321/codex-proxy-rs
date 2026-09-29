@@ -111,6 +111,7 @@ pub struct PluginInstanceRuntime {
 pub struct PluginInstanceView {
     pub instance: PluginInstance,
     pub configuration_required: bool,
+    pub compatibility_warning: Option<String>,
     pub running: bool,
     pub published_revision: Option<u64>,
     pub runtime: PluginInstanceRuntime,

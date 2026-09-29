@@ -96,6 +96,14 @@ impl PluginStore for PgPluginStore {
     async fn configuration_versions(&self, id: &str) -> AdminStoreResult<Vec<String>> {
         super::instances::configuration_versions(&self.pool, id).await
     }
+    async fn disable_instances(
+        &self,
+        ids: &[String],
+        expected: Revision,
+        context: &MutationContext,
+    ) -> AdminStoreResult<Revision> {
+        super::instances::disable(&self.pool, ids, expected, context).await
+    }
     async fn save_instance(
         &self,
         instance: gateway_admin::model::plugins::instances::PluginInstance,

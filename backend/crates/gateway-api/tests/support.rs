@@ -133,7 +133,10 @@ impl SystemOperations for VersionSystem {
         unreachable!("client route must not roll back")
     }
 
-    async fn restart(&self) -> Result<SystemOperationAccepted, SystemOperationError> {
+    async fn restart(
+        &self,
+        _preflight: Arc<dyn gateway_admin::ports::system::SystemRestartPreflight>,
+    ) -> Result<SystemOperationAccepted, SystemOperationError> {
         unreachable!("client route must not restart")
     }
 }

@@ -84,6 +84,10 @@ export function usePluginInstances({ artifacts, refresh, notifyError, runAction,
   }
 
   async function requestInstanceEnable(instance: PluginInstance) {
+    if (instance.compatibilityWarning) {
+      toast.error(instance.compatibilityWarning)
+      return
+    }
     if ((instance.enabled && configurationStatus(instance) !== 'failed') || savingInstance.value || pendingEnable.value)
       return
     if (instance.configurationRequired) {

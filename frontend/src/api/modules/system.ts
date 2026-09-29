@@ -34,6 +34,7 @@ export interface SystemUpdateDetail {
   notes: string | null
   cached: boolean
   updateSupported: boolean
+  restartConfirmationSupported?: boolean
   unsupportedReason: string | null
   warning: string | null
 }
@@ -101,10 +102,22 @@ export function performSystemUpdate(data: SystemUpdateTarget, options: RequestOp
   })
 }
 
-export function restartSystem(options: RequestOptions = {}) {
+export interface SystemRestartPlan {
+  targetVersion: string | null
+  releaseManifestSha256: string | null
+  configRevision: number
+  incompatiblePlugins: { instanceId: string, name: string, reason: string }[]
+}
+
+export function checkSystemRestart() {
+  return request<SystemRestartPlan>({ url: '/api/admin/system/restart/check', method: 'GET' })
+}
+
+export function restartSystem(confirmation?: SystemRestartPlan, options: RequestOptions = {}) {
   return request<SystemRestartAccepted>({
     url: '/api/admin/system/restart',
     method: 'POST',
+    data: { confirmation },
     ...options,
   })
 }

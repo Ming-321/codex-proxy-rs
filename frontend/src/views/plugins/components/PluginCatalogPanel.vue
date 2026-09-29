@@ -5,6 +5,7 @@ import { CircleAlert, LayoutGrid, List, Puzzle, Search, Settings2 } from '@lucid
 import { computed, shallowRef, watch } from 'vue'
 import { currentPluginInstance, PLUGIN_STATUS_LABELS, pluginStatus, pluginStatusType } from '../utils/catalog'
 import PluginCapabilityTags from './PluginCapabilityTags.vue'
+import PluginCompatibilityWarning from './PluginCompatibilityWarning.vue'
 import PluginIcon from './PluginIcon.vue'
 
 const props = defineProps<{ plugins: InstalledPlugin[], loading: boolean }>()
@@ -82,7 +83,8 @@ const columns = defineTableColumns<(typeof rows.value)[number]>([
                 </div>
                 <span class="truncate text-cp-xs text-cp-text-secondary">{{ plugin.artifact.metadata.publisher }}</span>
               </div>
-              <BaseTag :type="pluginStatusType(pluginStatus(plugin))" size="sm">
+              <PluginCompatibilityWarning v-if="currentPluginInstance(plugin)?.compatibilityWarning" :instance="currentPluginInstance(plugin)!" />
+              <BaseTag v-else :type="pluginStatusType(pluginStatus(plugin))" size="sm">
                 <CircleAlert v-if="pluginStatus(plugin) === 'failed'" class="mr-1 size-3.5" />
                 {{ PLUGIN_STATUS_LABELS[pluginStatus(plugin)] }}
               </BaseTag>
@@ -117,7 +119,8 @@ const columns = defineTableColumns<(typeof rows.value)[number]>([
         </div>
       </template>
       <template #status="{ row }">
-        <BaseTag :type="pluginStatusType(pluginStatus(row))">
+        <PluginCompatibilityWarning v-if="currentPluginInstance(row)?.compatibilityWarning" :instance="currentPluginInstance(row)!" />
+        <BaseTag v-else :type="pluginStatusType(pluginStatus(row))">
           <CircleAlert v-if="pluginStatus(row) === 'failed'" class="mr-1 size-3.5" />
           {{ PLUGIN_STATUS_LABELS[pluginStatus(row)] }}
         </BaseTag>

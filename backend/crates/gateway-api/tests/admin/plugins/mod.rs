@@ -891,6 +891,12 @@ impl PluginStore for TestPluginPorts {
         Ok(vec![accepted_artifact()])
     }
     async fn load_artifact(&self, digest: &str) -> AdminStoreResult<InspectedPluginArtifact> {
+        if digest == "a".repeat(64) {
+            return Ok(InspectedPluginArtifact {
+                metadata: accepted_artifact().metadata,
+                archive: Arc::from([1_u8]),
+            });
+        }
         if matches!(digest.as_bytes().first(), Some(b'e' | b'f')) && digest.len() == 64 {
             return Ok(icon_artifact(digest));
         }
@@ -929,7 +935,10 @@ impl PluginPackageInspector for TestPluginPorts {
         _: Arc<[u8]>,
         _: Option<String>,
     ) -> Result<InspectedPluginArtifact, AdminError> {
-        Err(AdminError::invalid("unused plugin fixture"))
+        Ok(InspectedPluginArtifact {
+            metadata: accepted_artifact().metadata,
+            archive: Arc::from([1_u8]),
+        })
     }
 
     async fn icon(

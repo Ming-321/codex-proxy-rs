@@ -59,6 +59,28 @@ enum MigrationBehavior {
     ConcurrentChangeThenFail,
 }
 
+#[async_trait]
+impl gateway_admin::ports::plugins::PluginPackageInspector for LifecycleFixture {
+    async fn inspect(
+        &self,
+        archive: Arc<[u8]>,
+        digest: Option<String>,
+    ) -> Result<InspectedPluginArtifact, AdminError> {
+        let data = self.data.lock().unwrap();
+        if let Some(kind) = data.inspection_error {
+            return Err(AdminError::new(kind, "插件与当前宿主不兼容"));
+        }
+        let metadata = data
+            .artifacts
+            .iter()
+            .find(|item| Some(&item.metadata.sha256) == digest.as_ref())
+            .unwrap()
+            .metadata
+            .clone();
+        Ok(InspectedPluginArtifact { metadata, archive })
+    }
+}
+
 struct SavedInstance {
     artifact_sha256: String,
     enabled: bool,
@@ -69,6 +91,8 @@ struct FixtureData {
     snapshot: PluginInstanceSnapshot,
     artifacts: Vec<InstalledPluginArtifact>,
     artifact_reads: usize,
+    archive_reads: usize,
+    inspection_error: Option<AdminErrorKind>,
     change_during_artifact_read: bool,
     fail_preparation: bool,
     configuration_ready: bool,
@@ -112,6 +136,8 @@ impl LifecycleFixture {
                     artifact(NEW_ARTIFACT, "test.lifecycle", "1.0.0"),
                 ],
                 artifact_reads: 0,
+                archive_reads: 0,
+                inspection_error: None,
                 change_during_artifact_read: false,
                 fail_preparation: false,
                 configuration_ready: true,
@@ -512,8 +538,20 @@ impl PluginStore for LifecycleFixture {
         Ok(data.artifacts.clone())
     }
 
-    async fn load_artifact(&self, _: &str) -> AdminStoreResult<InspectedPluginArtifact> {
-        Err(admin_error(AdminStoreErrorKind::Unavailable))
+    async fn load_artifact(&self, digest: &str) -> AdminStoreResult<InspectedPluginArtifact> {
+        let mut data = self.data.lock().unwrap();
+        data.archive_reads += 1;
+        let metadata = data
+            .artifacts
+            .iter()
+            .find(|item| item.metadata.sha256 == digest)
+            .unwrap()
+            .metadata
+            .clone();
+        Ok(InspectedPluginArtifact {
+            metadata,
+            archive: Arc::from([1_u8]),
+        })
     }
 
     async fn install_artifact(
@@ -553,7 +591,7 @@ impl SnapshotControl for Published {
 fn service(fixture: Arc<LifecycleFixture>, published: Arc<Published>) -> PluginsService {
     PluginsService::new(
         fixture.clone(),
-        Arc::new(TestPluginPorts),
+        fixture.clone(),
         PluginDistributionPorts::new(Arc::new(TestPluginPorts), Arc::new(TestPluginPorts)),
         published,
         fixture.clone(),
@@ -637,7 +675,7 @@ fn input() -> ConfigurePluginInstance {
 }
 
 #[tokio::test]
-async fn instance_list_loads_metadata_once_for_shared_artifacts_without_loading_archives() {
+async fn instance_list_checks_shared_artifact_compatibility_once() {
     let fixture = LifecycleFixture::new(MigrationBehavior::Succeed);
     let mut second = fixture.snapshot().instances[0].clone();
     second.id = "00000000-0000-7000-8000-000000000002".into();
@@ -1451,4 +1489,49 @@ async fn version_plan_preserves_observer_event_scopes_and_disabled_subscriptions
         }
         assert!(fixture.data.lock().unwrap().saves.is_empty());
     }
+}
+
+#[tokio::test]
+async fn incompatible_disabled_plugin_has_warning_and_cannot_be_enabled() {
+    let fixture = LifecycleFixture::new(MigrationBehavior::Succeed);
+    {
+        let mut data = fixture.data.lock().unwrap();
+        data.snapshot.instances[0].enabled = false;
+        data.inspection_error = Some(AdminErrorKind::Invalid);
+    }
+    let service = service(fixture.clone(), Arc::new(Published::default()));
+    let view = service.instances().await.unwrap().remove(0);
+    assert!(view.compatibility_warning.is_some());
+    assert!(!view.instance.enabled);
+    let mut request = input();
+    request.artifact_sha256 = OLD_ARTIFACT.into();
+    let error = service
+        .configure_instance(Some(&view.instance.id), request, &context())
+        .await
+        .err()
+        .unwrap();
+    assert_eq!(error.kind(), AdminErrorKind::Invalid);
+    assert!(fixture.data.lock().unwrap().saves.is_empty());
+    assert_eq!(
+        fixture.data.lock().unwrap().archive_reads,
+        1,
+        "固定摘要的静态检查结论可复用"
+    );
+    service.instances().await.unwrap();
+    assert_eq!(fixture.data.lock().unwrap().archive_reads, 1);
+}
+
+#[tokio::test]
+async fn transient_compatibility_check_failure_can_be_retried() {
+    let fixture = LifecycleFixture::new(MigrationBehavior::Succeed);
+    fixture.data.lock().unwrap().inspection_error = Some(AdminErrorKind::Unavailable);
+    let service = service(fixture.clone(), Arc::new(Published::default()));
+    assert!(service.instances().await.is_err());
+    fixture.data.lock().unwrap().inspection_error = None;
+    assert!(
+        service.instances().await.unwrap()[0]
+            .compatibility_warning
+            .is_none()
+    );
+    assert_eq!(fixture.data.lock().unwrap().archive_reads, 2);
 }

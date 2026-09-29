@@ -219,6 +219,19 @@ pub trait PluginStore: Send + Sync {
     async fn configuration_versions(&self, _id: &str) -> AdminStoreResult<Vec<String>> {
         Ok(Vec::new())
     }
+    /// 在单个事务中停用确认快照中的实例，保留配置、密钥及私有状态。
+    async fn disable_instances(
+        &self,
+        _ids: &[String],
+        _expected_revision: Revision,
+        _context: &MutationContext,
+    ) -> AdminStoreResult<Revision> {
+        Err(super::store::AdminStoreError::new(
+            super::store::AdminStoreErrorKind::Unavailable,
+            "plugin",
+            "atomic plugin disable is unavailable",
+        ))
+    }
     async fn save_instance(
         &self,
         instance: PluginInstance,

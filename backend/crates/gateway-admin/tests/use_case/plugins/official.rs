@@ -289,6 +289,40 @@ async fn official_release_validates_all_packages_then_uses_builtin_install_path(
 }
 
 #[tokio::test]
+async fn official_release_accepts_legacy_update_envelope_with_current_plugin_contracts() {
+    let mut fixture = Fixture::new(&[]);
+    let mut manifest: serde_json::Value =
+        serde_json::from_slice(fixture.manifest.as_ref().unwrap()).unwrap();
+    manifest["plugin_host"]["schema_version"] = serde_json::json!(1);
+    manifest["plugin_host"]["permissions"] = serde_json::json!([]);
+    Arc::get_mut(&mut fixture).unwrap().manifest =
+        Some(serde_json::to_vec(&manifest).unwrap().into());
+    let imported = fixture
+        .service()
+        .import_official_release(fixture.as_ref(), &identity(), &system_context())
+        .await
+        .unwrap();
+    assert_eq!(imported.artifacts, 0);
+}
+
+#[tokio::test]
+async fn official_release_still_rejects_an_unknown_host_contract_at_startup() {
+    let mut fixture = Fixture::new(&[]);
+    let mut manifest: serde_json::Value =
+        serde_json::from_slice(fixture.manifest.as_ref().unwrap()).unwrap();
+    manifest["plugin_host"]["schema_version"] = serde_json::json!(99);
+    Arc::get_mut(&mut fixture).unwrap().manifest =
+        Some(serde_json::to_vec(&manifest).unwrap().into());
+    assert!(
+        fixture
+            .service()
+            .import_official_release(fixture.as_ref(), &identity(), &system_context())
+            .await
+            .is_err()
+    );
+}
+
+#[tokio::test]
 async fn official_release_never_persists_a_valid_prefix_when_later_validation_fails() {
     let mut fixture = Fixture::new(&[("test.official-1", 1), ("test.official-2", 2)]);
     Arc::get_mut(&mut fixture).unwrap().fail_archive = Some(vec![2]);

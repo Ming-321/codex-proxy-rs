@@ -70,7 +70,7 @@ impl Fixture {
         let unused = Arc::new(TestPluginPorts);
         PluginsService::new(
             self.clone(),
-            unused.clone(),
+            self.clone(),
             PluginDistributionPorts::new(unused.clone(), unused.clone()),
             self.clone(),
             self.clone(),
@@ -84,6 +84,20 @@ impl SnapshotControl for Fixture {
     fn publish_committed(&self, revision: ConfigRevision) -> BoxFuture<'_, ()> {
         self.data.lock().unwrap().publications.push(revision.get());
         Box::pin(async {})
+    }
+}
+
+#[async_trait]
+impl gateway_admin::ports::plugins::PluginPackageInspector for Fixture {
+    async fn inspect(
+        &self,
+        archive: Arc<[u8]>,
+        _: Option<String>,
+    ) -> Result<InspectedPluginArtifact, AdminError> {
+        Ok(InspectedPluginArtifact {
+            metadata: self.data.lock().unwrap().artifact.metadata.clone(),
+            archive,
+        })
     }
 }
 
@@ -260,7 +274,10 @@ impl PluginStore for Fixture {
     }
 
     async fn load_artifact(&self, _: &str) -> AdminStoreResult<InspectedPluginArtifact> {
-        Err(store_error(AdminStoreErrorKind::Unavailable))
+        Ok(InspectedPluginArtifact {
+            metadata: self.data.lock().unwrap().artifact.metadata.clone(),
+            archive: Arc::from([1_u8]),
+        })
     }
 
     async fn install_artifact(

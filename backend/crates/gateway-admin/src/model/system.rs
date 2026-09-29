@@ -162,3 +162,21 @@ impl SystemOperationAccepted {
         }
     }
 }
+
+/// 重启前的只读确认快照；目标发行与全局配置版本一起绑定用户确认。
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct SystemRestartPlan {
+    pub target_version: Option<String>,
+    pub release_manifest_sha256: Option<String>,
+    pub config_revision: u64,
+    pub incompatible_plugins: Vec<SystemIncompatiblePlugin>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct SystemIncompatiblePlugin {
+    pub instance_id: String,
+    pub name: String,
+    pub reason: String,
+}

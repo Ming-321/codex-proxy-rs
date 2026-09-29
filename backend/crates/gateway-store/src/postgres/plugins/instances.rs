@@ -399,3 +399,42 @@ pub(super) async fn delete(
 fn revision_from_i64(value: i64) -> AdminStoreResult<Revision> {
     Revision::new(u64::try_from(value).map_err(|_| unavailable())?).map_err(|_| unavailable())
 }
+
+/// 所有停用共享全局 CAS 和审计事务，不能留下只停用一部分插件的状态。
+pub(super) async fn disable(
+    pool: &PgPool,
+    ids: &[String],
+    expected: Revision,
+    context: &MutationContext,
+) -> AdminStoreResult<Revision> {
+    let mut tx = pool.begin().await.map_err(|_| unavailable())?;
+    check_revision(&mut tx, expected).await?;
+    if ids.is_empty() {
+        return Ok(expected);
+    }
+    let revision = bump_config_revision_in_transaction(&mut tx)
+        .await
+        .map_err(|e| admin_store_error("plugin", e))?;
+    let committed = admin_revision(revision)?;
+    for id in ids {
+        let uuid = uuid::Uuid::parse_str(id).map_err(|_| conflict())?;
+        let digest: String = sqlx::query_scalar("update plugin_instances set enabled=false,revision=$2 where id=$1 and enabled=true returning artifact_sha256")
+            .bind(uuid).bind(i64::try_from(revision.get()).map_err(|_| unavailable())?)
+            .fetch_optional(&mut *tx).await.map_err(|_| unavailable())?.ok_or_else(conflict)?;
+        super::state::rebind_existing_configuration(&mut tx, id, &digest, committed).await?;
+        append_admin_audit_event_in_transaction(
+            &mut tx,
+            mutation_audit(
+                context,
+                MutationAuditOperation::PluginInstanceConfigure,
+                id,
+                vec!["enabled".into()],
+            ),
+            revision,
+        )
+        .await
+        .map_err(|e| admin_store_error("plugin", e))?;
+    }
+    tx.commit().await.map_err(|_| unavailable())?;
+    Ok(committed)
+}
