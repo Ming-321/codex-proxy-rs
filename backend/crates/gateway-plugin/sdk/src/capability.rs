@@ -177,13 +177,15 @@ pub enum Permission {
     Groups,
     Keys,
     KeyBudgets,
+    KeyLimitBindings,
     QuotaObservations,
+    QuotaForecasts,
     UpstreamConnections,
 }
 
 impl Permission {
     /// 当前公开访问域，安装摘要与授权校验复用同一集合。
-    pub const ALL: [Self; 11] = [
+    pub const ALL: [Self; 13] = [
         Self::Network,
         Self::Models,
         Self::Accounts,
@@ -193,7 +195,9 @@ impl Permission {
         Self::Groups,
         Self::Keys,
         Self::KeyBudgets,
+        Self::KeyLimitBindings,
         Self::QuotaObservations,
+        Self::QuotaForecasts,
         Self::UpstreamConnections,
     ];
 
@@ -209,7 +213,9 @@ impl Permission {
             Self::Groups => "groups",
             Self::Keys => "keys",
             Self::KeyBudgets => "key_budgets",
+            Self::KeyLimitBindings => "key_limit_bindings",
             Self::QuotaObservations => "quota_observations",
+            Self::QuotaForecasts => "quota_forecasts",
             Self::UpstreamConnections => "upstream_connections",
         }
     }
@@ -227,7 +233,9 @@ impl Permission {
             Self::Groups => "专用账号分组",
             Self::Keys => "专用 API Key",
             Self::KeyBudgets => "API Key 预算",
+            Self::KeyLimitBindings => "共享限额关系",
             Self::QuotaObservations => "账号额度观测",
+            Self::QuotaForecasts => "账号额度预测",
             Self::UpstreamConnections => "账号上游连接",
         }
     }
@@ -254,8 +262,14 @@ impl Permission {
             Self::QuotaObservations => {
                 "查询所有现有及未来账号的额度观测，并通过宿主刷新上游观测；不读取凭据、不执行上游额度重置"
             }
+            Self::QuotaForecasts => {
+                "只读查询所有现有及未来账号的周额度预测及费用汇总估计；不读取凭据或明细、不刷新上游、不修改预算"
+            }
             Self::KeyBudgets => {
-                "查询所有现有及未来新增 Key 的预算、修改日／周金额上限和重置用量，包括管理员和其他插件创建的 Key；不读取密钥或修改其他配置"
+                "查询所有现有及未来新增 Key 的预算、修改日／周金额上限、重置用量和持续接管周窗口，包括管理员和其他插件创建的 Key；不读取密钥或修改其他配置"
+            }
+            Self::KeyLimitBindings => {
+                "读取和修改所有现有及未来 Client Key 的原生限额来源，影响预算、并发、RPM 和等待队列；不读取 Key 明文凭据，停用插件不解除共享关系"
             }
         }
     }

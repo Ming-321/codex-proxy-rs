@@ -431,7 +431,12 @@ async fn initialize_inner(
         snapshot.clone(),
     ));
     let plugin_accounts = plugin_accounts.unwrap_or_else(|| {
-        initialize_plugin_accounts(registry.clone(), store.accounts(), snapshot.clone())
+        initialize_plugin_accounts_with_runtime(
+            registry.clone(),
+            store.accounts(),
+            store.account_runtime(),
+            snapshot.clone(),
+        )
     });
     let import_tasks = use_case::import_tasks::DefaultImportTasksService::new(credentials.clone());
     let import_task = use_case::import_tasks::ImportTaskWorker(import_tasks.clone());
@@ -523,7 +528,22 @@ pub fn initialize_plugin_accounts(
     snapshot: Arc<dyn gateway_core::runtime::SnapshotControl>,
 ) -> Arc<dyn PluginAccountAccess> {
     Arc::new(use_case::plugin_accounts::DefaultPluginAccountAccess::new(
-        providers, accounts, snapshot,
+        providers, accounts, None, snapshot,
+    ))
+}
+
+#[must_use]
+pub fn initialize_plugin_accounts_with_runtime(
+    providers: ports::provider::ProviderAdminRegistry,
+    accounts: Arc<dyn ports::store::AccountStore>,
+    runtime: Arc<dyn ports::store::AccountRuntimeStore>,
+    snapshot: Arc<dyn gateway_core::runtime::SnapshotControl>,
+) -> Arc<dyn PluginAccountAccess> {
+    Arc::new(use_case::plugin_accounts::DefaultPluginAccountAccess::new(
+        providers,
+        accounts,
+        Some(runtime),
+        snapshot,
     ))
 }
 
@@ -534,9 +554,20 @@ pub fn initialize_plugin_client_keys(
     store: Arc<dyn ports::store::ClientKeyStore>,
     snapshot: Arc<dyn SnapshotControl>,
 ) -> Arc<dyn PluginClientKeyAccess> {
+    initialize_plugin_client_keys_with_admission(providers, store, snapshot, None)
+}
+
+/// 为插件增加当前限额来源的 Redis 租约读取；缺失或不可用时返回未知占用。
+#[must_use]
+pub fn initialize_plugin_client_keys_with_admission(
+    providers: ports::provider::ProviderAdminRegistry,
+    store: Arc<dyn ports::store::ClientKeyStore>,
+    snapshot: Arc<dyn SnapshotControl>,
+    admission: Option<Arc<dyn ports::plugin_client_keys::PluginClientAdmissionReader>>,
+) -> Arc<dyn PluginClientKeyAccess> {
     let service: Arc<dyn ClientKeyService> =
         Arc::new(DefaultClientKeyService::new(store, snapshot, providers));
-    Arc::new(use_case::plugin_client_keys::DefaultPluginClientKeyAccess::new(service))
+    Arc::new(use_case::plugin_client_keys::DefaultPluginClientKeyAccess::new(service, admission))
 }
 
 /// 为 Runtime 组合实例自有资源写入；权限和归属在同一存储事务复核。

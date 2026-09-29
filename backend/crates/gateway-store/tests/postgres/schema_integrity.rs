@@ -3,10 +3,10 @@ use super::TestDatabase;
 async fn seed_request(pool: &sqlx::PgPool) {
     sqlx::query(
         "insert into model_requests (
-           id, client_api_key_ref, config_revision, protocol, operation, endpoint,
+           id, client_api_key_ref, limit_source_key_ref, client_admission_acquired, config_revision, protocol, operation, endpoint,
            client_transport, started_at, deadline_at, outcome, completed_at, routing_scope
          ) values (
-           'req_integrity', 'deleted_key', 1, 'openai', 'responses', '/v1/responses',
+           'req_integrity', 'deleted_key', 'deleted_key', true, 1, 'openai', 'responses', '/v1/responses',
            'http_sse', now(), now() + interval '1 hour', 'failed', now(), 'all'
          )",
     )

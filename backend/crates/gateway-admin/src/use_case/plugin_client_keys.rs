@@ -1,4 +1,4 @@
-//! 插件 Client Key 管理；复用管理服务，只开放非秘密目录与预算操作。
+//! 插件 Client Key 管理；复用原生服务，按独立访问域开放非秘密操作。
 
 use std::sync::Arc;
 
@@ -15,21 +15,25 @@ use crate::{
         },
         plugin_client_keys::{
             PluginClientKey, PluginClientKeyCursor, PluginClientKeyFacts, PluginClientKeyListQuery,
-            PluginClientKeyPage,
+            PluginClientKeyOccupancy, PluginClientKeyPage,
         },
         plugin_resources::PluginResourceOwner,
     },
-    ports::plugin_client_keys::PluginClientKeyAccess,
+    ports::plugin_client_keys::{PluginClientAdmissionReader, PluginClientKeyAccess},
     use_case::client_keys::ClientKeyService,
 };
 
 pub(crate) struct DefaultPluginClientKeyAccess {
     service: Arc<dyn ClientKeyService>,
+    admission: Option<Arc<dyn PluginClientAdmissionReader>>,
 }
 
 impl DefaultPluginClientKeyAccess {
-    pub(crate) fn new(service: Arc<dyn ClientKeyService>) -> Self {
-        Self { service }
+    pub(crate) fn new(
+        service: Arc<dyn ClientKeyService>,
+        admission: Option<Arc<dyn PluginClientAdmissionReader>>,
+    ) -> Self {
+        Self { service, admission }
     }
 }
 
@@ -37,11 +41,67 @@ impl DefaultPluginClientKeyAccess {
 impl PluginClientKeyAccess for DefaultPluginClientKeyAccess {
     async fn facts(&self, id: &ClientApiKeyId) -> Result<PluginClientKeyFacts, AdminError> {
         let key = self.service.get(id).await?;
+        let effective = self.service.limit_binding(id).await?;
         Ok(PluginClientKeyFacts {
             id: key.id,
             enabled: key.enabled,
             group_ids: key.groups.into_iter().map(|group| group.id).collect(),
+            limits: effective.local_limits,
+            effective,
+            request_profile_overrides: key.request_profile_overrides,
         })
+    }
+
+    async fn occupancy(&self, id: &ClientApiKeyId) -> Result<PluginClientKeyOccupancy, AdminError> {
+        let binding = self.service.limit_binding(id).await?;
+        let admission = match &self.admission {
+            Some(reader) => reader.read_active(&binding.source_key_id).await.ok(),
+            None => None,
+        };
+        Ok(PluginClientKeyOccupancy { binding, admission })
+    }
+
+    async fn weekly_budget_control(
+        &self,
+        id: &ClientApiKeyId,
+    ) -> Result<crate::model::weekly_budget::WeeklyBudgetControl, AdminError> {
+        self.service.weekly_budget_control(id).await
+    }
+    async fn change_weekly_budget(
+        &self,
+        owner: &PluginResourceOwner,
+        command: crate::model::weekly_budget::ChangeWeeklyBudget,
+        context: &MutationContext,
+    ) -> Result<crate::model::weekly_budget::WeeklyBudgetControl, AdminError> {
+        self.service
+            .change_weekly_budget(
+                context,
+                command,
+                ClientKeyBudgetMutationOrigin::Plugin(owner.clone()),
+            )
+            .await
+    }
+
+    async fn limit_binding(
+        &self,
+        id: &ClientApiKeyId,
+    ) -> Result<crate::model::client_keys::ClientLimitBinding, AdminError> {
+        self.service.limit_binding(id).await
+    }
+
+    async fn change_limit_binding(
+        &self,
+        owner: &PluginResourceOwner,
+        command: crate::model::client_keys::ChangeClientLimitBinding,
+        context: &MutationContext,
+    ) -> Result<crate::model::client_keys::ClientLimitBinding, AdminError> {
+        self.service
+            .change_limit_binding(
+                context,
+                command,
+                crate::model::client_keys::ClientLimitBindingMutationOrigin::Plugin(owner.clone()),
+            )
+            .await
     }
 
     async fn budget(&self, id: &ClientApiKeyId) -> Result<ClientBudgetStatus, AdminError> {

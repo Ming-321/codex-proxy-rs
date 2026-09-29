@@ -265,6 +265,7 @@ where
         } = extensions;
         let request_id = request.id.clone();
         let client_api_key_ref = request.client_api_key_ref.clone();
+        let limit_source_key_ref = request.limit_source_key_ref.clone();
         let timing_started_at = Instant::now();
         let deadline = request.deadline_at;
         let account_state_owner = continuation
@@ -300,6 +301,7 @@ where
             engine: Arc::clone(&self.engine),
             request_id,
             client_api_key_ref,
+            limit_source_key_ref,
             concurrency_wait_budget: ConcurrencyWaitBudget::default(),
             connection_budget: super::connection::ConnectionBudget::default(),
             connection_retries: 0,
@@ -421,6 +423,7 @@ pub struct ResponseExecutionSession<S: ?Sized> {
     engine: Arc<GatewayEngine<S>>,
     request_id: ModelRequestId,
     client_api_key_ref: crate::policy::ClientApiKeyId,
+    limit_source_key_ref: crate::policy::ClientApiKeyId,
     concurrency_wait_budget: ConcurrencyWaitBudget,
     connection_budget: super::connection::ConnectionBudget,
     connection_retries: u32,
@@ -698,7 +701,8 @@ where
             .checked_add(self.budget_attempt_usd())
             .unwrap_or(Decimal::MAX);
         super::budget::ClientBudgetCharge {
-            key_id: self.client_api_key_ref.clone(),
+            key_id: self.limit_source_key_ref.clone(),
+            client_key_ref: self.client_api_key_ref.clone(),
             request_id: self.request_id.clone(),
             amount_usd,
             completed_at: self.finalized_at.unwrap_or_else(SystemTime::now),

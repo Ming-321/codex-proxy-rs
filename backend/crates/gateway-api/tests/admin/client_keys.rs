@@ -38,6 +38,63 @@ fn reset_budget_requires_an_explicit_supported_period_and_valid_key() {
 }
 
 #[tokio::test]
+async fn limit_binding_routes_reject_unauthorized_callers_and_missing_source() {
+    use axum::{
+        body::Body,
+        http::{Request, StatusCode, header},
+    };
+    use tower::ServiceExt as _;
+    let fixture = AdminTestFixture::new().await;
+    fixture.auth.insert_session("valid-session");
+    for (method, uri, cookie, body, expected) in [
+        (
+            "GET",
+            "/api/admin/client-keys/limit-binding?id=a",
+            "",
+            "",
+            StatusCode::UNAUTHORIZED,
+        ),
+        (
+            "POST",
+            "/api/admin/client-keys/limit-binding",
+            "",
+            r#"{"id":"a","sourceKeyId":"x","expectedRevision":0}"#,
+            StatusCode::UNAUTHORIZED,
+        ),
+        (
+            "POST",
+            "/api/admin/client-keys/limit-binding",
+            "cpr_session=valid-session",
+            r#"{"id":"a","expectedRevision":0}"#,
+            StatusCode::UNPROCESSABLE_ENTITY,
+        ),
+        (
+            "POST",
+            "/api/admin/client-keys/limit-binding",
+            "cpr_session=valid-session",
+            r#"{"id":"a","sourceKeyId":null,"expectedRevision":0}"#,
+            StatusCode::SERVICE_UNAVAILABLE,
+        ),
+    ] {
+        let response = client_keys::router::<AdminTestState>()
+            .with_state(fixture.state())
+            .oneshot(
+                Request::builder()
+                    .method(method)
+                    .uri(uri)
+                    .header(header::COOKIE, cookie)
+                    .header("x-request-id", "req_binding")
+                    .header(header::CONTENT_TYPE, "application/json")
+                    .body(Body::from(body))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), expected);
+    }
+}
+
+#[tokio::test]
 async fn reset_budget_route_requires_admin_and_maps_missing_keys() {
     use axum::{
         body::Body,
@@ -65,6 +122,62 @@ async fn reset_budget_route_requires_admin_and_maps_missing_keys() {
             .await
             .unwrap();
         assert_eq!(response.status(), expected);
+    }
+}
+
+#[tokio::test]
+async fn budget_reset_of_a_shared_member_returns_the_source_message_without_changing_usage() {
+    use super::SHARED_RESET_REJECTION;
+    use axum::{
+        body::Body,
+        http::{Request, StatusCode, header},
+    };
+    use gateway_core::policy::{ClientApiKeyId, NativeLimitSource, RateLimits};
+    use tower::ServiceExt as _;
+
+    let fixture = AdminTestFixture::new().await;
+    fixture.auth.insert_session("valid-session");
+    let mut record = fixture
+        .services
+        .client_keys()
+        .reveal(&ClientApiKeyId::new("key-member").unwrap())
+        .await
+        .unwrap()
+        .record;
+    record.limit_source = Some(NativeLimitSource {
+        key_id: ClientApiKeyId::new("key-source").unwrap(),
+        binding_revision: 1,
+        enabled: true,
+        limits: RateLimits::unlimited(),
+    });
+    record.budget.daily_used_usd = "1.25".parse().unwrap();
+    record.budget.weekly_used_usd = "4.5".parse().unwrap();
+    *fixture.client_key.lock().unwrap() = Some(record);
+    for period in ["daily", "weekly", "all"] {
+        let response = client_keys::router::<AdminTestState>()
+            .with_state(fixture.state())
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/api/admin/client-keys/reset-budget")
+                    .header(header::COOKIE, "cpr_session=valid-session")
+                    .header(header::CONTENT_TYPE, "application/json")
+                    .header("x-request-id", "req_shared_reset")
+                    .body(Body::from(
+                        json!({"id":"key-member", "period":period}).to_string(),
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::CONFLICT);
+        let body = crate::support::response_json(response).await;
+        assert_eq!(body["code"], 40901);
+        assert_eq!(body["message"], SHARED_RESET_REJECTION);
+        assert!(body["data"].is_null());
+        let key = fixture.client_key.lock().unwrap().clone().unwrap();
+        assert_eq!(key.budget.daily_used_usd.canonical(), "1.25");
+        assert_eq!(key.budget.weekly_used_usd.canonical(), "4.5");
     }
 }
 
@@ -432,6 +545,8 @@ fn client_key_responses_should_keep_shape_and_redact_creation_debug() {
         .single()
         .expect("valid time");
     let view = ClientKeyView::from(gateway_admin::model::client_keys::ClientKeyRecord {
+        local_budget_limits: Default::default(),
+        limit_source: None,
         request_profile_overrides: Default::default(),
         budget: Default::default(),
         id: gateway_core::policy::ClientApiKeyId::new("key_visible").expect("Client Key ID"),

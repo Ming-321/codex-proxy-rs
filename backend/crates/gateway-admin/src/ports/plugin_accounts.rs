@@ -42,6 +42,14 @@ pub trait PluginAccountAccess: Send + Sync {
         Err(AdminError::unavailable("插件额度观测刷新暂不可用"))
     }
 
+    /// 复用原生容量预测；只读取现有观测和用量，不刷新上游或修改预算。
+    async fn quota_forecast(
+        &self,
+        _account_id: &ProviderAccountId,
+    ) -> Result<crate::model::quota_forecast::AccountQuotaForecastReport, AdminError> {
+        Err(AdminError::unavailable("插件额度预测查询暂不可用"))
+    }
+
     async fn save(
         &self,
         command: PreparedPluginAccountSave,

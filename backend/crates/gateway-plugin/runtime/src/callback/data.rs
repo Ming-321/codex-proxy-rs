@@ -1,11 +1,15 @@
 use std::sync::Arc;
 
 use gateway_admin::model::{
-    PageSize, plugins::instances::PluginPermissionGrant,
-    provider_credentials::PluginAccountListQuery,
+    AdminError, PageSize,
+    plugins::instances::PluginPermissionGrant,
+    provider_credentials::{AccountUsagePeriod, PluginAccountListQuery},
 };
 use gateway_core::{account::ProviderAccountId, policy::ClientApiKeyId, routing::ProviderKind};
-use gateway_plugin_sdk::{CallContext, PluginFault, Stage, call::data};
+use gateway_plugin_sdk::{
+    CallContext, PluginFault, Stage,
+    call::{data, quota_forecasts},
+};
 
 use super::{
     accounts::PluginAccountPortSlot, admin::map_admin_error, denied, invalid,
@@ -18,6 +22,7 @@ pub(super) struct PluginData {
     keys: Arc<PluginClientKeyPortSlot>,
     data_authorized: bool,
     quota_authorized: bool,
+    forecast_authorized: bool,
 }
 
 impl PluginData {
@@ -33,6 +38,9 @@ impl PluginData {
             quota_authorized: grants
                 .iter()
                 .any(|grant| grant.permission == "quota_observations"),
+            forecast_authorized: grants
+                .iter()
+                .any(|grant| grant.permission == "quota_forecasts"),
         }
     }
 
@@ -45,9 +53,10 @@ impl PluginData {
     ) -> Result<RpcReply, PluginFault> {
         // 基础事实读取不隐含上游访问权；管理范围也不继承到客户端请求链。
         let authorized = match method {
-            data::ACCOUNTS_LIST | data::KEYS_GET => self.data_authorized,
+            data::ACCOUNTS_LIST | data::KEYS_GET | data::KEYS_OCCUPANCY => self.data_authorized,
             data::QUOTA_GET => self.data_authorized || self.quota_authorized,
             data::QUOTA_REFRESH => self.quota_authorized,
+            quota_forecasts::GET_WEEKLY => self.forecast_authorized,
             _ => false,
         };
         if !authorized
@@ -62,6 +71,41 @@ impl PluginData {
             return Err(invalid());
         }
         let payload = match method {
+            quota_forecasts::GET_WEEKLY => {
+                let query: quota_forecasts::WeeklyQuotaForecastQuery =
+                    serde_json::from_slice(payload).map_err(|_| invalid())?;
+                let id = ProviderAccountId::new(query.account_id).map_err(|_| invalid())?;
+                let report = self
+                    .accounts
+                    .upgrade()
+                    .map_err(map_admin_error)?
+                    .quota_forecast(&id)
+                    .await
+                    .map_err(map_admin_error)?;
+                let weekly = report
+                    .forecasts
+                    .into_iter()
+                    .find(|forecast| forecast.period == AccountUsagePeriod::Weekly)
+                    .ok_or_else(|| map_admin_error(AdminError::internal("宿主周额度预测缺失")))?;
+                serde_json::to_vec(&quota_forecasts::WeeklyQuotaForecast {
+                    account_id: report.account_id,
+                    generated_at_ms: report.generated_at.timestamp_millis(),
+                    estimated_usd: weekly.estimated_usd,
+                    remaining_usd: weekly.remaining_usd,
+                    extrapolated: weekly.extrapolated,
+                    low_sample: weekly.low_sample,
+                    incomplete_cost: weekly.incomplete_cost,
+                    unavailable_reason: weekly.unavailable_reason.map(str::to_owned),
+                    source: weekly
+                        .source
+                        .map(|source| quota_forecasts::QuotaForecastSource {
+                            label: source.label,
+                            used_percent: source.used_percent,
+                            observed_at_ms: source.observed_at.map(|time| time.timestamp_millis()),
+                            reset_at_ms: source.reset_at.timestamp_millis(),
+                        }),
+                })
+            }
             data::KEYS_GET => {
                 let query: data::ClientKeyFactsQuery =
                     serde_json::from_slice(payload).map_err(|_| invalid())?;
@@ -81,6 +125,45 @@ impl PluginData {
                         .into_iter()
                         .map(|id| id.as_str().to_owned())
                         .collect(),
+                    configured_max_concurrency: key.limits.max_concurrency,
+                    configured_requests_per_minute: key.limits.requests_per_minute,
+                    effective_source_key_id: key.effective.source_key_id.as_str().to_owned(),
+                    effective_max_concurrency: key.effective.limits.max_concurrency,
+                    effective_requests_per_minute: key.effective.limits.requests_per_minute,
+                    effective_config_revision: key.effective.config_revision.get(),
+                    loaded_config_revision: key.effective.loaded_config_revision,
+                    request_profile_overrides: key
+                        .request_profile_overrides
+                        .into_iter()
+                        .map(|(provider, profile)| {
+                            (
+                                provider.as_str().to_owned(),
+                                serde_json::Value::Object(profile.into_inner()),
+                            )
+                        })
+                        .collect(),
+                })
+            }
+            data::KEYS_OCCUPANCY => {
+                let query: data::ClientKeyFactsQuery =
+                    serde_json::from_slice(payload).map_err(|_| invalid())?;
+                let id = ClientApiKeyId::new(query.client_key_id).map_err(|_| invalid())?;
+                let value = self
+                    .keys
+                    .upgrade()?
+                    .occupancy(&id)
+                    .await
+                    .map_err(map_admin_error)?;
+                serde_json::to_vec(&data::ClientKeyOccupancy {
+                    schema_version: 1,
+                    client_key_id: id.as_str().to_owned(),
+                    source_key_id: value.binding.source_key_id.as_str().to_owned(),
+                    max_concurrency: value.binding.limits.max_concurrency,
+                    requests_per_minute: value.binding.limits.requests_per_minute,
+                    config_revision: value.binding.config_revision.get(),
+                    loaded_config_revision: value.binding.loaded_config_revision,
+                    active_requests: value.admission.map(|sample| sample.active_requests),
+                    observed_at_ms: value.admission.map(|sample| sample.observed_at_ms),
                 })
             }
             data::ACCOUNTS_LIST => {
@@ -108,18 +191,28 @@ impl PluginData {
                     accounts: page
                         .accounts
                         .into_iter()
-                        .map(|account| data::AccountFacts {
-                            account_id: account.id,
-                            provider_id: account.provider_kind.as_str().to_owned(),
-                            name: account.name,
-                            email: account.email,
-                            group_ids: account
-                                .groups
-                                .into_iter()
-                                .map(|group| group.id.as_str().to_owned())
-                                .collect(),
-                            enabled: account.enabled,
-                            updated_at_ms: account.updated_at.timestamp_millis(),
+                        .map(|account| {
+                            let capacity = page.capacity.get(&account.id);
+                            data::AccountFacts {
+                                configured_concurrency_limit: account
+                                    .concurrency_limit
+                                    .map(|limit| limit.get()),
+                                effective_concurrency_limit: capacity
+                                    .and_then(|value| value.total_slots),
+                                used_slots: capacity.and_then(|value| value.used_slots),
+                                notes: account.notes,
+                                account_id: account.id,
+                                provider_id: account.provider_kind.as_str().to_owned(),
+                                name: account.name,
+                                email: account.email,
+                                group_ids: account
+                                    .groups
+                                    .into_iter()
+                                    .map(|group| group.id.as_str().to_owned())
+                                    .collect(),
+                                enabled: account.enabled,
+                                updated_at_ms: account.updated_at.timestamp_millis(),
+                            }
                         })
                         .collect(),
                     next_cursor: page.next_cursor.map(|id| id.as_str().to_owned()),

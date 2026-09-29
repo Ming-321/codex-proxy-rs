@@ -71,6 +71,7 @@ capability 固定并由工具生成：
 `permissions` 按[访问域](capabilities.md#访问域)声明所需宿主资源，安装时统一接受该版本的声明
 
 不填写逐方法、用途、Key、账号或 Provider 白名单；调用仍受阶段、父调用、Key 规则、账号 revision、资源归属和流生命周期约束
+`quota_forecasts` 独立授权只读查询全部账号的周额度预测与金额估计，不读取凭据或明细、不刷新上游、不修改预算
 
 日志与清单声明的本插件私有状态属于基础设施，无需单独 permission
 

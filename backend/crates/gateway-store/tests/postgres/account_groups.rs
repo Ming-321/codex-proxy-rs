@@ -413,7 +413,7 @@ async fn seed_group_cost_snapshot(
         .collect();
     sqlx::query(
         "insert into model_requests (
-           id, client_api_key_ref, config_revision, protocol, operation, endpoint,
+           id, client_api_key_ref, limit_source_key_ref, client_admission_acquired, config_revision, protocol, operation, endpoint,
            client_transport, requested_model_id, provider_kind, provider_account_id,
            provider_account_ref, upstream_model_id, upstream_transport, attempt_count,
            upstream_send_state, downstream_committed_at, outcome, client_status_code,
@@ -421,7 +421,7 @@ async fn seed_group_cost_snapshot(
            started_at, deadline_at, completed_at,
            routing_scope, routing_group_refs, routing_group_names_snapshot
          ) values (
-           $1, 'key-group-history', 1, 'openai', 'responses', '/v1/responses',
+           $1, 'key-group-history', 'key-group-history', true, 1, 'openai', 'responses', '/v1/responses',
            'http_sse', 'gpt-group', 'openai', $2, $2, 'gpt-group', 'http_sse', 1,
            'sent', now(), 'succeeded', 200, 200, 10,
            'provider_reported', $4::numeric, 'USD', now() - interval '1 minute',

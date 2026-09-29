@@ -142,6 +142,18 @@ impl PluginHandler for TestHandler {
                         vec![],
                     ))
                 }
+                "key_occupancy" => {
+                    let result = call
+                        .host
+                        .key_occupancy(gateway_plugin_sdk::call::data::ClientKeyFactsQuery {
+                            client_key_id: "key_1".into(),
+                        })
+                        .await?;
+                    Ok(CallReply::unary(
+                        serde_json::to_value(result).unwrap(),
+                        vec![],
+                    ))
+                }
                 "get_budget" => {
                     let result = call
                         .host
@@ -156,6 +168,30 @@ impl PluginHandler for TestHandler {
                         vec![],
                     ))
                 }
+                "get_limit_binding" => {
+                    let result = call.host.get_key_limit_binding(
+                        gateway_plugin_sdk::call::key_limit_bindings::GetKeyLimitBindingRequest {
+                            client_key_id: "key_1".into(),
+                        },
+                    ).await?;
+                    Ok(CallReply::unary(
+                        serde_json::to_value(result).unwrap(),
+                        vec![],
+                    ))
+                }
+                "change_limit_binding" => {
+                    let result = call.host.change_key_limit_binding(
+                        gateway_plugin_sdk::call::key_limit_bindings::ChangeKeyLimitBindingRequest {
+                            client_key_id: "key_1".into(),
+                            source_key_id: Some("source".into()),
+                            expected_revision: 0,
+                        },
+                    ).await?;
+                    Ok(CallReply::unary(
+                        serde_json::to_value(result).unwrap(),
+                        vec![],
+                    ))
+                }
                 "update_budget_limits" => {
                     let result = call
                         .host
@@ -164,6 +200,20 @@ impl PluginHandler for TestHandler {
                                 client_key_id: "key_1".into(),
                                 daily_limit_usd: None,
                                 weekly_limit_usd: Some("12.5".into()),
+                            },
+                        )
+                        .await?;
+                    Ok(CallReply::unary(
+                        serde_json::to_value(result).unwrap(),
+                        vec![],
+                    ))
+                }
+                "weekly_forecast" => {
+                    let result = call
+                        .host
+                        .weekly_quota_forecast(
+                            gateway_plugin_sdk::call::quota_forecasts::WeeklyQuotaForecastQuery {
+                                account_id: "acct_1".into(),
                             },
                         )
                         .await?;
@@ -1591,10 +1641,43 @@ async fn quiesce_rejects_new_calls_and_shutdown_closes_the_session() {
 async fn typed_key_and_quota_calls_keep_payloads_and_do_not_retry_failures() {
     for (entry, method, request, response) in [
         (
+            "weekly_forecast",
+            "host.quota_forecasts.get_weekly",
+            json!({"account_id":"acct_1"}),
+            json!({"account_id":"acct_1","generated_at_ms":123,"estimated_usd":null,"remaining_usd":null,
+                "source":null,"extrapolated":false,"low_sample":true,"incomplete_cost":true,
+                "unavailable_reason":"样本不足"}),
+        ),
+        (
+            "get_limit_binding",
+            "host.keys.get_limit_binding",
+            json!({"client_key_id":"key_1"}),
+            json!({"client_key_id":"key_1","source_key_id":"key_1","revision":0,"config_revision":3,"binding_config_revision":null,"loaded_config_revision":null,"source_enabled":true}),
+        ),
+        (
+            "change_limit_binding",
+            "host.keys.change_limit_binding",
+            json!({"client_key_id":"key_1","source_key_id":"source","expected_revision":0}),
+            json!({"client_key_id":"key_1","source_key_id":"source","revision":1,"config_revision":4,"binding_config_revision":4,"loaded_config_revision":3,"source_enabled":true}),
+        ),
+        (
             "key_facts",
             "host.data.keys.get",
             json!({"client_key_id":"key_1"}),
-            json!({"schema_version":1,"client_key_id":"key_1","enabled":false,"group_ids":["grp_1"]}),
+            json!({"schema_version":1,"client_key_id":"key_1","enabled":false,"group_ids":["grp_1"],
+                "configured_max_concurrency":8,"configured_requests_per_minute":60,
+                "effective_source_key_id":"source","effective_max_concurrency":4,
+                "effective_requests_per_minute":30,"effective_config_revision":4,
+                "loaded_config_revision":3,
+                "request_profile_overrides":{}}),
+        ),
+        (
+            "key_occupancy",
+            "host.data.keys.get_occupancy",
+            json!({"client_key_id":"key_1"}),
+            json!({"schema_version":1,"client_key_id":"key_1","source_key_id":"source",
+                "max_concurrency":4,"requests_per_minute":30,"config_revision":4,
+                "loaded_config_revision":3,"active_requests":3,"observed_at_ms":123}),
         ),
         (
             "get_budget",
@@ -1652,7 +1735,7 @@ async fn typed_key_and_quota_calls_keep_payloads_and_do_not_retry_failures() {
                 assert_eq!(error.code, ErrorCode::Conflict);
             } else {
                 let mut response_payload = response.clone();
-                if matches!(entry, "key_facts" | "refresh_quota") {
+                if matches!(entry, "key_facts" | "key_occupancy" | "refresh_quota") {
                     response_payload["future_fact"] = json!({"value":1});
                 }
                 write_frame(

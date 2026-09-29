@@ -28,6 +28,8 @@
     "groups",
     "keys",
     "key_budgets",
-    "quota_observations"
+    "key_limit_bindings",
+    "quota_observations",
+    "quota_forecasts"
   ]
 }

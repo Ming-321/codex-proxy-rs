@@ -25,6 +25,10 @@ pub enum ConflictKind {
 /// Store adapter 的稳定错误边界。
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 pub enum StoreError {
+    /// 共享限额规则拒绝了成员上的操作。`message` 由 Store 组装，只含固定文案和来源 Key 名称，
+    /// 管理端可原样展示；其余 Store 错误仍不得越过 HTTP 边界。
+    #[error("{message}")]
+    ControlledLimits { message: String },
     #[error("{backend:?} store is unavailable: {message}")]
     Unavailable {
         backend: StoreBackend,
@@ -100,7 +104,15 @@ pub(crate) fn mutation_audit(
 }
 
 pub(crate) fn admin_store_error(resource: &'static str, error: StoreError) -> AdminStoreError {
+    if let StoreError::ControlledLimits { message } = error {
+        return AdminStoreError::new(
+            AdminStoreErrorKind::Conflict,
+            "controlled client limits",
+            message,
+        );
+    }
     let kind = match error {
+        StoreError::ControlledLimits { .. } => unreachable!(),
         StoreError::NotFound { .. } => AdminStoreErrorKind::NotFound,
         StoreError::Conflict {
             kind: ConflictKind::StaleRevision,

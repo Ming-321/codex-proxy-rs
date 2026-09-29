@@ -1,4 +1,4 @@
-//! 插件 Client Key 非秘密目录与受控预算管理端口。
+//! 插件 Client Key 非秘密目录、预算与共享限额关系管理端口。
 
 use async_trait::async_trait;
 use gateway_core::{engine::budget::ClientBudgetStatus, policy::ClientApiKeyId};
@@ -6,13 +6,44 @@ use gateway_core::{engine::budget::ClientBudgetStatus, policy::ClientApiKeyId};
 use crate::model::{
     AdminError, MutationContext,
     client_keys::{ResetClientKeyBudget, UpdateClientKeyBudgetLimits},
-    plugin_client_keys::{PluginClientKeyFacts, PluginClientKeyListQuery, PluginClientKeyPage},
+    plugin_client_keys::{
+        PluginClientAdmissionSnapshot, PluginClientKeyFacts, PluginClientKeyListQuery,
+        PluginClientKeyOccupancy, PluginClientKeyPage,
+    },
     plugin_resources::PluginResourceOwner,
 };
 
 #[async_trait]
+pub trait PluginClientAdmissionReader: Send + Sync {
+    async fn read_active(
+        &self,
+        source: &ClientApiKeyId,
+    ) -> Result<PluginClientAdmissionSnapshot, AdminError>;
+}
+
+#[async_trait]
 pub trait PluginClientKeyAccess: Send + Sync {
-    async fn facts(&self, id: &ClientApiKeyId) -> Result<PluginClientKeyFacts, AdminError>;
+    async fn weekly_budget_control(
+        &self,
+        id: &ClientApiKeyId,
+    ) -> Result<crate::model::weekly_budget::WeeklyBudgetControl, AdminError>;
+    async fn change_weekly_budget(
+        &self,
+        owner: &PluginResourceOwner,
+        command: crate::model::weekly_budget::ChangeWeeklyBudget,
+        context: &MutationContext,
+    ) -> Result<crate::model::weekly_budget::WeeklyBudgetControl, AdminError>;
+    async fn limit_binding(
+        &self,
+        id: &ClientApiKeyId,
+    ) -> Result<crate::model::client_keys::ClientLimitBinding, AdminError>;
+
+    async fn change_limit_binding(
+        &self,
+        owner: &PluginResourceOwner,
+        command: crate::model::client_keys::ChangeClientLimitBinding,
+        context: &MutationContext,
+    ) -> Result<crate::model::client_keys::ClientLimitBinding, AdminError>;
 
     async fn budget(&self, id: &ClientApiKeyId) -> Result<ClientBudgetStatus, AdminError>;
 
@@ -30,6 +61,8 @@ pub trait PluginClientKeyAccess: Send + Sync {
         context: &MutationContext,
     ) -> Result<ClientApiKeyId, AdminError>;
 
+    async fn facts(&self, id: &ClientApiKeyId) -> Result<PluginClientKeyFacts, AdminError>;
+    async fn occupancy(&self, id: &ClientApiKeyId) -> Result<PluginClientKeyOccupancy, AdminError>;
     async fn list(
         &self,
         query: PluginClientKeyListQuery,

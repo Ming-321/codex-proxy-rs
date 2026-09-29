@@ -1,12 +1,23 @@
 //! 基础事实投影；主动刷新由独立的 quota_observations 访问域授权。
 //! 响应忽略未知字段，以兼容宿主新增事实；查询仍严格校验字段。
 
-use serde::{Deserialize, Serialize};
+use std::collections::BTreeMap;
+
+use serde::{Deserialize, Deserializer, Serialize};
+
+fn required_nullable<'de, D, T>(deserializer: D) -> Result<Option<T>, D::Error>
+where
+    D: Deserializer<'de>,
+    T: Deserialize<'de>,
+{
+    Option::deserialize(deserializer)
+}
 
 pub const ACCOUNTS_LIST: &str = "host.data.accounts.list";
 pub const QUOTA_REFRESH: &str = "host.quota_observations.refresh";
 pub const QUOTA_GET: &str = "host.data.quota.get";
 pub const KEYS_GET: &str = "host.data.keys.get";
+pub const KEYS_OCCUPANCY: &str = "host.data.keys.get_occupancy";
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -21,6 +32,32 @@ pub struct ClientKeyFacts {
     pub client_key_id: String,
     pub enabled: bool,
     pub group_ids: Vec<String>,
+    /// Key 自身持久化配置；零表示不限，下方有效值来自限额来源。
+    pub configured_max_concurrency: u64,
+    pub configured_requests_per_minute: u64,
+    /// 当前持久化来源；实例可能尚未加载 `effective_config_revision`。
+    pub effective_source_key_id: String,
+    pub effective_max_concurrency: u64,
+    pub effective_requests_per_minute: u64,
+    pub effective_config_revision: u64,
+    pub loaded_config_revision: Option<u64>,
+    /// Provider 专属请求画像配置，不表示实际客户端软件。
+    pub request_profile_overrides: BTreeMap<String, serde_json::Value>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ClientKeyOccupancy {
+    pub schema_version: u32,
+    pub client_key_id: String,
+    /// 占用属于整个来源；多个成员查询相同来源时不能相加。
+    pub source_key_id: String,
+    pub max_concurrency: u64,
+    pub requests_per_minute: u64,
+    pub config_revision: u64,
+    pub loaded_config_revision: Option<u64>,
+    /// None 表示 Redis 不可用；Some(0) 表示已知空闲。可高于当前上限。
+    pub active_requests: Option<u64>,
+    pub observed_at_ms: Option<i64>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -39,6 +76,17 @@ pub struct AccountFacts {
     pub email: Option<String>,
     pub group_ids: Vec<String>,
     pub enabled: bool,
+    #[serde(default)]
+    pub notes: Option<String>,
+    /// `None` 表示继承全局默认值。
+    #[serde(deserialize_with = "required_nullable")]
+    pub configured_concurrency_limit: Option<u32>,
+    /// `None` 表示不限。
+    #[serde(deserialize_with = "required_nullable")]
+    pub effective_concurrency_limit: Option<u64>,
+    /// `None` 表示租约读取不可用，`Some(0)` 表示已知空闲。
+    #[serde(default)]
+    pub used_slots: Option<u64>,
     pub updated_at_ms: i64,
 }
 

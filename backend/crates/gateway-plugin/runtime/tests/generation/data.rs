@@ -65,6 +65,32 @@ fn account() -> AccountRecord {
 
 #[async_trait]
 impl PluginAccountAccess for Facts {
+    async fn quota_forecast(
+        &self,
+        account: &ProviderAccountId,
+    ) -> Result<gateway_admin::model::quota_forecast::AccountQuotaForecastReport, AdminError> {
+        self.0.fetch_add(1, Ordering::SeqCst);
+        match account.as_str() {
+            "acct_missing" => return Err(AdminError::not_found("missing")),
+            "acct_unavailable" => return Err(AdminError::unavailable("failure")),
+            _ => {}
+        }
+        let now = chrono::Utc::now();
+        let quota = self.get_quota(account).await?;
+        Ok(
+            gateway_admin::model::quota_forecast::AccountQuotaForecastReport {
+                account_id: account.as_str().into(),
+                generated_at: now,
+                forecasts: gateway_admin::model::quota_forecast::account_quota_forecasts(
+                    &quota,
+                    now - chrono::Duration::days(60),
+                    now,
+                    &[],
+                ),
+            },
+        )
+    }
+
     async fn refresh_quota(
         &self,
         account: &ProviderAccountId,
@@ -95,6 +121,13 @@ impl PluginAccountAccess for Facts {
         Ok(PluginAccountPage {
             accounts: vec![account],
             next_cursor: Some(ProviderAccountId::new("acct_facts").unwrap()),
+            capacity: std::collections::BTreeMap::from([(
+                "acct_facts".to_owned(),
+                gateway_admin::model::accounts::AccountCapacity {
+                    used_slots: None,
+                    total_slots: Some(8),
+                },
+            )]),
         })
     }
     async fn get_runtime(&self, _: &ProviderAccountId) -> Result<AccountRecord, AdminError> {
@@ -217,7 +250,8 @@ async fn management_facts_are_minimal_bounded_and_separately_authorized() {
                 json!({"schema_version":1,"accounts":[{
                 "account_id":"acct_facts","provider_id":"openai","group_ids":["grp_11111111111111111111111111111111"],
                 "name":"private name","email":email,
-                "enabled":true,"updated_at_ms":1767225600000i64
+                "enabled":true,"notes":"private notes","configured_concurrency_limit":null,
+                "effective_concurrency_limit":8,"used_slots":null,"updated_at_ms":1767225600000i64
             }],"next_cursor":"acct_facts"})
             );
             let page: gateway_plugin_sdk::call::data::AccountFactsPage =
@@ -244,6 +278,122 @@ async fn management_facts_are_minimal_bounded_and_separately_authorized() {
         }
         drop(generation);
         runtime.shutdown().await;
+        super::wait_until_empty(cache.path()).await;
+    }
+}
+
+#[tokio::test]
+async fn weekly_forecasts_require_their_own_permission_and_preserve_errors() {
+    for permission in [
+        None,
+        Some(Permission::Data),
+        Some(Permission::Accounts),
+        Some(Permission::KeyBudgets),
+        Some(Permission::QuotaObservations),
+        Some(Permission::QuotaForecasts),
+    ] {
+        let (cache, store, runtime) = super::setup_with_permissions(
+            Contributions::from([crate::support::contribution(
+                Capability::Management,
+                vec![Stage::Management],
+                vec![],
+                vec![],
+            )]),
+            Default::default(),
+            permission.into_iter().collect(),
+        )
+        .await;
+        let facts = Arc::new(Facts::default());
+        let port: Arc<dyn PluginAccountAccess> = facts.clone();
+        runtime.bind_account_ports(&port).unwrap();
+        {
+            let mut snapshot = store.snapshot.lock().unwrap();
+            let instance = &mut snapshot.instances[0];
+            instance.grants = permission
+                .into_iter()
+                .map(|p| PluginPermissionGrant {
+                    permission: p.as_str().into(),
+                })
+                .collect();
+            instance.configuration = json!({
+                "management_registration":{"routes":[{"method":"GET","path":"forecast","request_content_types":[],"response_content_types":["application/json"]}]},
+                "data_queries":[
+                    {"method":"host.quota_forecasts.get_weekly","query":{"account_id":"acct_facts"}},
+                    {"method":"host.quota_forecasts.get_weekly","query":{"account_id":"acct_missing"}},
+                    {"method":"host.quota_forecasts.get_weekly","query":{"account_id":"acct_unavailable"}},
+                    {"method":"host.quota_forecasts.get_weekly","query":{"account_id":"acct_facts","refresh":true}},
+                    {"method":"host.quota_forecasts.get_weekly","query":{"account_id":"invalid"}}
+                ]
+            });
+        }
+        let generation =
+            ExtensionPreparationPort::prepare(&runtime, ConfigRevision::new(1).unwrap())
+                .await
+                .unwrap();
+        let view = runtime.views(&generation).await.unwrap().remove(0);
+        let request = || PluginManagementRequest {
+            method: "GET".into(),
+            path: "forecast".into(),
+            query: String::new(),
+            content_type: None,
+            body: vec![],
+            request_id: "forecast-permission".into(),
+        };
+        let response = runtime
+            .handle(&generation, &view.target, request())
+            .await
+            .unwrap();
+        let results: Vec<Value> = serde_json::from_slice(&response.body).unwrap();
+        if permission == Some(Permission::QuotaForecasts) {
+            assert!(results[0]["estimated_usd"].is_null());
+            assert!(results[0]["remaining_usd"].is_null());
+            assert!(results[0]["unavailable_reason"].is_string());
+            assert_eq!(results[0].as_object().unwrap().len(), 9);
+            for (index, code) in [
+                (1, "rejected"),
+                (2, "fault"),
+                (3, "invalid_input"),
+                (4, "invalid_input"),
+            ] {
+                assert_eq!(results[index]["error"], code);
+            }
+        } else {
+            assert_eq!(facts.0.load(Ordering::SeqCst), 0);
+            assert!(results.iter().all(|r| r["error"] == "permission_denied"));
+        }
+        assert_eq!(facts.1.load(Ordering::SeqCst), 0, "预测不能主动刷新观测");
+        if permission == Some(Permission::QuotaForecasts) {
+            let before = facts.0.load(Ordering::SeqCst);
+            {
+                let mut snapshot = store.snapshot.lock().unwrap();
+                snapshot.config_revision = Revision::new(2).unwrap();
+                snapshot.instances[0].revision = Revision::new(2).unwrap();
+                snapshot.instances[0].grants.clear();
+            }
+            let revoked =
+                ExtensionPreparationPort::prepare(&runtime, ConfigRevision::new(2).unwrap())
+                    .await
+                    .unwrap();
+            let target = runtime.views(&revoked).await.unwrap().remove(0).target;
+            let response = runtime.handle(&revoked, &target, request()).await.unwrap();
+            let denied: Vec<Value> = serde_json::from_slice(&response.body).unwrap();
+            assert!(
+                denied
+                    .iter()
+                    .all(|item| item["error"] == "permission_denied")
+            );
+            assert_eq!(facts.0.load(Ordering::SeqCst), before);
+            drop(revoked);
+        }
+        runtime.shutdown().await;
+        assert!(
+            runtime
+                .handle(&generation, &view.target, request())
+                .await
+                .is_err(),
+            "失效实例不能继续查询"
+        );
+        drop(generation);
         super::wait_until_empty(cache.path()).await;
     }
 }

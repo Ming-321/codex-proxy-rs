@@ -175,16 +175,18 @@ async fn launch(
             Some(plugin_runtime.policy_registry()),
             Some(plugin_runtime.middleware_registry()),
         );
-        let accounts = gateway_admin::initialize_plugin_accounts(
+        let accounts = gateway_admin::initialize_plugin_accounts_with_runtime(
             admin_providers.clone(),
             store.admin_ports().accounts(),
+            store.admin_ports().account_runtime(),
             core.snapshot_control(),
         );
         or_shutdown!(plugin_runtime, plugin_runtime.bind_account_ports(&accounts));
-        let keys = gateway_admin::initialize_plugin_client_keys(
+        let keys = gateway_admin::initialize_plugin_client_keys_with_admission(
             admin_providers.clone(),
             store.admin_ports().client_keys(),
             core.snapshot_control(),
+            Some(store.client_admission_reader()),
         );
         or_shutdown!(plugin_runtime, plugin_runtime.bind_client_key_ports(&keys));
         let plugin_resources = gateway_admin::initialize_plugin_resources(
@@ -221,19 +223,21 @@ async fn launch(
         Some(plugin_runtime.middleware_registry()),
         Some(plugin_runtime.frontend_authentication_registry()),
     );
-    let plugin_accounts = gateway_admin::initialize_plugin_accounts(
+    let plugin_accounts = gateway_admin::initialize_plugin_accounts_with_runtime(
         admin_providers.clone(),
         store.admin_ports().accounts(),
+        store.admin_ports().account_runtime(),
         core.snapshot_control(),
     );
     or_shutdown!(
         plugin_runtime,
         plugin_runtime.bind_account_ports(&plugin_accounts)
     );
-    let plugin_keys = gateway_admin::initialize_plugin_client_keys(
+    let plugin_keys = gateway_admin::initialize_plugin_client_keys_with_admission(
         admin_providers.clone(),
         store.admin_ports().client_keys(),
         core.snapshot_control(),
+        Some(store.client_admission_reader()),
     );
     or_shutdown!(
         plugin_runtime,

@@ -225,15 +225,21 @@ fn callback_allowed(method: &str, stage: Stage, permissions: &[Permission]) -> b
             method,
             "host.data.accounts.list"
                 | "host.data.keys.get"
+                | "host.data.keys.get_occupancy"
                 | "host.data.quota.get"
                 | "host.quota_observations.refresh"
+                | "host.quota_forecasts.get_weekly"
                 | "host.groups.ensure"
                 | "host.groups.change_members"
                 | "host.keys.ensure"
                 | "host.keys.list"
                 | "host.keys.reset_budget"
                 | "host.keys.get_budget"
+                | "host.keys.weekly_control.get"
+                | "host.keys.weekly_control.change"
                 | "host.keys.update_budget_limits"
+                | "host.keys.get_limit_binding"
+                | "host.keys.change_limit_binding"
         )
     {
         return false;
@@ -278,7 +284,7 @@ fn callback_allowed(method: &str, stage: Stage, permissions: &[Permission]) -> b
             Permission::Accounts
         }
         "host.affinity.lookup" => Permission::Requests,
-        "host.data.accounts.list" | "host.data.keys.get"
+        "host.data.accounts.list" | "host.data.keys.get" | "host.data.keys.get_occupancy"
             if matches!(
                 stage,
                 Stage::Management | Stage::CommandLine | Stage::Maintenance
@@ -293,6 +299,14 @@ fn callback_allowed(method: &str, stage: Stage, permissions: &[Permission]) -> b
             ) =>
         {
             Permission::QuotaObservations
+        }
+        "host.quota_forecasts.get_weekly"
+            if matches!(
+                stage,
+                Stage::Management | Stage::CommandLine | Stage::Maintenance
+            ) =>
+        {
+            Permission::QuotaForecasts
         }
         "host.groups.ensure" | "host.groups.change_members"
             if matches!(
@@ -310,13 +324,25 @@ fn callback_allowed(method: &str, stage: Stage, permissions: &[Permission]) -> b
         {
             Permission::Keys
         }
-        "host.keys.reset_budget" | "host.keys.get_budget" | "host.keys.update_budget_limits"
+        "host.keys.reset_budget"
+        | "host.keys.get_budget"
+        | "host.keys.update_budget_limits"
+        | "host.keys.weekly_control.get"
+        | "host.keys.weekly_control.change"
             if matches!(
                 stage,
                 Stage::Management | Stage::CommandLine | Stage::Maintenance
             ) =>
         {
             Permission::KeyBudgets
+        }
+        "host.keys.get_limit_binding" | "host.keys.change_limit_binding"
+            if matches!(
+                stage,
+                Stage::Management | Stage::CommandLine | Stage::Maintenance
+            ) =>
+        {
+            Permission::KeyLimitBindings
         }
         _ => return false,
     };

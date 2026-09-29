@@ -1,6 +1,6 @@
 use gateway_plugin_sdk::call::data::{
-    AccountFactsPage, AccountFactsQuery, ClientKeyFacts, ClientKeyFactsQuery, QuotaFacts,
-    QuotaFactsQuery,
+    AccountFactsPage, AccountFactsQuery, ClientKeyFacts, ClientKeyFactsQuery, ClientKeyOccupancy,
+    QuotaFacts, QuotaFactsQuery,
 };
 use serde_json::{Value, json};
 
@@ -9,7 +9,9 @@ fn account_page() -> Value {
         "schema_version":1,
         "accounts":[{
             "account_id":"acct_1", "provider_id":"openai", "name":"测试账号",
-            "email":null, "group_ids":[], "enabled":true, "updated_at_ms":0
+            "email":null, "group_ids":[], "enabled":true, "updated_at_ms":0,
+            "notes":null, "configured_concurrency_limit":null,
+            "effective_concurrency_limit":8, "used_slots":0
         }],
         "next_cursor":null
     })
@@ -29,12 +31,34 @@ fn account_facts_accept_additive_page_and_account_fields() {
 fn key_facts_accept_additive_fields() {
     let original = json!({
         "schema_version":1, "client_key_id":"key_1", "enabled":false,
-        "group_ids":["grp_1"]
+        "group_ids":["grp_1"], "configured_max_concurrency":8,
+        "configured_requests_per_minute":60, "request_profile_overrides":{},
+        "effective_source_key_id":"key_1", "effective_max_concurrency":8,
+        "effective_requests_per_minute":60, "effective_config_revision":2,
+        "loaded_config_revision":null
     });
     let mut extended = original.clone();
     extended["future_key_field"] = json!({"value":1});
     let facts: ClientKeyFacts = serde_json::from_value(extended).unwrap();
     assert_eq!(serde_json::to_value(facts).unwrap(), original);
+}
+
+#[test]
+fn key_occupancy_distinguishes_unknown_zero_and_unlimited() {
+    let original = json!({
+        "schema_version":1,"client_key_id":"a","source_key_id":"x",
+        "max_concurrency":0,"requests_per_minute":0,"config_revision":7,
+        "loaded_config_revision":null,"active_requests":null,"observed_at_ms":null
+    });
+    let unknown: ClientKeyOccupancy = serde_json::from_value(original.clone()).unwrap();
+    assert_eq!(unknown.max_concurrency, 0);
+    assert_eq!(unknown.active_requests, None);
+    let mut known = original;
+    known["active_requests"] = json!(0);
+    known["observed_at_ms"] = json!(123);
+    let known: ClientKeyOccupancy = serde_json::from_value(known).unwrap();
+    assert_eq!(known.active_requests, Some(0));
+    assert_eq!(known.observed_at_ms, Some(123));
 }
 
 #[test]
@@ -61,6 +85,12 @@ fn account_facts_still_require_known_fields_and_valid_types() {
         .unwrap()
         .remove("name");
     assert!(serde_json::from_value::<AccountFactsPage>(missing_name).is_err());
+    let mut missing_limit = account_page();
+    missing_limit["accounts"][0]
+        .as_object_mut()
+        .unwrap()
+        .remove("effective_concurrency_limit");
+    assert!(serde_json::from_value::<AccountFactsPage>(missing_limit).is_err());
 
     for (field, invalid) in [
         ("name", json!(42)),
@@ -74,6 +104,15 @@ fn account_facts_still_require_known_fields_and_valid_types() {
             "{field}"
         );
     }
+}
+
+#[test]
+fn key_facts_do_not_treat_missing_limits_as_unlimited() {
+    let old_response = json!({
+        "schema_version":1, "client_key_id":"key_1", "enabled":true,
+        "group_ids":[]
+    });
+    assert!(serde_json::from_value::<ClientKeyFacts>(old_response).is_err());
 }
 
 #[test]

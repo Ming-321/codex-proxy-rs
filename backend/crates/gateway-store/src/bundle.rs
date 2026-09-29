@@ -8,6 +8,8 @@ use super::*;
 /// 已完成连接、迁移与 hydration 的 Store 能力集合。
 pub struct StoreBundle {
     admin_ports: AdminStorePorts,
+    client_admission_reader:
+        Arc<dyn gateway_admin::ports::plugin_client_keys::PluginClientAdmissionReader>,
     core_ports: CoreStorePorts,
     provider_ports: ProviderStorePorts,
     worker_leader_lease: Arc<dyn WorkerLeaderLeasePort>,
@@ -18,6 +20,13 @@ pub struct StoreBundle {
 }
 
 impl StoreBundle {
+    #[must_use]
+    pub fn client_admission_reader(
+        &self,
+    ) -> Arc<dyn gateway_admin::ports::plugin_client_keys::PluginClientAdmissionReader> {
+        Arc::clone(&self.client_admission_reader)
+    }
+
     #[must_use]
     pub fn admin_ports(&self) -> AdminStorePorts {
         self.admin_ports.clone()
@@ -190,9 +199,12 @@ async fn connect(
     let (client_key_usage, client_key_usage_writer) =
         postgres::PgClientApiKeyUsageSink::new(pool.clone());
     let retention = Arc::new(postgres::PgRetentionRepository::new(pool.clone()));
-    let admissions: Arc<dyn gateway_core::engine::admission::ClientAdmissionPort> = Arc::new(
-        redis::RedisClientAdmissionRepository::new(redis_connection.clone(), REDIS_NAMESPACE)?,
-    );
+    let client_admission_reader = Arc::new(redis::RedisClientAdmissionRepository::new(
+        redis_connection.clone(),
+        REDIS_NAMESPACE,
+    )?);
+    let admissions: Arc<dyn gateway_core::engine::admission::ClientAdmissionPort> =
+        client_admission_reader.clone();
     // Continuation affinity 是下一轮请求的路由事实，Core 必须直接等待 Redis 确认。
     let continuation: Arc<dyn gateway_core::engine::continuation::NativeContinuationPort> =
         Arc::new(redis::RedisNativeContinuationRepository::new(
@@ -271,6 +283,7 @@ async fn connect(
     };
     Ok(StoreBundle {
         admin_ports,
+        client_admission_reader,
         core_ports,
         provider_ports,
         worker_leader_lease,

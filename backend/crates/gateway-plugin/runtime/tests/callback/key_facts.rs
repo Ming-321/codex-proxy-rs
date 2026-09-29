@@ -5,7 +5,11 @@ use gateway_admin::{
     },
     ports::plugin_management::PluginManagement,
 };
-use gateway_core::policy::{ClientApiKeyId, RateLimits};
+use gateway_core::{
+    account::OpaqueProviderData,
+    policy::{ClientApiKeyId, RateLimits},
+    routing::ProviderKind,
+};
 use serde_json::{Value, json};
 
 #[tokio::test]
@@ -50,12 +54,20 @@ async fn key_facts_read_current_database_groups_without_secrets() {
             .client_keys()
             .update_client_key(
                 UpdateClientKey {
-                    request_profile_override_updates: Default::default(),
+                    request_profile_override_updates: std::collections::BTreeMap::from([(
+                        ProviderKind::new("openai").unwrap(),
+                        Some(OpaqueProviderData::new(
+                            json!({"client_kind":"codex"}).as_object().unwrap().clone(),
+                        )),
+                    )]),
                     id: ClientApiKeyId::new(id).unwrap(),
                     name: "facts".into(),
                     label: None,
                     group_ids: groups.clone(),
-                    limits: RateLimits::unlimited(),
+                    limits: RateLimits {
+                        max_concurrency: 8,
+                        requests_per_minute: 60,
+                    },
                     daily_limit_usd: None,
                     weekly_limit_usd: None,
                 },
@@ -95,7 +107,13 @@ async fn key_facts_read_current_database_groups_without_secrets() {
         assert_eq!(
             result[0],
             json!({"schema_version":1,"client_key_id":id,"enabled":enabled,
-            "group_ids": groups.iter().map(|id| id.as_str()).collect::<Vec<_>>() })
+            "group_ids": groups.iter().map(|id| id.as_str()).collect::<Vec<_>>(),
+            "configured_max_concurrency":8,"configured_requests_per_minute":60,
+            "effective_source_key_id":id,"effective_max_concurrency":8,
+            "effective_requests_per_minute":60,
+            "effective_config_revision":result[0]["effective_config_revision"],
+            "loaded_config_revision":result[0]["loaded_config_revision"],
+            "request_profile_overrides":{"openai":{"client_kind":"codex"}} })
         );
         assert_eq!(result[1]["error"], "rejected");
         assert_eq!(result[2]["error"], "invalid_input");

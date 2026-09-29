@@ -503,7 +503,9 @@ pub(crate) fn core_account_from_summary(
 pub(crate) fn core_store_error(error: StoreError) -> CoreStoreError {
     let kind = match error {
         StoreError::Unavailable { .. } => CoreStoreErrorKind::Unavailable,
-        StoreError::Conflict { .. } => CoreStoreErrorKind::Conflict,
+        StoreError::Conflict { .. } | StoreError::ControlledLimits { .. } => {
+            CoreStoreErrorKind::Conflict
+        }
         StoreError::NotFound { .. } | StoreError::InvalidData { .. } => {
             CoreStoreErrorKind::InvalidData
         }

@@ -286,7 +286,9 @@ async fn fact_callbacks_require_independent_grants_and_control_plane_stages() {
         vec![Permission::Keys],
         vec![Permission::Models],
         vec![Permission::KeyBudgets],
+        vec![Permission::KeyLimitBindings],
         vec![Permission::QuotaObservations],
+        vec![Permission::QuotaForecasts],
         vec![Permission::Data],
     ] {
         let authorized = permissions.contains(&Permission::Data);
@@ -311,6 +313,7 @@ async fn fact_callbacks_require_independent_grants_and_control_plane_stages() {
             for method in [
                 "host.data.accounts.list",
                 "host.data.keys.get",
+                "host.data.keys.get_occupancy",
                 "host.data.quota.get",
             ] {
                 let reply = invoke_callback(&session, stage, method).await;
@@ -329,7 +332,7 @@ async fn fact_callbacks_require_independent_grants_and_control_plane_stages() {
         assert_eq!(
             callbacks.called.load(Ordering::Relaxed),
             if authorized {
-                9
+                12
             } else if quota_authorized {
                 3
             } else {
@@ -367,9 +370,20 @@ async fn managed_resources_require_their_domains_and_control_plane_stages() {
         ("host.keys.reset_budget", Permission::KeyBudgets),
         ("host.keys.get_budget", Permission::KeyBudgets),
         ("host.keys.update_budget_limits", Permission::KeyBudgets),
+        ("host.keys.weekly_control.get", Permission::KeyBudgets),
+        ("host.keys.weekly_control.change", Permission::KeyBudgets),
+        ("host.keys.get_limit_binding", Permission::KeyLimitBindings),
+        (
+            "host.keys.change_limit_binding",
+            Permission::KeyLimitBindings,
+        ),
         (
             "host.quota_observations.refresh",
             Permission::QuotaObservations,
+        ),
+        (
+            "host.quota_forecasts.get_weekly",
+            Permission::QuotaForecasts,
         ),
     ] {
         for granted in [false, true] {
@@ -396,7 +410,7 @@ async fn managed_resources_require_their_domains_and_control_plane_stages() {
                         Stage::Management | Stage::CommandLine | Stage::Maintenance
                     )
                 {
-                    assert!(reply.is_ok());
+                    assert!(reply.is_ok(), "{method} during {stage:?}");
                 } else {
                     assert_permission_denied(reply);
                 }

@@ -466,6 +466,10 @@ impl CallbackHandler for PluginCallbacks {
                     | gateway_plugin_sdk::call::key_budgets::RESET
                     | gateway_plugin_sdk::call::key_budgets::GET
                     | gateway_plugin_sdk::call::key_budgets::UPDATE_LIMITS
+                    | gateway_plugin_sdk::call::weekly_budget::GET
+                    | gateway_plugin_sdk::call::weekly_budget::CHANGE
+                    | gateway_plugin_sdk::call::key_limit_bindings::GET
+                    | gateway_plugin_sdk::call::key_limit_bindings::CHANGE
             ) {
                 return keys.call(&context, &method, params, &payload).await;
             }
@@ -491,8 +495,10 @@ impl CallbackHandler for PluginCallbacks {
                 method.as_str(),
                 gateway_plugin_sdk::call::data::ACCOUNTS_LIST
                     | gateway_plugin_sdk::call::data::KEYS_GET
+                    | gateway_plugin_sdk::call::data::KEYS_OCCUPANCY
                     | gateway_plugin_sdk::call::data::QUOTA_GET
                     | gateway_plugin_sdk::call::data::QUOTA_REFRESH
+                    | gateway_plugin_sdk::call::quota_forecasts::GET_WEEKLY
             ) {
                 return data.call(&context, &method, params, &payload).await;
             }

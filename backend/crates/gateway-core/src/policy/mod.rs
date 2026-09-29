@@ -107,12 +107,22 @@ impl RateLimits {
 
 /// 从 `client_api_keys` 冻结的公开准入事实。
 #[derive(Debug, Clone, PartialEq, Eq)]
+pub struct NativeLimitSource {
+    pub key_id: ClientApiKeyId,
+    pub binding_revision: u64,
+    pub enabled: bool,
+    pub limits: RateLimits,
+}
+
+/// 认证身份与账号权限始终属于请求 Key，来源只提供限额事实。
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ClientPolicy {
     key_id: ClientApiKeyId,
     plaintext_key: PlaintextClientApiKey,
     account_scope: Arc<FrozenAccountScope>,
     enabled: bool,
     limits: RateLimits,
+    limit_source: Option<NativeLimitSource>,
 }
 
 impl ClientPolicy {
@@ -130,6 +140,7 @@ impl ClientPolicy {
             account_scope,
             enabled,
             limits,
+            limit_source: None,
         }
     }
 
@@ -155,7 +166,46 @@ impl ClientPolicy {
 
     #[must_use]
     pub const fn limits(&self) -> RateLimits {
-        self.limits
+        match &self.limit_source {
+            Some(source) => source.limits,
+            None => self.limits,
+        }
+    }
+
+    #[must_use]
+    pub fn with_limit_source(mut self, source: Option<NativeLimitSource>) -> Self {
+        self.limit_source = source;
+        self
+    }
+
+    #[must_use]
+    pub fn limit_source_key_id(&self) -> &ClientApiKeyId {
+        self.limit_source
+            .as_ref()
+            .map_or(&self.key_id, |source| &source.key_id)
+    }
+
+    #[must_use]
+    pub fn limit_source(&self) -> Option<&NativeLimitSource> {
+        self.limit_source.as_ref()
+    }
+
+    /// 来源停用只拒绝新准入，不改变真实身份或阻止终态结算。
+    ///
+    /// # Errors
+    ///
+    /// 来源停用时返回策略拒绝。
+    pub fn authorize_limits(&self) -> Result<(), PolicyError> {
+        if self
+            .limit_source
+            .as_ref()
+            .is_some_and(|source| !source.enabled)
+        {
+            return Err(PolicyError::Denied {
+                reason: "native limit source is disabled",
+            });
+        }
+        Ok(())
     }
 
     /// 禁用的 Key 不接受新请求。

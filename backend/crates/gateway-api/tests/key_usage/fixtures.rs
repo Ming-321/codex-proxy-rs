@@ -17,6 +17,8 @@ pub(super) async fn fixture() -> AdminTestFixture {
     let fixture = key_fixture().await;
     let now = Utc::now();
     *fixture.client_key.lock().unwrap() = Some(ClientKeyRecord {
+        local_budget_limits: Default::default(),
+        limit_source: None,
         request_profile_overrides: Default::default(),
         id: ClientApiKeyId::new("key-42").unwrap(),
         name: "Development".to_owned(),
@@ -35,6 +37,7 @@ pub(super) async fn fixture() -> AdminTestFixture {
             weekly_used_usd: "2.35".parse().unwrap(),
             daily_resets_at: Some((now + Duration::days(1)).into()),
             weekly_resets_at: Some((now + Duration::days(7)).into()),
+            ..Default::default()
         },
         last_used_at: Some(now),
         created_at: now,
