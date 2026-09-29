@@ -1,6 +1,9 @@
 name: Release
 
 on:
+  push:
+    branches: [integrate/car-plugin-controls-facts]
+    paths: [.github/workflows/release.yml]
   workflow_dispatch:
     inputs:
       tag:
@@ -21,6 +24,7 @@ env:
 
 jobs:
   release-info:
+    if: github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-latest
     timeout-minutes: 10
     outputs:
@@ -412,7 +416,8 @@ jobs:
           shutil.copy2(config_template, release_dir / config_template.name)
           compose = pathlib.Path("deploy/compose.yaml").read_text()
           image = f"{os.environ['REGISTRY']}/{os.environ['IMAGE_NAME']}"
-          default_image = "${CPR_IMAGE:-" + image + ":latest}"
+          # 源码保留上游部署模板；发行附件替换成当前 fork 的目标镜像。
+          default_image = "${CPR_IMAGE:-ghcr.io/zyycn/codex-proxy-rs:latest}"
           if compose.count(default_image) != 1:
               raise SystemExit("Expected exactly one default application image in deploy/compose.yaml")
           # 发布附件固定镜像版本，防止后续 pull 与随包配置模板脱节。
