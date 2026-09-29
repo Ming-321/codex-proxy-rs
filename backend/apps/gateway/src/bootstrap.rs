@@ -182,10 +182,11 @@ async fn launch(
             core.snapshot_control(),
         );
         or_shutdown!(plugin_runtime, plugin_runtime.bind_account_ports(&accounts));
-        let keys = gateway_admin::initialize_plugin_client_keys(
+        let keys = gateway_admin::initialize_plugin_client_keys_with_admission(
             admin_providers.clone(),
             store.admin_ports().client_keys(),
             core.snapshot_control(),
+            Some(store.client_admission_reader()),
         );
         or_shutdown!(plugin_runtime, plugin_runtime.bind_client_key_ports(&keys));
         let plugin_resources = gateway_admin::initialize_plugin_resources(
@@ -232,10 +233,11 @@ async fn launch(
         plugin_runtime,
         plugin_runtime.bind_account_ports(&plugin_accounts)
     );
-    let plugin_keys = gateway_admin::initialize_plugin_client_keys(
+    let plugin_keys = gateway_admin::initialize_plugin_client_keys_with_admission(
         admin_providers.clone(),
         store.admin_ports().client_keys(),
         core.snapshot_control(),
+        Some(store.client_admission_reader()),
     );
     or_shutdown!(
         plugin_runtime,

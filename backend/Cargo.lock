@@ -1803,6 +1803,7 @@ dependencies = [
  "hex",
  "image",
  "jsonschema",
+ "redis",
  "roxmltree",
  "secrecy",
  "semver",

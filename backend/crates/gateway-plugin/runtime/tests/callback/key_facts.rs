@@ -109,6 +109,10 @@ async fn key_facts_read_current_database_groups_without_secrets() {
             json!({"schema_version":1,"client_key_id":id,"enabled":enabled,
             "group_ids": groups.iter().map(|id| id.as_str()).collect::<Vec<_>>(),
             "configured_max_concurrency":8,"configured_requests_per_minute":60,
+            "effective_source_key_id":id,"effective_max_concurrency":8,
+            "effective_requests_per_minute":60,
+            "effective_config_revision":result[0]["effective_config_revision"],
+            "loaded_config_revision":result[0]["loaded_config_revision"],
             "request_profile_overrides":{"openai":{"client_kind":"codex"}} })
         );
         assert_eq!(result[1]["error"], "rejected");

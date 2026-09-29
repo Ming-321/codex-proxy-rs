@@ -15,21 +15,25 @@ use crate::{
         },
         plugin_client_keys::{
             PluginClientKey, PluginClientKeyCursor, PluginClientKeyFacts, PluginClientKeyListQuery,
-            PluginClientKeyPage,
+            PluginClientKeyOccupancy, PluginClientKeyPage,
         },
         plugin_resources::PluginResourceOwner,
     },
-    ports::plugin_client_keys::PluginClientKeyAccess,
+    ports::plugin_client_keys::{PluginClientAdmissionReader, PluginClientKeyAccess},
     use_case::client_keys::ClientKeyService,
 };
 
 pub(crate) struct DefaultPluginClientKeyAccess {
     service: Arc<dyn ClientKeyService>,
+    admission: Option<Arc<dyn PluginClientAdmissionReader>>,
 }
 
 impl DefaultPluginClientKeyAccess {
-    pub(crate) fn new(service: Arc<dyn ClientKeyService>) -> Self {
-        Self { service }
+    pub(crate) fn new(
+        service: Arc<dyn ClientKeyService>,
+        admission: Option<Arc<dyn PluginClientAdmissionReader>>,
+    ) -> Self {
+        Self { service, admission }
     }
 }
 
@@ -37,13 +41,24 @@ impl DefaultPluginClientKeyAccess {
 impl PluginClientKeyAccess for DefaultPluginClientKeyAccess {
     async fn facts(&self, id: &ClientApiKeyId) -> Result<PluginClientKeyFacts, AdminError> {
         let key = self.service.get(id).await?;
+        let effective = self.service.limit_binding(id).await?;
         Ok(PluginClientKeyFacts {
             id: key.id,
             enabled: key.enabled,
             group_ids: key.groups.into_iter().map(|group| group.id).collect(),
-            limits: key.limits,
+            limits: effective.local_limits,
+            effective,
             request_profile_overrides: key.request_profile_overrides,
         })
+    }
+
+    async fn occupancy(&self, id: &ClientApiKeyId) -> Result<PluginClientKeyOccupancy, AdminError> {
+        let binding = self.service.limit_binding(id).await?;
+        let admission = match &self.admission {
+            Some(reader) => reader.read_active(&binding.source_key_id).await.ok(),
+            None => None,
+        };
+        Ok(PluginClientKeyOccupancy { binding, admission })
     }
 
     async fn weekly_budget_control(

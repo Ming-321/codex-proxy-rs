@@ -53,7 +53,7 @@ impl PluginData {
     ) -> Result<RpcReply, PluginFault> {
         // 基础事实读取不隐含上游访问权；管理范围也不继承到客户端请求链。
         let authorized = match method {
-            data::ACCOUNTS_LIST | data::KEYS_GET => self.data_authorized,
+            data::ACCOUNTS_LIST | data::KEYS_GET | data::KEYS_OCCUPANCY => self.data_authorized,
             data::QUOTA_GET => self.data_authorized || self.quota_authorized,
             data::QUOTA_REFRESH => self.quota_authorized,
             quota_forecasts::GET_WEEKLY => self.forecast_authorized,
@@ -127,6 +127,11 @@ impl PluginData {
                         .collect(),
                     configured_max_concurrency: key.limits.max_concurrency,
                     configured_requests_per_minute: key.limits.requests_per_minute,
+                    effective_source_key_id: key.effective.source_key_id.as_str().to_owned(),
+                    effective_max_concurrency: key.effective.limits.max_concurrency,
+                    effective_requests_per_minute: key.effective.limits.requests_per_minute,
+                    effective_config_revision: key.effective.config_revision.get(),
+                    loaded_config_revision: key.effective.loaded_config_revision,
                     request_profile_overrides: key
                         .request_profile_overrides
                         .into_iter()
@@ -137,6 +142,28 @@ impl PluginData {
                             )
                         })
                         .collect(),
+                })
+            }
+            data::KEYS_OCCUPANCY => {
+                let query: data::ClientKeyFactsQuery =
+                    serde_json::from_slice(payload).map_err(|_| invalid())?;
+                let id = ClientApiKeyId::new(query.client_key_id).map_err(|_| invalid())?;
+                let value = self
+                    .keys
+                    .upgrade()?
+                    .occupancy(&id)
+                    .await
+                    .map_err(map_admin_error)?;
+                serde_json::to_vec(&data::ClientKeyOccupancy {
+                    schema_version: 1,
+                    client_key_id: id.as_str().to_owned(),
+                    source_key_id: value.binding.source_key_id.as_str().to_owned(),
+                    max_concurrency: value.binding.limits.max_concurrency,
+                    requests_per_minute: value.binding.limits.requests_per_minute,
+                    config_revision: value.binding.config_revision.get(),
+                    loaded_config_revision: value.binding.loaded_config_revision,
+                    active_requests: value.admission.map(|sample| sample.active_requests),
+                    observed_at_ms: value.admission.map(|sample| sample.observed_at_ms),
                 })
             }
             data::ACCOUNTS_LIST => {

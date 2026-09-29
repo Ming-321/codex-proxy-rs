@@ -103,12 +103,16 @@ Provider 固定为宿主内置的 OpenAI 与 xAI。插件提供以下扩展能�
 | `call.host.account_facts(query)` | `host.data.accounts.list` | `AccountFactsQuery`：可选 `provider_id`、`cursor`，必填 `limit`（1～200）；按账号 ID 升序，`next_cursor=null` 表示本页已结束 |
 | `call.host.quota_facts(query)` | `host.data.quota.get` | `QuotaFactsQuery { account_id }`：读取 Provider 现有观测，不访问上游刷新 |
 | `call.host.key_facts(query)` | `host.data.keys.get` | `ClientKeyFactsQuery { client_key_id }`：读取当前 Key 的启用状态、显式分组、本地配置限额与请求画像，不返回密钥 |
+| `call.host.key_occupancy(query)` | `host.data.keys.get_occupancy` | `ClientKeyFactsQuery { client_key_id }`：读取当前持久化限额来源的 Redis 并发租约总占用 |
 
 类型在 `call::data`。控制参数为 `{}`，查询和结果使用二进制 JSON；结果固定 `schema_version=1`。
 SDK 解析响应时忽略未知字段，包含账号分页、账号及额度窗口；已知字段按声明校验类型与必填性，查询拒绝未知字段。
-插件须通过 `engines.codex-proxy-rs` 限定支持所用接口和字段的宿主版本。账号配置／有效上限、Key 配置限额与画像字段是必填响应字段；SDK 遇到缺少这些字段的宿主响应会拒绝解码，不会把缺失配置误判为零或不限
+插件须通过 `engines.codex-proxy-rs` 限定支持所用接口和字段的宿主版本。账号配置／有效上限、Key 配置与有效限额及画像字段是必填响应字段；SDK 遇到缺少这些字段的宿主响应会拒绝解码，不会把缺失配置误判为零或不限
 
 `key_facts` 每次读取当前管理数据，返回 `client_key_id`、`enabled`、`group_ids`、`configured_max_concurrency`、`configured_requests_per_minute` 和 `request_profile_overrides`；不存在的 Key 沿用事实接口的 `rejected` 错误。两个限额为持久化配置，零表示不限，不代表共享来源的生效值。画像按 Provider ID 返回宿主保存的配置 JSON，不表示观察到实际客户端软件。它需要 `data` 权限，`keys`、`key_budgets` 和 `quota_observations` 权限不能替代
+
+`key_facts` 的 `effective_source_key_id`、`effective_max_concurrency`、`effective_requests_per_minute` 和 `effective_config_revision` 来自同一次持久化来源解析；`loaded_config_revision` 是当前实例已加载配置版本，不能把尚未加载的配置当作当前实例准入事实。基础事实和来源解析是两个读取，不保证跨读取原子一致。
+`key_occupancy` 返回当前持久化来源的 `source_key_id`、限额、配置版本、已加载版本、`active_requests` 和 Redis 时间 `observed_at_ms`。A、B 共用 X 时各查询均返回 X 的总占用，不得相加；换源后旧来源的在途租约仍归旧来源。`active_requests=null` 且 `observed_at_ms=null` 表示 Redis 读取不可用，零表示已知空闲；限额零表示不限，占用可能超过刚降低的上限。它只读取尚未过期的本网关准入租约，不包含排队或其他软件的使用，也不是准入判断。此查询同样需要 `data` 权限，不授予绑定修改能力；读取不刷新上游或修改预算、账本、绑定。数据库来源与 Redis 计数不保证全局原子快照。
 
 `group_ids` 表示显式绑定，包含停用分组，不是最终可路由账号集合；空绑定也不代表单账号范围。通过 `account_facts` 关联账号时需完整遍历分页，结果包含停用账号。跨查询关联及同步策略由插件负责，这些调用不构成跨查询事务，管理员修改绑定后应重新检查。
 账号返回 `account_id`、`provider_id`、`name`、`email`、`group_ids`、`enabled`、`notes`、`configured_concurrency_limit`、`effective_concurrency_limit`、`used_slots` 和 `updated_at_ms`，不附带令牌或代理信息。配置上限为 `null` 时继承全局默认值；有效上限为 `null` 时不限。`used_slots=null` 表示运行租约读取不可用，零表示已知空闲；这是本网关的账号并发占用，不含排队、其他软件或上游隐藏限制。查询仅读取当前页的账号及租约，不刷新上游

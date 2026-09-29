@@ -225,6 +225,7 @@ fn callback_allowed(method: &str, stage: Stage, permissions: &[Permission]) -> b
             method,
             "host.data.accounts.list"
                 | "host.data.keys.get"
+                | "host.data.keys.get_occupancy"
                 | "host.data.quota.get"
                 | "host.quota_observations.refresh"
                 | "host.quota_forecasts.get_weekly"
@@ -283,7 +284,7 @@ fn callback_allowed(method: &str, stage: Stage, permissions: &[Permission]) -> b
             Permission::Accounts
         }
         "host.affinity.lookup" => Permission::Requests,
-        "host.data.accounts.list" | "host.data.keys.get"
+        "host.data.accounts.list" | "host.data.keys.get" | "host.data.keys.get_occupancy"
             if matches!(
                 stage,
                 Stage::Management | Stage::CommandLine | Stage::Maintenance

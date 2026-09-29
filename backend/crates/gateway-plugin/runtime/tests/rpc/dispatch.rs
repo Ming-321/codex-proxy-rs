@@ -286,6 +286,7 @@ async fn fact_callbacks_require_independent_grants_and_control_plane_stages() {
         vec![Permission::Keys],
         vec![Permission::Models],
         vec![Permission::KeyBudgets],
+        vec![Permission::KeyLimitBindings],
         vec![Permission::QuotaObservations],
         vec![Permission::QuotaForecasts],
         vec![Permission::Data],
@@ -312,6 +313,7 @@ async fn fact_callbacks_require_independent_grants_and_control_plane_stages() {
             for method in [
                 "host.data.accounts.list",
                 "host.data.keys.get",
+                "host.data.keys.get_occupancy",
                 "host.data.quota.get",
             ] {
                 let reply = invoke_callback(&session, stage, method).await;
@@ -330,7 +332,7 @@ async fn fact_callbacks_require_independent_grants_and_control_plane_stages() {
         assert_eq!(
             callbacks.called.load(Ordering::Relaxed),
             if authorized {
-                9
+                12
             } else if quota_authorized {
                 3
             } else {

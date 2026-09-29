@@ -4,6 +4,10 @@ use std::{collections::HashSet, time::Duration};
 
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};
+use gateway_admin::{
+    model::{AdminError, plugin_client_keys::PluginClientAdmissionSnapshot},
+    ports::plugin_client_keys::PluginClientAdmissionReader,
+};
 use gateway_core::engine::admission::{
     ClientAdmissionDecision as CoreAdmissionDecision, ClientAdmissionError as CoreAdmissionError,
     ClientAdmissionPort, ClientAdmissionRecovery as CoreAdmissionRecovery,
@@ -49,6 +53,12 @@ end
 extend_ttl(KEYS[1], active_ttl)
 extend_ttl(KEYS[2], 120000)
 return 0
+"#;
+
+const READ_ACTIVE_SCRIPT: &str = r#"
+local clock = redis.call('TIME')
+local now_ms = (tonumber(clock[1]) * 1000) + math.floor(tonumber(clock[2]) / 1000)
+return {redis.call('ZCOUNT', KEYS[1], '(' .. now_ms, '+inf'), now_ms}
 "#;
 
 const RESTORE_SCRIPT: &str = r#"
@@ -255,6 +265,28 @@ impl RedisClientAdmissionRepository {
             format!("{}:client:{tag}:active", self.namespace),
             format!("{}:client:{tag}:requests", self.namespace),
         ])
+    }
+}
+
+#[async_trait]
+impl PluginClientAdmissionReader for RedisClientAdmissionRepository {
+    async fn read_active(
+        &self,
+        source: &gateway_core::policy::ClientApiKeyId,
+    ) -> Result<PluginClientAdmissionSnapshot, AdminError> {
+        let keys = self
+            .keys(source.as_str())
+            .map_err(|_| AdminError::unavailable("Client Key 运行占用不可用"))?;
+        let mut connection = self.connection.clone();
+        let (active_requests, observed_at_ms) = Script::new(READ_ACTIVE_SCRIPT)
+            .key(&keys[0])
+            .invoke_async::<(u64, i64)>(&mut connection)
+            .await
+            .map_err(|_| AdminError::unavailable("Client Key 运行占用不可用"))?;
+        Ok(PluginClientAdmissionSnapshot {
+            active_requests,
+            observed_at_ms,
+        })
     }
 }
 

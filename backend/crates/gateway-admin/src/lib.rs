@@ -554,9 +554,20 @@ pub fn initialize_plugin_client_keys(
     store: Arc<dyn ports::store::ClientKeyStore>,
     snapshot: Arc<dyn SnapshotControl>,
 ) -> Arc<dyn PluginClientKeyAccess> {
+    initialize_plugin_client_keys_with_admission(providers, store, snapshot, None)
+}
+
+/// 为插件增加当前限额来源的 Redis 租约读取；缺失或不可用时返回未知占用。
+#[must_use]
+pub fn initialize_plugin_client_keys_with_admission(
+    providers: ports::provider::ProviderAdminRegistry,
+    store: Arc<dyn ports::store::ClientKeyStore>,
+    snapshot: Arc<dyn SnapshotControl>,
+    admission: Option<Arc<dyn ports::plugin_client_keys::PluginClientAdmissionReader>>,
+) -> Arc<dyn PluginClientKeyAccess> {
     let service: Arc<dyn ClientKeyService> =
         Arc::new(DefaultClientKeyService::new(store, snapshot, providers));
-    Arc::new(use_case::plugin_client_keys::DefaultPluginClientKeyAccess::new(service))
+    Arc::new(use_case::plugin_client_keys::DefaultPluginClientKeyAccess::new(service, admission))
 }
 
 /// 为 Runtime 组合实例自有资源写入；权限和归属在同一存储事务复核。

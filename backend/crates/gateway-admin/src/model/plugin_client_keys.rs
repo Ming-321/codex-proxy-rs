@@ -12,7 +12,21 @@ pub struct PluginClientKeyFacts {
     pub enabled: bool,
     pub group_ids: Vec<AccountGroupId>,
     pub limits: gateway_core::policy::RateLimits,
+    pub effective: super::client_keys::ClientLimitBinding,
     pub request_profile_overrides: super::client_keys::ProviderRequestProfileOverrides,
+}
+
+/// Redis 中指定限额来源的当前有效租约；None 表示运行态读取不可用。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct PluginClientAdmissionSnapshot {
+    pub active_requests: u64,
+    pub observed_at_ms: i64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PluginClientKeyOccupancy {
+    pub binding: super::client_keys::ClientLimitBinding,
+    pub admission: Option<PluginClientAdmissionSnapshot>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

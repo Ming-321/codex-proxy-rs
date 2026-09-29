@@ -495,6 +495,7 @@ impl CallbackHandler for PluginCallbacks {
                 method.as_str(),
                 gateway_plugin_sdk::call::data::ACCOUNTS_LIST
                     | gateway_plugin_sdk::call::data::KEYS_GET
+                    | gateway_plugin_sdk::call::data::KEYS_OCCUPANCY
                     | gateway_plugin_sdk::call::data::QUOTA_GET
                     | gateway_plugin_sdk::call::data::QUOTA_REFRESH
                     | gateway_plugin_sdk::call::quota_forecasts::GET_WEEKLY

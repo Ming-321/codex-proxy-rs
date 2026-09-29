@@ -26,6 +26,17 @@ impl HostClient {
         payload_call(self, data::KEYS_GET, query).await
     }
 
+    /// 读取当前持久化限额来源的并发租约快照；共享成员返回同一来源总占用。
+    ///
+    /// # Errors
+    /// 缺少 data 权限、阶段不符或 Key 不存在时返回错误；Redis 不可用时占用为 None。
+    pub async fn key_occupancy(
+        &self,
+        query: data::ClientKeyFactsQuery,
+    ) -> Result<data::ClientKeyOccupancy, PluginFault> {
+        payload_call(self, data::KEYS_OCCUPANCY, query).await
+    }
+
     /// 通过宿主刷新账号额度观测，返回与 quota_facts 相同的非秘密投影。
     /// 需要 quota_observations 权限；不修改上游额度，也不自动重置任何 Key。
     ///

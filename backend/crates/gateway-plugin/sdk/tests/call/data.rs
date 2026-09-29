@@ -1,6 +1,6 @@
 use gateway_plugin_sdk::call::data::{
-    AccountFactsPage, AccountFactsQuery, ClientKeyFacts, ClientKeyFactsQuery, QuotaFacts,
-    QuotaFactsQuery,
+    AccountFactsPage, AccountFactsQuery, ClientKeyFacts, ClientKeyFactsQuery, ClientKeyOccupancy,
+    QuotaFacts, QuotaFactsQuery,
 };
 use serde_json::{Value, json};
 
@@ -32,12 +32,33 @@ fn key_facts_accept_additive_fields() {
     let original = json!({
         "schema_version":1, "client_key_id":"key_1", "enabled":false,
         "group_ids":["grp_1"], "configured_max_concurrency":8,
-        "configured_requests_per_minute":60, "request_profile_overrides":{}
+        "configured_requests_per_minute":60, "request_profile_overrides":{},
+        "effective_source_key_id":"key_1", "effective_max_concurrency":8,
+        "effective_requests_per_minute":60, "effective_config_revision":2,
+        "loaded_config_revision":null
     });
     let mut extended = original.clone();
     extended["future_key_field"] = json!({"value":1});
     let facts: ClientKeyFacts = serde_json::from_value(extended).unwrap();
     assert_eq!(serde_json::to_value(facts).unwrap(), original);
+}
+
+#[test]
+fn key_occupancy_distinguishes_unknown_zero_and_unlimited() {
+    let original = json!({
+        "schema_version":1,"client_key_id":"a","source_key_id":"x",
+        "max_concurrency":0,"requests_per_minute":0,"config_revision":7,
+        "loaded_config_revision":null,"active_requests":null,"observed_at_ms":null
+    });
+    let unknown: ClientKeyOccupancy = serde_json::from_value(original.clone()).unwrap();
+    assert_eq!(unknown.max_concurrency, 0);
+    assert_eq!(unknown.active_requests, None);
+    let mut known = original;
+    known["active_requests"] = json!(0);
+    known["observed_at_ms"] = json!(123);
+    let known: ClientKeyOccupancy = serde_json::from_value(known).unwrap();
+    assert_eq!(known.active_requests, Some(0));
+    assert_eq!(known.observed_at_ms, Some(123));
 }
 
 #[test]

@@ -6,9 +6,20 @@ use gateway_core::{engine::budget::ClientBudgetStatus, policy::ClientApiKeyId};
 use crate::model::{
     AdminError, MutationContext,
     client_keys::{ResetClientKeyBudget, UpdateClientKeyBudgetLimits},
-    plugin_client_keys::{PluginClientKeyFacts, PluginClientKeyListQuery, PluginClientKeyPage},
+    plugin_client_keys::{
+        PluginClientAdmissionSnapshot, PluginClientKeyFacts, PluginClientKeyListQuery,
+        PluginClientKeyOccupancy, PluginClientKeyPage,
+    },
     plugin_resources::PluginResourceOwner,
 };
+
+#[async_trait]
+pub trait PluginClientAdmissionReader: Send + Sync {
+    async fn read_active(
+        &self,
+        source: &ClientApiKeyId,
+    ) -> Result<PluginClientAdmissionSnapshot, AdminError>;
+}
 
 #[async_trait]
 pub trait PluginClientKeyAccess: Send + Sync {
@@ -51,6 +62,7 @@ pub trait PluginClientKeyAccess: Send + Sync {
     ) -> Result<ClientApiKeyId, AdminError>;
 
     async fn facts(&self, id: &ClientApiKeyId) -> Result<PluginClientKeyFacts, AdminError>;
+    async fn occupancy(&self, id: &ClientApiKeyId) -> Result<PluginClientKeyOccupancy, AdminError>;
     async fn list(
         &self,
         query: PluginClientKeyListQuery,

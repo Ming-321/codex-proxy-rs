@@ -25,6 +25,7 @@ pub type ProviderRequestProfileOverrideUpdates =
 pub struct ClientLimitBinding {
     pub id: ClientApiKeyId,
     pub source_key_id: ClientApiKeyId,
+    pub local_limits: RateLimits,
     pub revision: u64,
     pub config_revision: Revision,
     pub binding_config_revision: Option<u64>,

@@ -44,6 +44,7 @@ async fn read(
     let row = sqlx::query(
         "select coalesce(b.source_key_id,k.id) as source_id, coalesce(b.revision,0) as revision,
         r.config_revision, b.config_revision as binding_config_revision, x.enabled, x.max_concurrency, x.requests_per_minute,
+        k.max_concurrency as local_max_concurrency, k.requests_per_minute as local_requests_per_minute,
         x.daily_limit_usd::text, x.weekly_limit_usd::text,
         w.weekly_controller, coalesce(w.weekly_control_revision,0) as weekly_control_revision,
         coalesce(w.weekly_controller is not null and w.weekly_end<=now(),false) as weekly_waiting,
@@ -81,6 +82,10 @@ async fn read(
         id: id.clone(),
         source_key_id: ClientApiKeyId::new(row.get::<String, _>("source_id"))
             .map_err(|_| invalid())?,
+        local_limits: RateLimits {
+            max_concurrency: number("local_max_concurrency")?,
+            requests_per_minute: number("local_requests_per_minute")?,
+        },
         revision: number("revision")?,
         config_revision: gateway_admin::model::Revision::new(number("config_revision")?)
             .map_err(|_| invalid())?,

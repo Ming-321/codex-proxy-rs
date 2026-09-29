@@ -17,6 +17,7 @@ pub const ACCOUNTS_LIST: &str = "host.data.accounts.list";
 pub const QUOTA_REFRESH: &str = "host.quota_observations.refresh";
 pub const QUOTA_GET: &str = "host.data.quota.get";
 pub const KEYS_GET: &str = "host.data.keys.get";
+pub const KEYS_OCCUPANCY: &str = "host.data.keys.get_occupancy";
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -31,11 +32,32 @@ pub struct ClientKeyFacts {
     pub client_key_id: String,
     pub enabled: bool,
     pub group_ids: Vec<String>,
-    /// 持久化配置；零表示不限，绑定来源生效值由独立查询提供。
+    /// Key 自身持久化配置；零表示不限，下方有效值来自限额来源。
     pub configured_max_concurrency: u64,
     pub configured_requests_per_minute: u64,
+    /// 当前持久化来源；实例可能尚未加载 `effective_config_revision`。
+    pub effective_source_key_id: String,
+    pub effective_max_concurrency: u64,
+    pub effective_requests_per_minute: u64,
+    pub effective_config_revision: u64,
+    pub loaded_config_revision: Option<u64>,
     /// Provider 专属请求画像配置，不表示实际客户端软件。
     pub request_profile_overrides: BTreeMap<String, serde_json::Value>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ClientKeyOccupancy {
+    pub schema_version: u32,
+    pub client_key_id: String,
+    /// 占用属于整个来源；多个成员查询相同来源时不能相加。
+    pub source_key_id: String,
+    pub max_concurrency: u64,
+    pub requests_per_minute: u64,
+    pub config_revision: u64,
+    pub loaded_config_revision: Option<u64>,
+    /// None 表示 Redis 不可用；Some(0) 表示已知空闲。可高于当前上限。
+    pub active_requests: Option<u64>,
+    pub observed_at_ms: Option<i64>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
