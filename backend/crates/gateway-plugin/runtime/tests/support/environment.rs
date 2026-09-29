@@ -579,16 +579,17 @@ impl Environment {
         .execute(&self.admin)
         .await
         .unwrap();
+        // 该 Key 没有绑定共享来源，限额来源就是它自己；迁移也对历史行做同样回填。
         sqlx::query(sqlx::AssertSqlSafe(format!(
             "insert into {}.model_requests (
-             id, client_api_key_ref, config_revision, protocol, operation, endpoint,
+             id, client_api_key_ref, limit_source_key_ref, config_revision, protocol, operation, endpoint,
              client_transport, requested_model_id, provider_kind, provider_account_id,
              provider_account_ref, upstream_model_id, upstream_transport, attempt_count,
              upstream_send_state, downstream_committed_at, outcome, client_status_code,
              upstream_status_code, input_tokens, output_tokens, total_tokens,
              cost_source, cost_amount, cost_currency, started_at, deadline_at, completed_at,
              routing_scope, routing_group_refs, routing_group_names_snapshot)
-             values ('forecast-usage','key_forecast',1,'openai','responses','/v1/responses',
+             values ('forecast-usage','key_forecast','key_forecast',1,'openai','responses','/v1/responses',
              'http_sse','test','openai',$1,$1,'test','http_sse',1,'sent',now()-interval '2 hours',
              'succeeded',200,200,100,0,100,
              case when $2::text is null then 'unavailable' else 'provider_reported' end,
