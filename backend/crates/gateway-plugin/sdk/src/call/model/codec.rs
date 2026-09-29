@@ -20,7 +20,7 @@ pub(super) fn decode_event(bytes: &[u8]) -> Result<ExecutionEvent, ExecutionEnco
     Ok(event)
 }
 
-fn pack<T: Serialize, const N: usize>(
+pub(in crate::call) fn pack<T: Serialize, const N: usize>(
     prefix: [u8; 4],
     metadata: &T,
     payloads: [Vec<u8>; N],
@@ -55,7 +55,7 @@ fn pack<T: Serialize, const N: usize>(
     Ok(result)
 }
 
-fn unpack<T: DeserializeOwned, const N: usize>(
+pub(in crate::call) fn unpack<T: DeserializeOwned, const N: usize>(
     prefix: [u8; 4],
     bytes: &[u8],
 ) -> Result<(T, [&[u8]; N]), ExecutionEncodingError> {

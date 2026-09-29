@@ -355,9 +355,19 @@ impl AccountStore for PgAdminAccountStore {
                 "invalid default account concurrency",
             )
         })?;
+        let account_ids = accounts
+            .iter()
+            .map(|account| account.id.clone())
+            .collect::<Vec<_>>();
+        let mut groups_by_account = self.account_groups_by_account(&account_ids).await?;
         let accounts = accounts
             .into_iter()
-            .map(admin_account_record)
+            .map(|summary| {
+                let account_id = summary.id.clone();
+                let mut account = admin_account_record(summary)?;
+                account.groups = groups_by_account.remove(&account_id).unwrap_or_default();
+                Ok(account)
+            })
             .collect::<AdminStoreResult<Vec<_>>>()?;
         let capacity = accounts
             .iter()

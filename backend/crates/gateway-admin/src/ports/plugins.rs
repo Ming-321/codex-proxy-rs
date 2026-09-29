@@ -262,6 +262,20 @@ pub trait PluginStore: Send + Sync {
         self.save_instance(instance, expected_revision, context)
             .await
     }
+    /// 状态迁移前的技术暂停，保留实例拥有的资源；不得用于用户停用。
+    async fn pause_instance_for_state_transition(
+        &self,
+        _instance: PluginInstance,
+        _expected_revision: Revision,
+        _state: PluginStateCommit,
+        _context: &MutationContext,
+    ) -> AdminStoreResult<PluginInstanceMutation> {
+        Err(super::store::AdminStoreError::new(
+            super::store::AdminStoreErrorKind::Unavailable,
+            "plugin state",
+            "plugin migration pause is unavailable",
+        ))
+    }
     /// 保存目标并停用明确确认的配置，必须共享事务和配置版本检查。
     async fn save_instance_replacing(
         &self,

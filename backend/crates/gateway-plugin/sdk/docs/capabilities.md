@@ -9,7 +9,7 @@
 | --- | --- |
 | 组合处理器并声明权限 | [作者入口](#类型化作者入口) · [能力与方法](#能力与方法) · [访问域](#访问域) |
 | 使用宿主资源 | [基础事实](#基础事实) · [额度刷新](#额度观测刷新) · [账号](#账号与凭据) · [自有资源](#自有资源与维护) · [Key 预算](#client-key-预算) · [模型](#key模型与模型调用) · [网络](#网络) |
-| 扩展请求链 | [中间件](#洋葱中间件) · [模型目录](#模型目录) · [重试](#重试决策) · [路由、调度与观察](#路由调度与观察) · [入口认证](#数据面入口认证) |
+| 扩展请求链 | [中间件](#洋葱中间件) · [上游适配器](upstream-adapters.md) · [模型目录](#模型目录) · [重试](#重试决策) · [路由、调度与观察](#路由调度与观察) · [入口认证](#数据面入口认证) |
 | 管理与交互 | [状态、日志与迁移](#状态日志与迁移) · [管理页面](#管理页面公开入口与-cli) · [页面宿主桥](#页面宿主桥-v2) · [命令行](#命令行) |
 
 ## 类型化作者入口
@@ -52,6 +52,7 @@ Provider 固定为宿主内置的 OpenAI 与 xAI。插件提供以下扩展能�
 | 能力 | 类型化方法 |
 | --- | --- |
 | `middleware` | `PluginBuilder::middleware` / `middleware.handle` |
+| `upstream_adapter` | `methods::UPSTREAM_ADAPTER_REGISTER`、`methods::UPSTREAM_ADAPTER_EXECUTE`，见[受管上游](upstream-adapters.md) |
 | `model_router` | `methods::ROUTE_MODEL` |
 | `model_catalog` | `PluginBuilder::model_catalog` / `methods::MODEL_CATALOG_REGISTER` |
 | `retry_policy` | `methods::RETRY_DECISION` |
@@ -71,6 +72,7 @@ Provider 固定为宿主内置的 OpenAI 与 xAI。插件提供以下扩展能�
 | 权限 | 开放的宿主能力 |
 | --- | --- |
 | `network` | 通过 `host.http.*` 使用宿主受管出站网络；仍受统一代理、超时、大小和流控规则约束 |
+| `upstream_connections` | 仅在 `upstream` 阶段使用已选账号的受管 HTTP / WebSocket；宿主注入凭据和账号代理，不能读取原始凭据或重新选号 |
 | `models` | 列出非秘密 Key、按所选 Key 查询模型，以及通过 `host.model.*` 调用模型；调用可能产生消耗 |
 | `accounts` | 查询账号、读取原始凭据及创建或替换账号；写入仍经过 revision CAS、审计和发布事务 |
 | `data` | 在管理／命令／维护阶段只读账号、Key 的最小基础信息及已有额度观测，不包含凭据、写入或预测 |
@@ -79,6 +81,7 @@ Provider 固定为宿主内置的 OpenAI 与 xAI。插件提供以下扩展能�
 | `groups` | 创建本实例分组，允许将所有现有及未来新增账号加入或移出这些分组，保留其他分组关系 |
 | `keys` | 创建仅绑定本实例分组的 Key，返回非秘密身份；不授予其他 Key 的修改或明文读取权限 |
 | `key_budgets` | 在管理／命令／维护阶段查询全部 Client Key 的预算、修改日／周金额上限及重置用量，不读取密钥或修改其他 Key 配置 |
+| `key_limit_bindings` | 在管理／命令／维护阶段读取和修改全部 Client Key 的共享限额来源，不读取密钥；停用插件不解除共享 |
 | `quota_observations` | 在管理／命令／维护阶段读取及刷新全部账号的额度观测，不暴露凭据或执行上游额度重置 |
 | `quota_forecasts` | 在管理／命令／维护阶段只读全部账号的周容量及剩余金额估计，不刷新上游、不修改预算、不返回凭据或逐条历史 |
 
@@ -165,7 +168,7 @@ Provider 不支持刷新（如 OpenAI URL + Key 账号）返回 `invalid_input`�
 每个实例串行执行，不同实例相互独立；调用限时 30 秒，失败后等待 5 秒重试。维护失败不回滚已经提交的资源，
 下一次对账继续补齐。只读校验、准备候选与 CLI 帮助不会启动维护；停用、替换和宿主关闭时取消旧任务
 
-维护阶段允许日志、私有状态，以及已授权的 `data`、`groups`、`keys`、`key_budgets`、`quota_observations`、`quota_forecasts` 回调；不开放任意网络、凭据或模型执行。
+维护阶段允许日志、私有状态，以及已授权的 `data`、`groups`、`keys`、`key_budgets`、`key_limit_bindings`、`quota_observations`、`quota_forecasts` 回调；不开放任意网络、凭据或模型执行。
 其他管理／命令入口也可使用下列资源方法：
 
 | SDK 方法 | 参数与行为 |
@@ -214,6 +217,33 @@ Key 明文仍通过宿主管理面查看，插件模型调用使用返回的 Key
 
 ### Client Key 预算
 
+#### 持续接管周窗口
+
+`key_budgets` 授权同时允许持续接管周窗口。类型位于 `call::weekly_budget`，控制参数 `{}`、二进制 JSON 输入输出，调用阶段与其他预算接口相同。旧宿主不支持这些方法，插件必须声明包含这些能力的最低宿主版本。
+
+| SDK 方法 | 回调 | 用途 |
+| --- | --- | --- |
+| `weekly_budget_control(WeeklyBudgetQuery)` | `host.keys.weekly_control.get` | 查询 `revision`、接管实例 ID `controller`、`expires_at_ms`、实际计费起点 `accounting_start_at_ms` 和 `waiting` |
+| `change_weekly_budget(ChangeWeeklyBudgetRequest)` | `host.keys.weekly_control.change` | 按 `expected_revision` 执行 `operation` |
+
+`operation` 是带 `action` 的对象：`claim` 需要 `expires_at_ms`，`clear_used` 默认 `false`；`sync`、`align` 需要 `expires_at_ms`；`release` 不需要额外字段。到期时间必须晚于宿主执行时间。`claim` 要求当前无接管者，`sync`、`align` 和插件 `release` 要求当前实例拥有接管权。正常换周、上游提前重置及重置卡共用 `sync`，宿主不猜测账号关联或重置证据。
+
+`align` 只修改到期日，保留计费起点、周已用、控制者与限额，用于不发放预算的窗口校正；它也受版本、持久化去重和事务审计约束。延长到未来会解除窗口等待，但不会绕过日预算、周金额限额或 Key 启用检查。
+
+查询和变更结果同时返回 `accounting_start_at_ms`（本地实际计费起点，未初始化为 `null`）。插件据此展示真实计费区间，不以自己的调用时间代替。
+
+先读取版本，将完整变更请求持久化在插件私有状态后再调用。成功后版本加一；最新一次变更的原样重试返回已提交版本，不再次清零。早于最新变更的请求返回版本冲突，不能改成当前版本后盲目重放。多个 Key 各自独立提交，部分成功时只重试未确认项。去重状态保存在宿主数据库，进程重启和响应丢失不影响它。
+
+首次接管默认保留周已用金额，显式 `clear_used=true` 只执行一次。`sync` 清零周用量，以取得 Key 锁后的宿主执行时刻为新计费起点，并设置提供的到期时间；不回算历史费用。日预算、限额和 Key 启用开关保持原语义。结算按完成时间归属当前计费起点；同步前完成但迟到落盘的费用保留历史记录，不回扣新周期。
+
+接管期间宿主不会自动推进七天窗口。到期而未同步时，`waiting=true`，新请求返回 `key_weekly_window_waiting`；已用金额及在途结算继续保留。新窗口同步解除等待，但不能绕过日限额或管理员停用。原有人工 `reset_key_budget` 仍只清零指定用量，不修改到期日，也不能解除等待；受控等待期间清零周用量同样推进本地计费起点，避免此前完成的迟到费用重新计入，清零后完成的在途费用仍正常结算。
+
+控制插件调用 `release`、插件明确停用、卸载或更换为不再具有预算权限的版本时，宿主自动保留用量和限额，按切换当天上海零点起七天设置原生到期日。退出本身不清零；下次原生到期才清零。退出会推进版本，旧调用不能继续控制。进程重启、刷新失败或临时离线不解除接管。同实例升级状态迁移的技术暂停也保留窗口、接管与去重，迁移失败回滚不会额外退出；暂停期间旧进程不能继续写入。最终失去权限、真正停用或替换为不同实例时仍解除。
+
+插件负责保存跟随配置、账号观测及待提交请求。停用后重新启用时，应重新读取状态并用 `clear_used=false` 接管；不要重放首次清零。用户在插件页面主动停止某个 Key 时，插件应先持久化退出意图，轮询和重启均尊重该意图。宿主原生页面只展示通用预算事实；关联、同步和停止等业务管理由插件页面提供。
+
+宿主不提供管理员单 Key 专用解除接口。插件管理页不可用时，管理员可通过现有插件停用操作释放该实例接管的全部 Key；这不会改变 Key 的启用开关，也不会清零其已用金额。
+
 `key_budgets` 是原生 Key 预算访问域，仅在 `management`、`command_line`、`maintenance` 阶段使用。
 接受该域即允许查询、设置金额上限及清零全部当前及未来 Client Key，包括管理员和其他插件创建的 Key；
 插件配置中的 Key 筛选不构成宿主权限边界。`keys` 只负责插件自有 Key 的创建，不能替代这一预算管理授权。
@@ -234,6 +264,11 @@ Key 明文仍通过宿主管理面查看，插件模型调用使用返回的 Key
 `daily_limit_usd`、`weekly_limit_usd`、`daily_used_usd`、`weekly_used_usd`、`daily_resets_at_ms`、`weekly_resets_at_ms`；
 时间为 UTC Unix 毫秒，`null` 表示尚未使用或窗口已过期。读取不触发准入、开启窗口或清零，停用的 Key 仍可管理
 
+共享成员的预算查询返回当前有效来源的限额、用量与窗口，返回的 `client_key_id` 仍是被查询的成员。
+对已绑定成员调用 `update_key_budget_limits` 或 `reset_key_budget` 返回 `conflict`，即使提供的上限与本地值相同；
+调用者必须显式指定来源 Key，不会自动重定向写入整个共享预算。管理员完整 Key 编辑只能保存成员的独立属性：
+表单限额须等于事务内来源的当前有效值，否则整次保存拒绝，不修改成员或来源。
+
 上限更新仅写入提供的日／周金额；省略或 `null` 的项保持不变。它保留已用金额、窗口到期时间、费用历史及其他 Key 配置。
 写入复用 Key 行锁，与结算串行；实际变化时授权、修改、配置 revision 和审计在同一事务提交，并通知原生配置发布。
 相同值再次赋值不产生新 revision 或审计；并发更新按事务顺序生效，同一字段由后提交的值覆盖，接口不提供调用去重或比较交换。
@@ -246,6 +281,40 @@ Key 明文仍通过宿主管理面查看，插件模型调用使用返回的 Key
 SDK 不自动重试。超时或断连不能证明写入未提交；重试上限赋值也可能覆盖期间其他调用的修改。
 不存在的 Key 返回 `rejected`，无权限或阶段不符返回 `permission_denied`；写入事务复验发现实例停用、版本或授权变化时返回 `conflict`，
 非法输入返回 `invalid_input`。账号关联、预算分配和重置触发由插件决定，宿主不自动串联上述接口
+
+### 共享限额关系
+
+`key_limit_bindings` 独立授权所有当前及未来 Client Key 的原生限额关系，包括管理员和其他插件创建的 Key。
+它影响预算、并发、RPM 和等待队列，不是逐 Key 委托或独占控制权；`keys`、`key_budgets`、`data` 等权限不能替代。
+仅允许 `management`、`command_line`、`maintenance` 阶段调用。它不授予 Key 明文、目录、创建、预算写入或周窗口控制能力。
+
+类型位于 `call::key_limit_bindings`；控制参数为 `{}`，输入输出为二进制 JSON：
+
+| SDK 方法 / 回调 | 输入 |
+| --- | --- |
+| `get_key_limit_binding` / `host.keys.get_limit_binding` | `{client_key_id}` |
+| `change_key_limit_binding` / `host.keys.change_limit_binding` | `{client_key_id, source_key_id, expected_revision}`；来源必须显式传入，`null` 表示解绑 |
+
+两者返回 `KeyLimitBinding`：真实 `client_key_id`、有效 `source_key_id`（未绑定时为自身）、关系 `revision`、
+当前持久配置 `config_revision`、最近关系提交的 `binding_config_revision`、本宿主实例的 `loaded_config_revision`、`source_enabled`。
+从未修改的关系 revision 为 0、关系提交版本为 null；加载版本未知保留 null。提交成功不保证所有节点已加载。
+预算数值通过另行授权的 `key_budgets` 查询，不在这里重复返回。新增响应允许未知扩展字段；旧方法响应不变。
+
+绑定、换源和解绑使用同一修改方法，不迁历史消费、不重置用量，不替换真实身份或路由权限；在途请求仍结算和释放原来源。
+解绑在同一事务保留来源当前的日／周预算上限、并发与 RPM，不恢复绑定前配置；后续独立编辑，来源修改不再影响该 Key。
+共享成员不能接管周窗口；已有本地周窗口控制须先释放再绑定。查询周窗口时返回有效来源的控制状态。
+禁止显式自引用、链式和循环关系；来源沿用原生启用及删除保护。不存在的 Key 返回 `rejected`；非法参数返回 `invalid_input`；
+权限或阶段不符返回 `permission_denied`；关系版本过期、关系约束违反或事务中发现实例授权变化返回 `conflict`。
+
+写入在同一事务中检查宿主签发的插件实例 ID、版本、产物及当前授权，并复用原生修改和审计。
+只有同一实例代次、同一产物、原 expected_revision 与完整参数匹配最近一次操作时，重试不再修改关系或追加审计；
+中间发生其他操作后不保证去重。重试仍检查授权，升级后的实例不能冒充旧调用。返回当前关系事实及加载状态，不缓存原回包。
+SDK 不自动重试，也不在冲突后重新查询并强制写入。业务插件应核对实际状态，遇到外部修改进入待确认状态，
+由管理员选择接受宿主现状或重新应用插件配置，避免自动覆盖循环。
+
+插件崩溃、停用、撤权、升级或删除均不自动解绑；该关系是宿主持久事实，不随插件资源清理。
+撤权与写入按控制面事务锁顺序串行：先提交的写入保留，撤权先提交则旧实例写入（包括重试）被拒绝。
+使用新方法的插件须声明支持 `key_limit_bindings` 的宿主版本范围；旧宿主不能执行它，不能失败后静默恢复为各 Key 独立限额。
 
 ### Key、模型与模型调用
 
@@ -270,6 +339,10 @@ SDK 不自动重试。超时或断连不能证明写入未提交；重试上限�
 后续执行仍重新检查当前 Key 规则、账号资格和租约
 
 ### 网络
+
+`HostClient::http(request, body)` 返回响应头与 `HostHttpBody`。正文用 `read()` 按需读取，
+用 `collect(maximum_bytes)` 有界收集，提前结束用 `close()`；EOF 与重复关闭不再调用宿主。
+父调用取消或结束时宿主回收未关闭的流，SDK 不后台预读。账号上游使用同一正文对象，权限与目标见[受管上游](upstream-adapters.md)
 
 `network` 域通过 `host.http.do/do_stream` 和流读取／关闭方法提供受管 HTTP。URL、header 和正文可能含敏感数据，
 正文使用独立二进制载荷。宿主统一施加代理、超时、帧与流限制；插件不能绕过宿主端口取得额外调用身份。
@@ -317,6 +390,21 @@ restore_and_validate_response(response).await
 
 仅实现中间件时也可使用轻量的 `MiddlewarePlugin`；需要与管理或其他方法组合时使用
 `PluginBuilder`，两者复用相同的 `MiddlewareCall` 和 `MiddlewareResponse`
+
+### 扩展的组合边界
+
+请求处理沿 `request middleware → 原生选路与选号 → attempt middleware → 原生上游或 upstream_adapter` 推进，
+响应按相反顺序返回；适配器是现有洋葱链的终端，不能再次调用 `next` 或组织换号重试
+
+| 工作 | 组合方式 |
+| --- | --- |
+| 请求头／正文改写、提前拒绝、响应头处理 | `middleware` 包裹一次 `next.run(request)` |
+| 响应逐帧转换、观察 | 返回惰性 `map_frames` / `inspect_frames`，不能在 `next` 返回时就把流视为结束 |
+| 新上游路径、协议编码、错误及用量解析 | `upstream_adapter` 终端，复用已选账号和原生结算 |
+| 目标限制、凭据注入、网络发送状态 | 宿主网络外层，普通 HTTP 与账号 HTTP 共用发送和正文资源实现 |
+| 路由、调度、重试决策 | 各自的决策端口，Core 保持最终裁决和预算 |
+| RPC Credit、取消、流关闭、WebSocket 续接 | 会话及资源生命周期，不作为可重排的中间件 |
+| 终态观察、管理与维护 | 原有观察／管理／维护入口，不嵌入请求 `next` 链 |
 
 ### 模型目录
 

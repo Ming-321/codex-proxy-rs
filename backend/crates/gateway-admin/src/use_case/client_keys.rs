@@ -28,6 +28,26 @@ use super::{map_store_error, publish_committed};
 /// API 消费的 Client Key 管理服务。
 #[async_trait]
 pub trait ClientKeyService: Send + Sync {
+    async fn weekly_budget_control(
+        &self,
+        id: &ClientApiKeyId,
+    ) -> Result<crate::model::weekly_budget::WeeklyBudgetControl, AdminError>;
+    async fn change_weekly_budget(
+        &self,
+        context: &MutationContext,
+        command: crate::model::weekly_budget::ChangeWeeklyBudget,
+        origin: ClientKeyBudgetMutationOrigin,
+    ) -> Result<crate::model::weekly_budget::WeeklyBudgetControl, AdminError>;
+    async fn limit_binding(
+        &self,
+        id: &ClientApiKeyId,
+    ) -> Result<crate::model::client_keys::ClientLimitBinding, AdminError>;
+    async fn change_limit_binding(
+        &self,
+        context: &MutationContext,
+        command: crate::model::client_keys::ChangeClientLimitBinding,
+        origin: crate::model::client_keys::ClientLimitBindingMutationOrigin,
+    ) -> Result<crate::model::client_keys::ClientLimitBinding, AdminError>;
     async fn get(&self, id: &ClientApiKeyId) -> Result<ClientKeyRecord, AdminError>;
     async fn list(&self, query: ClientKeyListQuery) -> Result<ClientKeyPage, AdminError>;
     async fn reveal(&self, id: &ClientApiKeyId) -> Result<ClientKeySecret, AdminError>;
@@ -89,6 +109,41 @@ impl DefaultClientKeyService {
 
 #[async_trait]
 impl ClientKeyService for DefaultClientKeyService {
+    async fn limit_binding(
+        &self,
+        id: &ClientApiKeyId,
+    ) -> Result<crate::model::client_keys::ClientLimitBinding, AdminError> {
+        let mut binding = self
+            .store
+            .get_limit_binding(id)
+            .await
+            .map_err(|error| map_store_error(error, "client limit binding"))?;
+        binding.loaded_config_revision = self
+            .snapshot
+            .loaded_revision()
+            .map(|revision| revision.get());
+        Ok(binding)
+    }
+
+    async fn change_limit_binding(
+        &self,
+        context: &MutationContext,
+        command: crate::model::client_keys::ChangeClientLimitBinding,
+        origin: crate::model::client_keys::ClientLimitBindingMutationOrigin,
+    ) -> Result<crate::model::client_keys::ClientLimitBinding, AdminError> {
+        let mut binding = self
+            .store
+            .change_limit_binding(command, context, origin)
+            .await
+            .map_err(|error| map_store_error(error, "client limit binding"))?;
+        publish_committed(self.snapshot.as_ref(), binding.config_revision).await?;
+        binding.loaded_config_revision = self
+            .snapshot
+            .loaded_revision()
+            .map(|revision| revision.get());
+        Ok(binding)
+    }
+
     async fn get(&self, id: &ClientApiKeyId) -> Result<ClientKeyRecord, AdminError> {
         self.store
             .get_client_key(id)
@@ -96,9 +151,35 @@ impl ClientKeyService for DefaultClientKeyService {
             .map_err(|error| map_store_error(error, "client API key"))?
             .ok_or_else(|| AdminError::not_found("Client API Key 不存在"))
     }
+    async fn weekly_budget_control(
+        &self,
+        id: &ClientApiKeyId,
+    ) -> Result<crate::model::weekly_budget::WeeklyBudgetControl, AdminError> {
+        self.store
+            .weekly_budget_control(id)
+            .await
+            .map_err(|e| map_store_error(e, "weekly budget control"))
+    }
+
+    async fn change_weekly_budget(
+        &self,
+        context: &MutationContext,
+        command: crate::model::weekly_budget::ChangeWeeklyBudget,
+        origin: ClientKeyBudgetMutationOrigin,
+    ) -> Result<crate::model::weekly_budget::WeeklyBudgetControl, AdminError> {
+        self.store
+            .change_weekly_budget(command, origin, context)
+            .await
+            .map_err(|e| map_store_error(e, "weekly budget control"))
+    }
 
     async fn budget(&self, id: &ClientApiKeyId) -> Result<ClientBudgetStatus, AdminError> {
-        self.get(id).await.map(|key| key.budget)
+        self.store
+            .get_client_key(id)
+            .await
+            .map_err(|error| map_store_error(error, "client API key"))?
+            .map(|key| key.budget)
+            .ok_or_else(|| AdminError::not_found("Client API Key 不存在"))
     }
 
     async fn update_budget_limits(
@@ -261,6 +342,9 @@ impl ClientKeyService for DefaultClientKeyService {
 }
 
 fn map_client_key_write_error(error: AdminStoreError) -> AdminError {
+    if error.resource() == "controlled client limits" {
+        return AdminError::conflict(error.message());
+    }
     match error.kind() {
         AdminStoreErrorKind::DuplicateName => AdminError::conflict("名称已存在"),
         AdminStoreErrorKind::Conflict => AdminError::conflict("API Key 已存在，请使用其他密钥"),

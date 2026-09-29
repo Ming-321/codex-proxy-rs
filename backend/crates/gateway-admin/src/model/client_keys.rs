@@ -20,6 +20,35 @@ pub type ProviderRequestProfileOverrides =
 pub type ProviderRequestProfileOverrideUpdates =
     BTreeMap<ProviderKind, Option<gateway_core::account::OpaqueProviderData>>;
 
+/// 持久化绑定与有效限额；配置提交版本不代表所有实例已经加载。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ClientLimitBinding {
+    pub id: ClientApiKeyId,
+    pub source_key_id: ClientApiKeyId,
+    pub revision: u64,
+    pub config_revision: Revision,
+    pub binding_config_revision: Option<u64>,
+    pub loaded_config_revision: Option<u64>,
+    pub source_enabled: bool,
+    pub limits: RateLimits,
+    pub budget: ClientBudgetStatus,
+}
+
+/// None 表示解绑；相同调用者、原版本和完整参数构成最近一次操作的重试。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ChangeClientLimitBinding {
+    pub id: ClientApiKeyId,
+    pub source_key_id: Option<ClientApiKeyId>,
+    pub expected_revision: u64,
+}
+
+/// 授权来源来自宿主上下文，不表示插件独占该绑定。
+#[derive(Debug, Clone)]
+pub enum ClientLimitBindingMutationOrigin {
+    Admin,
+    Plugin(PluginResourceOwner),
+}
+
 /// Client Key 列表保持旧 HTTP 合同允许的完整非零 `u16` 页大小。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct ClientKeyPageSize(NonZeroU16);
@@ -94,6 +123,8 @@ pub struct ClientKeyListQuery {
 /// 不含完整明文 Key 的管理投影。
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ClientKeyRecord {
+    pub local_budget_limits: ClientBudgetLimits,
+    pub limit_source: Option<gateway_core::policy::NativeLimitSource>,
     pub request_profile_overrides: ProviderRequestProfileOverrides,
     pub id: ClientApiKeyId,
     pub name: String,

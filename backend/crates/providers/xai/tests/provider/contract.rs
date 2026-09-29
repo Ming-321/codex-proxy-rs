@@ -4150,3 +4150,141 @@ async fn configured_request_profile_reaches_inference_headers() {
     assert_eq!(header("x-grok-client-mode"), "headless");
     assert_eq!(header("user-agent"), "grok-shell/9.8.7 (windows; aarch64)");
 }
+
+#[derive(Debug)]
+struct AdapterProbe {
+    polls: Arc<std::sync::atomic::AtomicUsize>,
+}
+
+impl gateway_core::engine::upstream_adapter::UpstreamAdapterPlan for AdapterProbe {
+    fn select(
+        &self,
+        _: &AttemptContext,
+        provider: &ProviderKind,
+        _: &UpstreamModelId,
+    ) -> Result<
+        Option<Arc<dyn gateway_core::engine::upstream_adapter::UpstreamAdapter>>,
+        gateway_core::error::ProviderError,
+    > {
+        assert_eq!(provider.as_str(), "xai");
+        Ok(Some(Arc::new(Self {
+            polls: self.polls.clone(),
+        })))
+    }
+}
+
+impl gateway_core::engine::upstream_adapter::UpstreamAdapter for AdapterProbe {
+    fn transport(&self) -> &str {
+        "http_sse"
+    }
+
+    fn execute(
+        self: Arc<Self>,
+        invocation: gateway_core::engine::upstream_adapter::UpstreamAdapterInvocation,
+    ) -> gateway_core::engine::provider::EventStream {
+        Box::pin(futures::stream::once(async move {
+            self.polls.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            assert_eq!(invocation.account.account_id().as_str(), "acct_provider");
+            assert_eq!(
+                invocation.metadata.provider_account_id(),
+                invocation.account.account_id()
+            );
+            assert_eq!(invocation.account.authentication_kind(), "oauth");
+            let headers = invocation.account.authorization().unwrap();
+            let header = |name: &str| {
+                headers
+                    .iter()
+                    .find(|h| h.name() == name)
+                    .map(|h| h.value().to_vec())
+            };
+            assert_eq!(
+                header("authorization"),
+                Some("Bearer oauth-access".as_bytes().to_vec())
+            );
+            assert_eq!(
+                header("x-grok-user-id"),
+                Some("verified-user".as_bytes().to_vec())
+            );
+            assert!(header("cookie").is_none());
+            assert!(
+                invocation
+                    .headers
+                    .iter()
+                    .any(|h| h.name() == "x-adapter-onion")
+            );
+            assert!(
+                invocation
+                    .account
+                    .calculate_cost(
+                        None,
+                        &gateway_core::metering::Usage {
+                            input_tokens: Some(7),
+                            output_tokens: Some(2),
+                            ..Default::default()
+                        }
+                    )
+                    .is_some()
+            );
+            Err(gateway_core::error::ProviderError::new(
+                ProviderErrorKind::Cancelled,
+                UpstreamSendState::NotSent,
+            ))
+        }))
+    }
+}
+
+#[tokio::test]
+async fn upstream_adapter_reuses_selected_native_account_inside_attempt_onion_and_stays_cold() {
+    let selector = StubSelector::success();
+    let transport = StubInferenceTransport::success();
+    let provider = provider(selector.clone(), transport.clone()).await;
+    let polls = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let lease = ExtensionSetReference::new(
+        ExtensionSetId::new("adapter-native-test".to_owned()).unwrap(),
+        Arc::new(TestExtensionLease),
+    );
+    let middleware = Arc::new(RecordingMiddleware {
+        observed: Default::default(),
+        replacement: Some(("input".into(), json!("rewritten"))),
+        request_headers: vec![MiddlewareHeader::new(
+            "x-adapter-onion",
+            Bytes::from_static(b"present"),
+        )],
+    });
+    let context = AttemptContext::new(
+        gateway_core::engine::RequestAttemptContext::new(
+            ModelRequestId::new("req_adapter_native").unwrap(),
+            ClientApiKeyId::new("key_xai_contract").unwrap(),
+        )
+        .with_upstream_adapters(Some(
+            gateway_core::engine::upstream_adapter::FrozenUpstreamAdapterPlan::new(
+                Arc::new(AdapterProbe {
+                    polls: polls.clone(),
+                }),
+                lease.clone(),
+            ),
+        ))
+        .with_middleware(
+            Some(FrozenMiddlewarePlan::new(middleware, lease)),
+            Arc::from([]),
+            "/v1/responses".to_owned(),
+            ClientTransport::HttpSse,
+        ),
+        NonZeroU32::MIN,
+        SystemTime::now() + Duration::from_secs(5),
+        selection_policy(),
+        AccountAttemptContext::new(BTreeSet::new(), None, None),
+        None,
+        CancellationToken::new(),
+    );
+    let mut stream = provider
+        .execute(provider_request("xai"), context)
+        .await
+        .unwrap();
+    assert_eq!(polls.load(std::sync::atomic::Ordering::SeqCst), 0);
+    let error = stream.next().await.unwrap().unwrap_err();
+    assert_eq!(error.kind(), ProviderErrorKind::Cancelled);
+    assert_eq!(polls.load(std::sync::atomic::Ordering::SeqCst), 1);
+    assert_eq!(selector.calls.load(Ordering::SeqCst), 1);
+    assert_eq!(transport.calls.load(Ordering::SeqCst), 0);
+}

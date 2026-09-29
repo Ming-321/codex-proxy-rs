@@ -15,6 +15,7 @@ pub mod policy;
 pub mod probe;
 pub mod provider;
 pub mod response_control;
+pub mod upstream_adapter;
 
 pub use coordinator::{AttemptCoordinator, ResponseExecutionSession};
 
@@ -338,6 +339,8 @@ pub struct RequestAttemptContext {
     request_policy: Option<policy::RequestPolicyContext>,
     execution_effects: Option<Arc<nested::ExecutionEffects>>,
     middleware: Option<middleware::FrozenMiddlewarePlan>,
+    upstream_adapters: Option<upstream_adapter::FrozenUpstreamAdapterPlan>,
+    requested_model: Option<PublicModelId>,
     account_group_ids: Arc<[crate::account::scope::AccountGroupId]>,
     endpoint: String,
     client_transport: execution::ClientTransport,
@@ -345,6 +348,21 @@ pub struct RequestAttemptContext {
 }
 
 impl RequestAttemptContext {
+    #[must_use]
+    pub fn with_requested_model(mut self, model: Option<PublicModelId>) -> Self {
+        self.requested_model = model;
+        self
+    }
+
+    #[must_use]
+    pub fn with_upstream_adapters(
+        mut self,
+        plan: Option<upstream_adapter::FrozenUpstreamAdapterPlan>,
+    ) -> Self {
+        self.upstream_adapters = plan;
+        self
+    }
+
     #[must_use]
     pub fn with_response_control(
         mut self,
@@ -401,6 +419,8 @@ impl RequestAttemptContext {
             request_policy: None,
             execution_effects: None,
             middleware: None,
+            upstream_adapters: None,
+            requested_model: None,
             account_group_ids: Arc::from([]),
             endpoint: String::new(),
             client_transport: execution::ClientTransport::InternalProbe,
@@ -539,6 +559,38 @@ pub struct AttemptContext {
 }
 
 impl AttemptContext {
+    #[must_use]
+    pub fn execution_effects(&self) -> Option<Arc<nested::ExecutionEffects>> {
+        self.request.execution_effects.as_ref().map(Arc::clone)
+    }
+
+    #[must_use]
+    pub const fn requested_model(&self) -> Option<&PublicModelId> {
+        self.request.requested_model.as_ref()
+    }
+
+    /// 从本次请求冻结的发布代次选择上游适配器；不建立连接、不重新选号。
+    pub fn upstream_adapter(
+        &self,
+        provider: &ProviderKind,
+        model: &UpstreamModelId,
+    ) -> Result<Option<Arc<dyn upstream_adapter::UpstreamAdapter>>, ProviderError> {
+        self.request
+            .upstream_adapters
+            .as_ref()
+            .map_or(Ok(None), |plan| plan.select(self, provider, model))
+    }
+
+    #[must_use]
+    pub fn account_group_ids(&self) -> &[crate::account::scope::AccountGroupId] {
+        &self.request.account_group_ids
+    }
+
+    #[must_use]
+    pub const fn client_transport(&self) -> execution::ClientTransport {
+        self.request.client_transport
+    }
+
     #[must_use]
     pub fn response_control(&self) -> Option<&response_control::ResponseControl> {
         self.request.response_control.as_ref()
@@ -793,6 +845,9 @@ pub struct NewModelRequest {
     pub id: ModelRequestId,
     pub client_api_key_id: Option<ClientApiKeyId>,
     pub client_api_key_ref: ClientApiKeyId,
+    pub limit_source_key_ref: ClientApiKeyId,
+    /// 子执行可以承担费用而不独立取得客户端名额。
+    pub client_admission_acquired: bool,
     pub config_revision: ConfigRevision,
     pub routing: crate::routing::AccountRoutingSnapshot,
     pub protocol: String,

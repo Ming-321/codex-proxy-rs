@@ -2,16 +2,20 @@
 
 mod data;
 mod frame;
+mod http;
 mod keys;
 mod middleware;
 mod plugin;
 mod resources;
 mod session;
+mod upstream_adapter;
+mod weekly_budget;
 
 use crate::{ErrorCode, PluginFault};
 use serde::{Serialize, de::DeserializeOwned};
 
 pub use frame::{read_frame, validate_frame, write_frame};
+pub use http::{HostHttpBody, HostHttpResponse};
 pub use middleware::{
     MiddlewareBody, MiddlewareBodySender, MiddlewareCall, MiddlewareNext, MiddlewarePlugin,
     MiddlewareRequest, MiddlewareResponse,
@@ -23,6 +27,7 @@ pub use session::{
     CallCancellation, CallFuture, CallReply, HostClient, HostReply, PluginCall, PluginHandler,
     PluginSession, ResponseStream, SessionConfig, SessionError, StreamSender,
 };
+pub use upstream_adapter::{UpstreamWebSocket, UpstreamWebSocketUpgrade};
 
 async fn payload_call<T: Serialize, R: DeserializeOwned>(
     host: &HostClient,

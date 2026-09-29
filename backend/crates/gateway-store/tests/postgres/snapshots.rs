@@ -971,6 +971,8 @@ fn new_request(id: &str, started_at: DateTime<Utc>) -> NewModelRequest {
         admission_decision_ms: None,
         id: id.to_owned(),
         client_api_key_id: None,
+        limit_source_key_ref: "key_snapshot".to_owned(),
+        client_admission_acquired: true,
         client_api_key_ref: "key_snapshot".to_owned(),
         config_revision: 1,
         protocol: "openai".to_owned(),

@@ -417,6 +417,10 @@ impl Shared {
 }
 
 impl RpcSession {
+    pub(crate) const fn maximum_call_timeout(&self) -> Duration {
+        self.limits.maximum_call_timeout
+    }
+
     pub async fn start(
         package: Arc<PreparedPackage>,
         handshake: Handshake,

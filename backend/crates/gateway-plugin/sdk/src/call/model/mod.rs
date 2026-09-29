@@ -2,7 +2,7 @@
 
 use serde::{Deserialize, Serialize};
 
-mod codec;
+pub(in crate::call) mod codec;
 pub use codec::{ExecutionEncodingError, MAX_EXECUTION_PAYLOAD_BYTES};
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize)]

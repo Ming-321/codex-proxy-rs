@@ -22,6 +22,18 @@
 `package_for(host, os, architecture)` 检查版本与平台。运行模式仅为 `trustedProcess`：插件拥有与宿主
 相同的系统身份，**不是进程沙箱**
 
+宿主实际开放的合同由 [plugin-host-compatibility.json](../../runtime/plugin-host-compatibility.json)
+声明，SDK 的 `Capability::contract_versions()` 只表示 SDK 能描述的行为版本，不能代替宿主支持检查
+
+| 版本字段 | 对应合同 |
+| --- | --- |
+| `manifestVersion` / `manifest_schema_versions` | 插件清单格式 |
+| `package.protocolVersion` / `protocol_versions` | 插件进程 RPC 封装，不是 OpenAI 或 xAI 的业务协议 |
+| `contributes.<capability>.version` / `capabilities[].versions` | 指定扩展能力的行为合同 |
+| 宿主声明的 `schema_version` | 宿主兼容声明自身的格式 |
+
+`capabilities` 使用扩展能力标识，`permissions` 使用资源访问域标识；Provider、模型和账号 ID 不属于这两个集合
+
 ## 扩展项简写
 
 普通作者声明可以省略 `id`、`version` 和固定阶段：

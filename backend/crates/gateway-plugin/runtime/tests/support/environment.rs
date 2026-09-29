@@ -71,6 +71,14 @@ impl Environment {
         .execute(&self.admin).await.unwrap();
     }
 
+    pub async fn set_client_key_weekly_used(&self, id: &str, amount: &str) {
+        sqlx::query(sqlx::AssertSqlSafe(format!(
+            "update {}.client_key_budget_windows set weekly_used_usd=$2::text::numeric where client_api_key_id=$1",
+            self.schema
+        )))
+        .bind(id).bind(amount).execute(&self.admin).await.unwrap();
+    }
+
     pub async fn client_key_with_limits(
         &self,
         id: &str,
@@ -214,6 +222,16 @@ impl Environment {
                 vec![],
             )]);
         }
+        let has_upstream_adapter = configuration.get("upstream_registration").is_some();
+        if has_upstream_adapter {
+            contributes.extend([super::contribution_for_id(
+                &plugin_id,
+                Capability::UpstreamAdapter,
+                vec![Stage::Upstream],
+                vec!["openai".into()],
+                vec!["openai".into()],
+            )]);
+        }
         let has_middleware = configuration.get("middleware_marker").is_some();
         if has_middleware {
             contributes.extend([super::contribution_for_id(
@@ -322,6 +340,17 @@ impl Environment {
             secrets: BTreeMap::new(),
             grants,
             bindings: [
+                has_upstream_adapter.then(|| PluginCapabilityBinding {
+                    contribution: format!("{plugin_id}.upstreamAdapter"),
+                    stage: "upstream".into(),
+                    order: 0,
+                    failure_policy: PluginFailurePolicy::Reject,
+                    client_key_ids: vec![],
+                    account_group_ids: vec![],
+                    provider_ids: vec![],
+                    models: vec![],
+                    identity_bindings: vec![],
+                }),
                 has_model_router.then(|| PluginCapabilityBinding {
                     contribution: format!("{plugin_id}.modelRouter"),
                     stage: "routing".into(),
@@ -718,6 +747,16 @@ impl Environment {
         .fetch_all(&self.admin)
         .await
         .unwrap()
+    }
+
+    pub async fn assert_upstream_accounting(&self, key: &str, account: &str) {
+        let rows: Vec<(String, String, i32, i64, i64, bool)> = sqlx::query_as(sqlx::AssertSqlSafe(format!(
+            "select outcome, provider_account_ref, attempt_count, input_tokens, output_tokens, cost_amount > 0 from {}.model_requests where client_api_key_ref=$1", self.schema,
+        ))).bind(key).fetch_all(&self.admin).await.unwrap();
+        assert_eq!(
+            rows,
+            vec![("succeeded".into(), account.into(), 1, 7, 2, true)]
+        );
     }
 
     pub async fn bound_model_requests(&self, client_key_id: &str) -> Vec<(String, String)> {

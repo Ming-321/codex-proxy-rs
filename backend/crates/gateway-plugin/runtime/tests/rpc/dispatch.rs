@@ -148,6 +148,49 @@ async fn registration_and_configuration_reject_network_and_model_callbacks() {
 }
 
 #[tokio::test]
+async fn upstream_connections_require_their_own_grant_and_exact_execution_stage() {
+    let methods = [
+        "host.upstream.http.do",
+        "host.upstream.http.do_stream",
+        "host.upstream.http.stream_read",
+        "host.upstream.http.stream_close",
+        "host.upstream.websocket.open",
+        "host.upstream.websocket.send",
+        "host.upstream.websocket.read",
+        "host.upstream.websocket.close",
+    ];
+    let callbacks = Arc::new(Callbacks::default());
+    let (_cache, session) = session_with_permissions(
+        Arc::clone(&callbacks),
+        vec![Permission::UpstreamConnections],
+    )
+    .await;
+    for method in methods {
+        assert!(
+            invoke_callback(&session, Stage::Upstream, method)
+                .await
+                .is_ok()
+        );
+        for stage in [
+            Stage::Request,
+            Stage::Attempt,
+            Stage::Management,
+            Stage::Observation,
+            Stage::Registration,
+        ] {
+            assert_permission_denied(invoke_callback(&session, stage, method).await);
+        }
+    }
+    session.shutdown(Duration::from_secs(1)).await;
+    let (_cache, session) =
+        session_with_permissions(callbacks, vec![Permission::Network, Permission::Accounts]).await;
+    for method in methods {
+        assert_permission_denied(invoke_callback(&session, Stage::Upstream, method).await);
+    }
+    session.shutdown(Duration::from_secs(1)).await;
+}
+
+#[tokio::test]
 async fn active_stages_use_resource_domains_without_operation_whitelists() {
     let callbacks = Arc::new(Callbacks::default());
     let (_cache, session) = session(Arc::clone(&callbacks)).await;
@@ -325,6 +368,13 @@ async fn managed_resources_require_their_domains_and_control_plane_stages() {
         ("host.keys.reset_budget", Permission::KeyBudgets),
         ("host.keys.get_budget", Permission::KeyBudgets),
         ("host.keys.update_budget_limits", Permission::KeyBudgets),
+        ("host.keys.weekly_control.get", Permission::KeyBudgets),
+        ("host.keys.weekly_control.change", Permission::KeyBudgets),
+        ("host.keys.get_limit_binding", Permission::KeyLimitBindings),
+        (
+            "host.keys.change_limit_binding",
+            Permission::KeyLimitBindings,
+        ),
         (
             "host.quota_observations.refresh",
             Permission::QuotaObservations,
@@ -358,7 +408,7 @@ async fn managed_resources_require_their_domains_and_control_plane_stages() {
                         Stage::Management | Stage::CommandLine | Stage::Maintenance
                     )
                 {
-                    assert!(reply.is_ok());
+                    assert!(reply.is_ok(), "{method} during {stage:?}");
                 } else {
                     assert_permission_denied(reply);
                 }

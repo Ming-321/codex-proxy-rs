@@ -863,6 +863,82 @@ fn mutation(
 
 #[async_trait]
 impl ClientKeyStore for MemoryClientKeyStore {
+    async fn weekly_budget_control(
+        &self,
+        _: &gateway_core::policy::ClientApiKeyId,
+    ) -> AdminStoreResult<gateway_admin::model::weekly_budget::WeeklyBudgetControl> {
+        Err(AdminStoreError::new(
+            AdminStoreErrorKind::Unavailable,
+            "weekly budget",
+            "unused",
+        ))
+    }
+    async fn change_weekly_budget(
+        &self,
+        command: gateway_admin::model::weekly_budget::ChangeWeeklyBudget,
+        origin: gateway_admin::model::client_keys::ClientKeyBudgetMutationOrigin,
+        _: &MutationContext,
+    ) -> AdminStoreResult<gateway_admin::model::weekly_budget::WeeklyBudgetControl> {
+        assert!(matches!(
+            origin,
+            gateway_admin::model::client_keys::ClientKeyBudgetMutationOrigin::Admin
+        ));
+        assert_eq!(
+            command.action,
+            gateway_admin::model::weekly_budget::WeeklyBudgetAction::Release
+        );
+        let mut record = self.0.lock().unwrap();
+        let record = record
+            .as_mut()
+            .filter(|key| key.id == command.id)
+            .ok_or_else(|| {
+                AdminStoreError::new(AdminStoreErrorKind::NotFound, "client key", "missing")
+            })?;
+        if record.budget.weekly_control_revision != command.expected_revision {
+            return Err(AdminStoreError::new(
+                AdminStoreErrorKind::StaleRevision,
+                "weekly budget",
+                "stale",
+            ));
+        }
+        record.budget.weekly_controller = None;
+        record.budget.weekly_control_revision += 1;
+        record.budget.weekly_waiting = false;
+        Ok(gateway_admin::model::weekly_budget::WeeklyBudgetControl {
+            revision: record.budget.weekly_control_revision,
+            controller: None,
+            expires_at: None,
+            accounting_start: None,
+            waiting: false,
+        })
+    }
+    async fn get_limit_binding(
+        &self,
+        _: &gateway_core::policy::ClientApiKeyId,
+    ) -> gateway_admin::ports::store::AdminStoreResult<
+        gateway_admin::model::client_keys::ClientLimitBinding,
+    > {
+        Err(gateway_admin::ports::store::AdminStoreError::new(
+            gateway_admin::ports::store::AdminStoreErrorKind::Unavailable,
+            "client limit binding",
+            "unused",
+        ))
+    }
+    async fn change_limit_binding(
+        &self,
+        _: gateway_admin::model::client_keys::ChangeClientLimitBinding,
+        _: &MutationContext,
+        _: gateway_admin::model::client_keys::ClientLimitBindingMutationOrigin,
+    ) -> gateway_admin::ports::store::AdminStoreResult<
+        gateway_admin::model::client_keys::ClientLimitBinding,
+    > {
+        Err(gateway_admin::ports::store::AdminStoreError::new(
+            gateway_admin::ports::store::AdminStoreErrorKind::Unavailable,
+            "client limit binding",
+            "unused",
+        ))
+    }
+
     async fn update_client_key_budget_limits(
         &self,
         _: gateway_admin::model::client_keys::UpdateClientKeyBudgetLimits,
@@ -937,6 +1013,8 @@ impl ClientKeyStore for MemoryClientKeyStore {
         let now = Utc::now();
         Ok(Some(ClientKeySecret::new(
             ClientKeyRecord {
+                local_budget_limits: Default::default(),
+                limit_source: None,
                 request_profile_overrides: Default::default(),
                 budget: Default::default(),
                 id: id.clone(),

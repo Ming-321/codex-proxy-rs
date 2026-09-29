@@ -156,6 +156,30 @@ impl PluginHandler for TestHandler {
                         vec![],
                     ))
                 }
+                "get_limit_binding" => {
+                    let result = call.host.get_key_limit_binding(
+                        gateway_plugin_sdk::call::key_limit_bindings::GetKeyLimitBindingRequest {
+                            client_key_id: "key_1".into(),
+                        },
+                    ).await?;
+                    Ok(CallReply::unary(
+                        serde_json::to_value(result).unwrap(),
+                        vec![],
+                    ))
+                }
+                "change_limit_binding" => {
+                    let result = call.host.change_key_limit_binding(
+                        gateway_plugin_sdk::call::key_limit_bindings::ChangeKeyLimitBindingRequest {
+                            client_key_id: "key_1".into(),
+                            source_key_id: Some("source".into()),
+                            expected_revision: 0,
+                        },
+                    ).await?;
+                    Ok(CallReply::unary(
+                        serde_json::to_value(result).unwrap(),
+                        vec![],
+                    ))
+                }
                 "update_budget_limits" => {
                     let result = call
                         .host
@@ -315,12 +339,12 @@ impl PluginHandler for TestHandler {
     }
 }
 
-struct HostPeer {
-    reader: ReadHalf<DuplexStream>,
-    writer: WriteHalf<DuplexStream>,
+pub(super) struct HostPeer {
+    pub(super) reader: ReadHalf<DuplexStream>,
+    pub(super) writer: WriteHalf<DuplexStream>,
 }
 
-async fn start_session<H: PluginHandler>(
+pub(super) async fn start_session<H: PluginHandler>(
     handler: H,
 ) -> (HostPeer, JoinHandle<Result<(), SessionError>>) {
     start_session_with_capacity(handler, MAXIMUM_STREAM_CHUNK_BYTES * 2).await
@@ -617,7 +641,13 @@ fn middleware_request() -> MiddlewareRequestHead {
     }
 }
 
-async fn send_call(host: &mut HostPeer, id: u64, method: &str, params: Value, payload: Vec<u8>) {
+pub(super) async fn send_call(
+    host: &mut HostPeer,
+    id: u64,
+    method: &str,
+    params: Value,
+    payload: Vec<u8>,
+) {
     send_call_with_timeout(host, id, method, params, payload, Duration::from_secs(1)).await;
 }
 
@@ -651,14 +681,14 @@ async fn send_control(host: &mut HostPeer, message: Message) {
         .unwrap();
 }
 
-async fn receive(host: &mut HostPeer) -> Frame {
+pub(super) async fn receive(host: &mut HostPeer) -> Frame {
     tokio::time::timeout(Duration::from_secs(1), read_frame(&mut host.reader))
         .await
         .expect("plugin response timed out")
         .expect("plugin response frame must be valid")
 }
 
-async fn shutdown(host: &mut HostPeer, task: JoinHandle<Result<(), SessionError>>) {
+pub(super) async fn shutdown(host: &mut HostPeer, task: JoinHandle<Result<(), SessionError>>) {
     send_control(host, Message::Shutdown).await;
     tokio::time::timeout(Duration::from_secs(1), task)
         .await
@@ -1605,6 +1635,18 @@ async fn typed_key_and_quota_calls_keep_payloads_and_do_not_retry_failures() {
             json!({"account_id":"acct_1","generated_at_ms":123,"estimated_usd":null,"remaining_usd":null,
                 "source":null,"extrapolated":false,"low_sample":true,"incomplete_cost":true,
                 "unavailable_reason":"样本不足"}),
+        ),
+        (
+            "get_limit_binding",
+            "host.keys.get_limit_binding",
+            json!({"client_key_id":"key_1"}),
+            json!({"client_key_id":"key_1","source_key_id":"key_1","revision":0,"config_revision":3,"binding_config_revision":null,"loaded_config_revision":null,"source_enabled":true}),
+        ),
+        (
+            "change_limit_binding",
+            "host.keys.change_limit_binding",
+            json!({"client_key_id":"key_1","source_key_id":"source","expected_revision":0}),
+            json!({"client_key_id":"key_1","source_key_id":"source","revision":1,"config_revision":4,"binding_config_revision":4,"loaded_config_revision":3,"source_enabled":true}),
         ),
         (
             "key_facts",

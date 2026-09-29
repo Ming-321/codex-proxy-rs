@@ -9,6 +9,7 @@
     { "capability": "model_catalog", "versions": [1] },
     { "capability": "retry_policy", "versions": [1] },
     { "capability": "middleware", "versions": [1, 2] },
+    { "capability": "upstream_adapter", "versions": [1] },
     { "capability": "request_lifecycle", "versions": [1] },
     { "capability": "web_socket_observer", "versions": [1] },
     { "capability": "usage", "versions": [1] },
@@ -18,6 +19,7 @@
   ],
   "permissions": [
     "network",
+    "upstream_connections",
     "models",
     "accounts",
     "data",
@@ -26,6 +28,7 @@
     "groups",
     "keys",
     "key_budgets",
+    "key_limit_bindings",
     "quota_observations",
     "quota_forecasts"
   ]

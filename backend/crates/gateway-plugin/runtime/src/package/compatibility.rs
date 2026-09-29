@@ -4,7 +4,7 @@ use gateway_admin::model::{
     AdminError,
     plugins::{PluginCompatibilityRequirements, PluginHostCompatibility},
 };
-use gateway_plugin_sdk::Manifest;
+use gateway_plugin_sdk::{Capability, MANIFEST_VERSION, Manifest, PROTOCOL_VERSION, Permission};
 
 const HOST_COMPATIBILITY_JSON: &str = include_str!("../../plugin-host-compatibility.json");
 
@@ -15,7 +15,31 @@ pub(crate) fn host_compatibility() -> Result<&'static PluginHostCompatibility, A
             let compatibility =
                 serde_json::from_str::<PluginHostCompatibility>(HOST_COMPATIBILITY_JSON)
                     .map_err(|_| ())?;
-            compatibility.is_valid().then_some(compatibility).ok_or(())
+            // 发行声明可以是 SDK 合同的子集，但不能声称支持当前二进制无法解释的合同。
+            let known_contracts = compatibility
+                .manifest_schema_versions
+                .iter()
+                .all(|version| *version == MANIFEST_VERSION)
+                && compatibility
+                    .protocol_versions
+                    .iter()
+                    .all(|version| *version == PROTOCOL_VERSION)
+                && compatibility.capabilities.iter().all(|entry| {
+                    serde_json::from_value::<Capability>(entry.capability.clone().into()).is_ok_and(
+                        |capability| {
+                            entry
+                                .versions
+                                .iter()
+                                .all(|version| capability.contract_versions().contains(version))
+                        },
+                    )
+                })
+                && compatibility.permissions.iter().all(|permission| {
+                    serde_json::from_value::<Permission>(permission.clone().into()).is_ok()
+                });
+            (compatibility.is_valid() && known_contracts)
+                .then_some(compatibility)
+                .ok_or(())
         })
         .as_ref()
         .map_err(|()| AdminError::internal("宿主插件兼容声明不合法"))
@@ -35,13 +59,15 @@ pub(crate) fn requirements(
         capabilities: manifest
             .contributes
             .iter()
-            .map(|(capability, declaration)| Ok((identifier(*capability)?, declaration.version)))
-            .collect::<Result<_, AdminError>>()?,
+            .map(|(capability, declaration)| {
+                (capability.identifier().to_owned(), declaration.version)
+            })
+            .collect(),
         permissions: manifest
             .permissions
             .iter()
-            .map(|permission| identifier(*permission))
-            .collect::<Result<_, _>>()?,
+            .map(|permission| permission.as_str().to_owned())
+            .collect(),
     })
 }
 
@@ -62,11 +88,4 @@ pub(crate) fn supports(manifest: &Manifest) -> Result<bool, AdminError> {
             .permissions
             .iter()
             .all(|permission| compatibility.supports_permission(permission)))
-}
-
-fn identifier(value: impl serde::Serialize) -> Result<String, AdminError> {
-    serde_json::to_value(value)
-        .ok()
-        .and_then(|value| value.as_str().map(str::to_owned))
-        .ok_or_else(|| AdminError::internal("插件描述转换失败"))
 }

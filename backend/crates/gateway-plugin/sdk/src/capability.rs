@@ -12,6 +12,7 @@ pub enum Capability {
     ModelCatalog,
     RetryPolicy,
     Middleware,
+    UpstreamAdapter,
     RequestLifecycle,
     WebSocketObserver,
     Usage,
@@ -21,6 +22,26 @@ pub enum Capability {
 }
 
 impl Capability {
+    /// SDK 能描述的行为合同版本；具体宿主可以只开放其中一部分。
+    #[must_use]
+    pub const fn contract_versions(self) -> &'static [u32] {
+        match self {
+            Self::Middleware => &[1, 2],
+            Self::FrontendAuthentication
+            | Self::Scheduler
+            | Self::ModelRouter
+            | Self::ModelCatalog
+            | Self::RetryPolicy
+            | Self::RequestLifecycle
+            | Self::WebSocketObserver
+            | Self::Usage
+            | Self::CommandLine
+            | Self::Management
+            | Self::Maintenance => &[1],
+            Self::UpstreamAdapter => &[1],
+        }
+    }
+
     /// 稳定能力标识；默认扩展项 ID 由它派生，不受显示名称影响。
     #[must_use]
     pub const fn identifier(self) -> &'static str {
@@ -31,6 +52,7 @@ impl Capability {
             Self::ModelCatalog => "model_catalog",
             Self::RetryPolicy => "retry_policy",
             Self::Middleware => "middleware",
+            Self::UpstreamAdapter => "upstream_adapter",
             Self::RequestLifecycle => "request_lifecycle",
             Self::WebSocketObserver => "web_socket_observer",
             Self::Usage => "usage",
@@ -50,6 +72,7 @@ impl Capability {
             Self::ModelCatalog => &[Stage::Registration],
             Self::RetryPolicy => &[Stage::Retry],
             Self::Middleware => &[],
+            Self::UpstreamAdapter => &[Stage::Upstream],
             Self::RequestLifecycle | Self::WebSocketObserver | Self::Usage => &[Stage::Observation],
             Self::CommandLine => &[Stage::CommandLine],
             Self::Management => &[Stage::Management],
@@ -70,6 +93,8 @@ pub enum Stage {
     Retry,
     Request,
     Attempt,
+    /// Core 登记已选账号的 attempt 后才启动的受管上游执行。
+    Upstream,
     Observation,
     Management,
     CommandLine,
@@ -152,13 +177,15 @@ pub enum Permission {
     Groups,
     Keys,
     KeyBudgets,
+    KeyLimitBindings,
     QuotaObservations,
     QuotaForecasts,
+    UpstreamConnections,
 }
 
 impl Permission {
     /// 当前公开访问域，安装摘要与授权校验复用同一集合。
-    pub const ALL: [Self; 11] = [
+    pub const ALL: [Self; 13] = [
         Self::Network,
         Self::Models,
         Self::Accounts,
@@ -168,8 +195,10 @@ impl Permission {
         Self::Groups,
         Self::Keys,
         Self::KeyBudgets,
+        Self::KeyLimitBindings,
         Self::QuotaObservations,
         Self::QuotaForecasts,
+        Self::UpstreamConnections,
     ];
 
     #[must_use]
@@ -184,8 +213,10 @@ impl Permission {
             Self::Groups => "groups",
             Self::Keys => "keys",
             Self::KeyBudgets => "key_budgets",
+            Self::KeyLimitBindings => "key_limit_bindings",
             Self::QuotaObservations => "quota_observations",
             Self::QuotaForecasts => "quota_forecasts",
+            Self::UpstreamConnections => "upstream_connections",
         }
     }
 
@@ -202,8 +233,10 @@ impl Permission {
             Self::Groups => "专用账号分组",
             Self::Keys => "专用 API Key",
             Self::KeyBudgets => "API Key 预算",
+            Self::KeyLimitBindings => "共享限额关系",
             Self::QuotaObservations => "账号额度观测",
             Self::QuotaForecasts => "账号额度预测",
+            Self::UpstreamConnections => "账号上游连接",
         }
     }
 
@@ -212,6 +245,9 @@ impl Permission {
     pub const fn description(self) -> &'static str {
         match self {
             Self::Network => "访问网络",
+            Self::UpstreamConnections => {
+                "使用当前请求所选账号的身份与代理连接插件声明的上游，不提供原始凭据读取或账号修改"
+            }
             Self::Models => "查询模型与 API Key 信息并调用模型，可能产生消耗",
             Self::Accounts => "读取和修改账号，包括访问原始凭据",
             Self::Data => {
@@ -230,7 +266,10 @@ impl Permission {
                 "只读查询所有现有及未来账号的周额度预测及费用汇总估计；不读取凭据或明细、不刷新上游、不修改预算"
             }
             Self::KeyBudgets => {
-                "查询所有现有及未来新增 Key 的预算、修改日／周金额上限和重置用量，包括管理员和其他插件创建的 Key；不读取密钥或修改其他配置"
+                "查询所有现有及未来新增 Key 的预算、修改日／周金额上限、重置用量和持续接管周窗口，包括管理员和其他插件创建的 Key；不读取密钥或修改其他配置"
+            }
+            Self::KeyLimitBindings => {
+                "读取和修改所有现有及未来 Client Key 的原生限额来源，影响预算、并发、RPM 和等待队列；不读取 Key 明文凭据，停用插件不解除共享关系"
             }
         }
     }

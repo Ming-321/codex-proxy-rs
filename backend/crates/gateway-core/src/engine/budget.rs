@@ -23,6 +23,9 @@ impl ClientBudgetLimits {
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct ClientBudgetStatus {
+    pub weekly_controller: Option<String>,
+    pub weekly_control_revision: u64,
+    pub weekly_waiting: bool,
     pub limits: ClientBudgetLimits,
     pub daily_used_usd: Decimal,
     pub weekly_used_usd: Decimal,
@@ -31,8 +34,16 @@ pub struct ClientBudgetStatus {
 }
 
 #[derive(Debug, Clone)]
+pub struct ClientBudgetAdmission {
+    pub client_key_id: ClientApiKeyId,
+    pub source_key_id: ClientApiKeyId,
+}
+
+#[derive(Debug, Clone)]
 pub struct ClientBudgetCharge {
     pub key_id: ClientApiKeyId,
+    /// 不可变请求身份；删除设备凭据不能删除来源的消费事实。
+    pub client_key_ref: ClientApiKeyId,
     pub request_id: ModelRequestId,
     /// 已取得的 USD 费用，包含重试；缺少费用的尝试按零累计。
     pub amount_usd: Decimal,
@@ -45,7 +56,7 @@ pub struct ClientBudgetError;
 
 pub trait ClientBudgetPort: Send + Sync {
     /// 原子检查当前限额与已用金额，不创建预扣费或待结算记录。
-    fn admit(&self, key_id: ClientApiKeyId) -> BoxFuture<'_, Result<(), GatewayError>>;
+    fn admit(&self, request: ClientBudgetAdmission) -> BoxFuture<'_, Result<(), GatewayError>>;
 
     /// 按网关请求 ID 幂等累计已取得费用；写入失败由 Store 重试。
     fn settle(&self, charge: ClientBudgetCharge) -> BoxFuture<'_, Result<(), ClientBudgetError>>;

@@ -43,6 +43,8 @@ fn model_request_rejects_mismatched_client_key_live_id() {
         admission_decision_ms: None,
         id: "request-1".to_owned(),
         client_api_key_id: Some("key-live".to_owned()),
+        limit_source_key_ref: "key-history".to_owned(),
+        client_admission_acquired: true,
         client_api_key_ref: "key-history".to_owned(),
         config_revision: 1,
         protocol: "openai".to_owned(),
@@ -95,6 +97,8 @@ async fn merged_model_less_first_attempt_should_match_sequential_semantics() {
         admission_decision_ms: None,
         id: "req_merged".to_owned(),
         client_api_key_id: None,
+        limit_source_key_ref: "key_merged".to_owned(),
+        client_admission_acquired: true,
         client_api_key_ref: "key_merged".to_owned(),
         config_revision: 1,
         protocol: "openai".to_owned(),
@@ -210,6 +214,8 @@ async fn model_request_persists_group_routing_snapshot_without_live_group_foreig
             admission_decision_ms: None,
             id: "req_group_history".to_owned(),
             client_api_key_id: None,
+            limit_source_key_ref: "key_group_history".to_owned(),
+            client_admission_acquired: true,
             client_api_key_ref: "key_group_history".to_owned(),
             config_revision: 7,
             routing_scope: "groups".to_owned(),
@@ -1336,11 +1342,11 @@ async fn seed_transport_recovery_request(
 async fn seed_running_request(pool: &sqlx::PgPool, id: &str) -> Result<(), sqlx::Error> {
     sqlx::query(
         "insert into model_requests (
-           id, client_api_key_ref, config_revision, protocol, operation, endpoint,
+           id, client_api_key_ref, limit_source_key_ref, client_admission_acquired, config_revision, protocol, operation, endpoint,
            client_transport, requested_model_id, provider_kind, provider_account_ref, cost_source,
            started_at, deadline_at,
            routing_scope, routing_group_refs, routing_group_names_snapshot
-         ) values ($1, 'key_status', 1, 'openai_responses', 'generate', '/v1/responses',
+         ) values ($1, 'key_status', 'key_status', true, 1, 'openai_responses', 'generate', '/v1/responses',
            'http_json', 'status-model', 'openai', 'acct_status', 'unavailable', now(), now() + interval '1 minute',
            'all', '{}'::text[], '[]'::jsonb)",
     )
@@ -1411,6 +1417,8 @@ pub(super) fn accepted_request(id: &str) -> CoreNewModelRequest {
     CoreNewModelRequest {
         id: ModelRequestId::new(id).expect("request id"),
         client_api_key_id: None,
+        limit_source_key_ref: ClientApiKeyId::new("key_zero_attempt").expect("client key ref"),
+        client_admission_acquired: true,
         client_api_key_ref: ClientApiKeyId::new("key_zero_attempt").expect("client key ref"),
         config_revision: ConfigRevision::new(1).expect("revision"),
         routing: AccountRoutingSnapshot::all(),

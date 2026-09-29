@@ -127,6 +127,40 @@ fn installation_checks_protocol_engine_and_target() {
 }
 
 #[test]
+fn capability_contract_versions_are_checked_independently_of_rpc_version() {
+    let mut manifest = packaged_manifest();
+    for version in [1, 2] {
+        manifest
+            .contributes
+            .get_mut(&Capability::Middleware)
+            .unwrap()
+            .version = version;
+        assert!(manifest.validate().is_ok());
+    }
+    for version in [0, 3, u32::MAX] {
+        manifest
+            .contributes
+            .get_mut(&Capability::Middleware)
+            .unwrap()
+            .version = version;
+        assert_eq!(manifest.validate(), Err(ManifestError::Invalid));
+    }
+
+    manifest.contributes.clear();
+    manifest.contributes.insert(
+        Capability::Management,
+        ContributionDeclaration {
+            id: "9acme.request-tags.management".into(),
+            version: 2,
+            stages: vec![Stage::Management],
+            input_formats: vec![],
+            output_formats: vec![],
+        },
+    );
+    assert_eq!(manifest.validate(), Err(ManifestError::Invalid));
+}
+
+#[test]
 fn package_rejects_file_directory_conflicts_and_missing_declared_files() {
     let mut manifest = packaged_manifest();
     manifest

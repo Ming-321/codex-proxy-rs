@@ -2,6 +2,7 @@ mod account_isolation;
 mod capacity;
 mod precommit;
 mod response_interrupt;
+mod upstream_adapter;
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::io::{self, Write};

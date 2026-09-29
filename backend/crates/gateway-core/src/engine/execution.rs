@@ -21,7 +21,7 @@ use crate::engine::authentication::{
     ClientAuthenticationRequest, FrontendAuthenticationDecision,
     FrontendAuthenticationExtensionIndex,
 };
-use crate::engine::budget::{ClientBudgetCharge, ClientBudgetPort};
+use crate::engine::budget::{ClientBudgetAdmission, ClientBudgetCharge, ClientBudgetPort};
 use crate::engine::continuation::{
     ContinuationBinding, NativeContinuationPin, NativeContinuationPort,
     NativeContinuationStoreErrorKind, PreviousResponseId,
@@ -973,6 +973,11 @@ impl DefaultExecutionService {
             .iter()
             .map(|group| group.id().clone())
             .collect::<Vec<_>>();
+        let upstream_adapters = request
+            .client
+            .snapshot
+            .extensions()
+            .and_then(|set| set.upstream_adapters());
         let middleware = self.middlewares.as_ref().and_then(|middlewares| {
             let generation = request.client.snapshot.extensions()?.clone();
             middlewares.resolve(&generation)
@@ -1012,7 +1017,8 @@ impl DefaultExecutionService {
                 ),
             ))
         });
-        let budget_key_id = request.client.policy.key_id().clone();
+        let client_key_id = request.client.policy.key_id().clone();
+        let budget_key_id = request.client.policy.limit_source_key_id().clone();
         let mut entered_execution = false;
         let result = async {
             if request_policy.is_some() {
@@ -1167,6 +1173,7 @@ impl DefaultExecutionService {
                 CoordinationExtensions::new(continuation, request_observation.clone())
                     .with_response_control(authorization.response_control.clone())
                     .with_request_policy(request_policy)
+                    .with_upstream_adapters(upstream_adapters)
                     .with_execution_effects(
                         execution_effects,
                         authorization.execution_effects_baseline,
@@ -1198,13 +1205,13 @@ impl DefaultExecutionService {
         if !entered_execution && let Err(error) = &result {
             tracing::warn!(
                 request_id = request_id.as_str(),
-                key_id = budget_key_id.as_str(),
+                key_id = client_key_id.as_str(),
                 failure_kind = error.kind().as_str(),
                 "请求在路由或准入阶段被拒绝"
             );
             let rejection = super::EntryRejection {
                 request_id: request_id.clone(),
-                client_key_id: budget_key_id.clone(),
+                client_key_id: client_key_id.clone(),
                 error: error.clone(),
                 latency: started_at.elapsed().unwrap_or_default(),
             };
@@ -1223,7 +1230,12 @@ impl DefaultExecutionService {
             && let Some(guard) = start_guard.take()
         {
             guard
-                .release_failed(self.budget.as_deref(), request_id, budget_key_id)
+                .release_failed(
+                    self.budget.as_deref(),
+                    request_id,
+                    budget_key_id,
+                    client_key_id,
+                )
                 .await;
         }
         result
@@ -1235,6 +1247,12 @@ impl DefaultExecutionService {
         request_id: &ModelRequestId,
         authorization: &mut AuthorizedExecution,
     ) -> Result<ExecutionStartGuard, GatewayError> {
+        request.client.policy.authorize_limits().map_err(|_| {
+            GatewayError::new(
+                GatewayErrorKind::PolicyDenied,
+                "native limit source is disabled",
+            )
+        })?;
         let concurrency_wait_budget = ConcurrencyWaitBudget::default();
         let (admission, admission_decision_ms) = if authorization.nested.is_some() {
             let permit = authorization.nested_permit.take().ok_or_else(|| {
@@ -1262,7 +1280,12 @@ impl DefaultExecutionService {
             (admission, Some(duration_ms(admission_started_at.elapsed())))
         };
         if let Some(budget) = &self.budget
-            && let Err(error) = budget.admit(request.client.policy.key_id().clone()).await
+            && let Err(error) = budget
+                .admit(ClientBudgetAdmission {
+                    client_key_id: request.client.policy.key_id().clone(),
+                    source_key_id: request.client.policy.limit_source_key_id().clone(),
+                })
+                .await
         {
             admission.release().await;
             return Err(error);
@@ -1351,6 +1374,8 @@ impl DefaultExecutionService {
             id: request_id.clone(),
             client_api_key_id: Some(client.policy.key_id().clone()),
             client_api_key_ref: client.policy.key_id().clone(),
+            limit_source_key_ref: client.policy.limit_source_key_id().clone(),
+            client_admission_acquired: !matches!(&admission, ExecutionAdmission::Nested(_)),
             config_revision: plan.config_revision(),
             routing: authorization.account_scope.routing_snapshot(),
             protocol: metadata.protocol,
@@ -1390,7 +1415,8 @@ impl DefaultExecutionService {
                     settle_budget(
                         budget.as_ref(),
                         ClientBudgetCharge {
-                            key_id: client.policy.key_id().clone(),
+                            key_id: client.policy.limit_source_key_id().clone(),
+                            client_key_ref: client.policy.key_id().clone(),
                             request_id: request_id.clone(),
                             amount_usd: crate::metering::Decimal::ZERO,
                             completed_at: SystemTime::now(),
@@ -1770,7 +1796,7 @@ impl DefaultExecutionService {
     ) -> Result<AdmissionLease, GatewayError> {
         let policy = client.snapshot.client_queue_policy();
         let limits = client.policy.limits();
-        let key = client.policy.key_id();
+        let key = client.policy.limit_source_key_id();
         let mut waiting = CapacityWait::new(&self.admission_waiting, policy, deadline_at, budget);
         let mut admission = AdmissionLease {
             port: Arc::clone(&self.admissions),
@@ -1829,7 +1855,12 @@ impl DefaultExecutionService {
                     if waiting.elapsed().is_zero()
                         && let Some(budget) = &self.budget
                     {
-                        budget.admit(key.clone()).await?;
+                        budget
+                            .admit(ClientBudgetAdmission {
+                                client_key_id: client.policy.key_id().clone(),
+                                source_key_id: key.clone(),
+                            })
+                            .await?;
                     }
                     waiting.wait(std::slice::from_ref(key)).await.map_err(|error| {
                         tracing::info!(request_id = request_id.as_str(), queue_layer = "client_key", queue_wait_ms = duration_ms(waiting.elapsed()), reason = %error, "Key 排队请求被拒绝");
@@ -1887,7 +1918,9 @@ impl DefaultExecutionService {
         let new_request = NewModelRequest {
             id: request_id,
             client_api_key_id: None,
-            client_api_key_ref: actor,
+            client_api_key_ref: actor.clone(),
+            limit_source_key_ref: actor,
+            client_admission_acquired: false,
             config_revision: plan.config_revision(),
             routing: crate::routing::AccountRoutingSnapshot::all(),
             protocol: "admin_connection_test".to_owned(),
@@ -2423,6 +2456,7 @@ impl ExecutionStartGuard {
         budget: Option<&dyn ClientBudgetPort>,
         request_id: ModelRequestId,
         key_id: ClientApiKeyId,
+        client_key_ref: ClientApiKeyId,
     ) {
         if let Some(active_request) = self.active_request {
             active_request.release();
@@ -2432,6 +2466,7 @@ impl ExecutionStartGuard {
                 budget,
                 ClientBudgetCharge {
                     key_id,
+                    client_key_ref,
                     request_id,
                     amount_usd: crate::metering::Decimal::ZERO,
                     completed_at: SystemTime::now(),
