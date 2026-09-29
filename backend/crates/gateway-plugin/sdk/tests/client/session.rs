@@ -142,6 +142,18 @@ impl PluginHandler for TestHandler {
                         vec![],
                     ))
                 }
+                "key_occupancy" => {
+                    let result = call
+                        .host
+                        .key_occupancy(gateway_plugin_sdk::call::data::ClientKeyFactsQuery {
+                            client_key_id: "key_1".into(),
+                        })
+                        .await?;
+                    Ok(CallReply::unary(
+                        serde_json::to_value(result).unwrap(),
+                        vec![],
+                    ))
+                }
                 "get_budget" => {
                     let result = call
                         .host
@@ -1654,7 +1666,18 @@ async fn typed_key_and_quota_calls_keep_payloads_and_do_not_retry_failures() {
             json!({"client_key_id":"key_1"}),
             json!({"schema_version":1,"client_key_id":"key_1","enabled":false,"group_ids":["grp_1"],
                 "configured_max_concurrency":8,"configured_requests_per_minute":60,
+                "effective_source_key_id":"source","effective_max_concurrency":4,
+                "effective_requests_per_minute":30,"effective_config_revision":4,
+                "loaded_config_revision":3,
                 "request_profile_overrides":{}}),
+        ),
+        (
+            "key_occupancy",
+            "host.data.keys.get_occupancy",
+            json!({"client_key_id":"key_1"}),
+            json!({"schema_version":1,"client_key_id":"key_1","source_key_id":"source",
+                "max_concurrency":4,"requests_per_minute":30,"config_revision":4,
+                "loaded_config_revision":3,"active_requests":3,"observed_at_ms":123}),
         ),
         (
             "get_budget",
@@ -1712,7 +1735,7 @@ async fn typed_key_and_quota_calls_keep_payloads_and_do_not_retry_failures() {
                 assert_eq!(error.code, ErrorCode::Conflict);
             } else {
                 let mut response_payload = response.clone();
-                if matches!(entry, "key_facts" | "refresh_quota") {
+                if matches!(entry, "key_facts" | "key_occupancy" | "refresh_quota") {
                     response_payload["future_fact"] = json!({"value":1});
                 }
                 write_frame(
