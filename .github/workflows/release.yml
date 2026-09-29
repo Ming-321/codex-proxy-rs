@@ -176,7 +176,7 @@ jobs:
 
           host_path = "backend/crates/gateway-plugin/runtime/plugin-host-compatibility.json"
           host = JSON.parse(File.read(host_path))
-          abort "Invalid plugin host compatibility declaration: #{host_path}" unless host["schema_version"] == 1
+          abort "Invalid plugin host compatibility declaration: #{host_path}" unless host["schema_version"] == 2
           # 清单只依赖版本与兼容声明，平台归档和镜像消费同一份封口结果。
           manifest = {
             "schema_version" => 1,
