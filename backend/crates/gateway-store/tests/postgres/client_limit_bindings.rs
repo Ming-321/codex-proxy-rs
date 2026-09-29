@@ -8,7 +8,7 @@ use gateway_admin::{
             DeleteClientKey, ResetClientKeyBudget,
         },
     },
-    ports::store::{AdminStoreErrorKind, ClientKeyStore as _},
+    ports::store::{AdminStoreErrorKind, AdminStoreResult, ClientKeyStore as _},
 };
 use gateway_core::{
     engine::{
@@ -855,6 +855,141 @@ async fn shared_budget_preserves_identity_history_and_late_charge_after_rebind_a
             .await
             .is_err()
     );
+    db.close().await;
+}
+
+async fn reset_budget(
+    store: &PgAdminClientKeyStore,
+    id: &str,
+    period: ClientKeyBudgetPeriod,
+) -> AdminStoreResult<()> {
+    store
+        .reset_client_key_budget(
+            ResetClientKeyBudget {
+                id: key(id),
+                period,
+            },
+            ClientKeyBudgetMutationOrigin::Admin,
+            &context(),
+        )
+        .await
+}
+
+async fn weekly_used(store: &PgAdminClientKeyStore, id: &str) -> String {
+    store
+        .get_client_key(&key(id))
+        .await
+        .unwrap()
+        .unwrap()
+        .budget
+        .weekly_used_usd
+        .canonical()
+}
+
+/// 逐表取出成员与来源相关的持久状态，用于证明被拒绝的重置没有留下任何修改。
+async fn shared_budget_state(db: &TestDatabase) -> serde_json::Value {
+    sqlx::query_scalar(
+        "select jsonb_build_object(
+            'windows', (select coalesce(jsonb_agg(to_jsonb(w) order by w.client_api_key_id), '[]'::jsonb) from client_key_budget_windows w),
+            'charges', (select coalesce(jsonb_agg(to_jsonb(c) order by c.request_id), '[]'::jsonb) from client_key_charge_events c),
+            'bindings', (select coalesce(jsonb_agg(to_jsonb(b) order by b.client_api_key_id), '[]'::jsonb) from client_key_limit_bindings b),
+            'keys', (select coalesce(jsonb_agg(to_jsonb(k) - 'key' order by k.id), '[]'::jsonb) from client_api_keys k),
+            'config_revision', (select config_revision from runtime_settings where id = 1),
+            'audits', (select coalesce(jsonb_agg(to_jsonb(a) order by a.id), '[]'::jsonb) from admin_audit_events a)
+        )",
+    )
+    .fetch_one(&db.pool)
+    .await
+    .unwrap()
+}
+
+#[tokio::test]
+async fn member_budget_reset_names_the_source_and_leaves_shared_state_untouched() {
+    let Some(db) = TestDatabase::create("shared_budget_reset_rejection").await else {
+        return;
+    };
+    seed(&db).await;
+    // 来源名称与 ID 不同，提示必须展示管理员在页面上看到的名称。
+    sqlx::query("update client_api_keys set name='Shared Source' where id='x'")
+        .execute(&db.pool)
+        .await
+        .unwrap();
+    let store = PgAdminClientKeyStore::new(db.pool.clone());
+    let budget = PgClientBudgetStore::new(db.pool.clone());
+    store
+        .change_limit_binding(
+            command("a", Some("x"), 0),
+            &context(),
+            ClientLimitBindingMutationOrigin::Admin,
+        )
+        .await
+        .unwrap();
+    budget.admit(admission("a", "x")).await.unwrap();
+    budget
+        .settle(charge("a", "x", "req_shared", "0.4"))
+        .await
+        .unwrap();
+    // unrelated 不参与共享，用来对照原有的重置行为。
+    budget
+        .admit(admission("unrelated", "unrelated"))
+        .await
+        .unwrap();
+    budget
+        .settle(charge("unrelated", "unrelated", "req_plain", "0.7"))
+        .await
+        .unwrap();
+    assert_eq!(weekly_used(&store, "a").await, "0.4");
+
+    let expected = "此 Key 共用来源 Key「Shared Source」的已用额度，不能在此重置，请重置来源。";
+    let before = shared_budget_state(&db).await;
+    for period in [
+        ClientKeyBudgetPeriod::Daily,
+        ClientKeyBudgetPeriod::Weekly,
+        ClientKeyBudgetPeriod::All,
+    ] {
+        let error = reset_budget(&store, "a", period).await.unwrap_err();
+        assert_eq!(error.kind(), AdminStoreErrorKind::Conflict);
+        assert_eq!(error.resource(), "controlled client limits");
+        assert_eq!(error.message(), expected);
+        assert_eq!(shared_budget_state(&db).await, before);
+    }
+
+    // 拒绝成员不改变其他 Key 的重置：未共享 Key 与来源本身仍按原语义清零并写审计。
+    reset_budget(&store, "unrelated", ClientKeyBudgetPeriod::All)
+        .await
+        .unwrap();
+    assert_eq!(weekly_used(&store, "unrelated").await, "0");
+    assert_eq!(weekly_used(&store, "a").await, "0.4");
+    reset_budget(&store, "x", ClientKeyBudgetPeriod::All)
+        .await
+        .unwrap();
+    assert_eq!(weekly_used(&store, "a").await, "0");
+
+    // 解绑后绑定行仍保留但来源为空，成员回到独立 Key，不应再被拒绝重置。
+    store
+        .change_limit_binding(
+            command("a", None, 1),
+            &context(),
+            ClientLimitBindingMutationOrigin::Admin,
+        )
+        .await
+        .unwrap();
+    let detached: i64 = sqlx::query_scalar(
+        "select count(*) from client_key_limit_bindings where client_api_key_id='a' and source_key_id is null",
+    )
+    .fetch_one(&db.pool)
+    .await
+    .unwrap();
+    assert_eq!(detached, 1);
+    reset_budget(&store, "a", ClientKeyBudgetPeriod::All)
+        .await
+        .unwrap();
+    let audits: i64 =
+        sqlx::query_scalar("select count(*) from admin_audit_events where action='reset_budget'")
+            .fetch_one(&db.pool)
+            .await
+            .unwrap();
+    assert_eq!(audits, 3);
     db.close().await;
 }
 

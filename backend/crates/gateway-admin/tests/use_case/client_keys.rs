@@ -28,6 +28,7 @@ struct TestClientKeyStore {
     list_response: Mutex<Option<ClientKeyPage>>,
     create_error: Option<AdminStoreErrorKind>,
     update_error: Option<AdminStoreErrorKind>,
+    reset_error: Option<AdminStoreError>,
     resets: Mutex<Vec<gateway_admin::model::client_keys::ResetClientKeyBudget>>,
 }
 
@@ -98,7 +99,7 @@ impl ClientKeyStore for TestClientKeyStore {
         _: &MutationContext,
     ) -> AdminStoreResult<()> {
         self.resets.lock().unwrap().push(command);
-        Ok(())
+        self.reset_error.clone().map_or(Ok(()), Err)
     }
 
     async fn get_client_key(
@@ -217,6 +218,67 @@ async fn reset_budget_forwards_scope_and_returns_only_key_identity() {
         .unwrap();
     assert_eq!(result, command.id);
     assert_eq!(*store.resets.lock().unwrap(), vec![command]);
+}
+
+#[tokio::test]
+async fn reset_budget_shows_the_controlled_limit_message_but_not_other_store_errors() {
+    use gateway_admin::model::client_keys::{
+        ClientKeyBudgetMutationOrigin, ClientKeyBudgetPeriod, ResetClientKeyBudget,
+    };
+    let controlled = "此 Key 共用来源 Key「Shared Source」的已用额度，不能在此重置，请重置来源。";
+    let command = ResetClientKeyBudget {
+        id: ClientApiKeyId::new("key_member").unwrap(),
+        period: ClientKeyBudgetPeriod::All,
+    };
+    for (store_error, kind, message) in [
+        (
+            AdminStoreError::new(
+                AdminStoreErrorKind::Conflict,
+                "controlled client limits",
+                controlled,
+            ),
+            AdminErrorKind::Conflict,
+            controlled,
+        ),
+        // 其他 Store 错误只按类别映射为固定文案，原文不能越过管理端边界。
+        (
+            AdminStoreError::new(
+                AdminStoreErrorKind::Conflict,
+                "client API key budget",
+                "relation client_key_budget_windows is locked",
+            ),
+            AdminErrorKind::Conflict,
+            "当前资源状态冲突，请刷新后重试",
+        ),
+        (
+            AdminStoreError::new(
+                AdminStoreErrorKind::Unavailable,
+                "client API key budget",
+                "postgres://user:secret@127.0.0.1/db refused",
+            ),
+            AdminErrorKind::Unavailable,
+            "依赖服务暂不可用",
+        ),
+    ] {
+        let services = super::AdminHarness::new()
+            .client_keys(Arc::new(TestClientKeyStore {
+                reset_error: Some(store_error),
+                ..Default::default()
+            }))
+            .build()
+            .await;
+        let error = services
+            .client_keys()
+            .reset_budget(
+                &mutation_context(),
+                command.clone(),
+                ClientKeyBudgetMutationOrigin::Admin,
+            )
+            .await
+            .unwrap_err();
+        assert_eq!(error.kind(), kind);
+        assert_eq!(error.message(), message);
+    }
 }
 
 #[tokio::test]

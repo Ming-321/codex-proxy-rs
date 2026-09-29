@@ -67,13 +67,23 @@ async fn reset_client_key_budget_in_transaction(
             id: command.id.as_str().to_owned(),
         });
     }
-    let bound: bool = sqlx::query_scalar("select exists(select 1 from client_key_limit_bindings where client_api_key_id=$1 and source_key_id is not null)")
-        .bind(command.id.as_str()).fetch_one(&mut **tx).await.map_err(|_| postgres_unavailable("check budget reset binding"))?;
-    if bound {
-        return Err(StoreError::Conflict {
-            entity: "shared budget reset",
-            id: command.id.to_string(),
-            kind: crate::ConflictKind::InvalidTransition,
+    // 成员共用来源的用量，重置只能作用于来源本身，不能自动改为清零来源。
+    // 这里只读取来源名称用于提示；提前返回不写任何数据，事务随之回滚。
+    // 管理端提示条只显示前两行，文案要短，并把来源与应执行的操作放在前面。
+    let source_name: Option<String> = sqlx::query_scalar(
+        "select x.name from client_key_limit_bindings b
+        join client_api_keys x on x.id = b.source_key_id
+        where b.client_api_key_id = $1",
+    )
+    .bind(command.id.as_str())
+    .fetch_optional(&mut **tx)
+    .await
+    .map_err(|_| postgres_unavailable("check budget reset binding"))?;
+    if let Some(source_name) = source_name {
+        return Err(StoreError::ControlledLimits {
+            message: format!(
+                "此 Key 共用来源 Key「{source_name}」的已用额度，不能在此重置，请重置来源。"
+            ),
         });
     }
     let daily = matches!(

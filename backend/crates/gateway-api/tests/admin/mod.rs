@@ -608,6 +608,9 @@ impl SettingsStore for MemorySettingsStore {
 
 pub(super) struct MemoryClientKeyStore(Arc<Mutex<Option<ClientKeyRecord>>>);
 
+pub(super) const SHARED_RESET_REJECTION: &str =
+    "此 Key 共用来源 Key「Shared Source」的已用额度，不能在此重置，请重置来源。";
+
 #[derive(Default)]
 pub(super) struct MemoryObservations {
     pub summary: Option<UsageOverview>,
@@ -966,6 +969,14 @@ impl ClientKeyStore for MemoryClientKeyStore {
             .ok_or_else(|| {
                 AdminStoreError::new(AdminStoreErrorKind::NotFound, "client key", "missing key")
             })?;
+        // 与真实 Store 的合同一致：绑定来源的成员不能重置，说明由 Store 组装。
+        if record.limit_source.is_some() {
+            return Err(AdminStoreError::new(
+                AdminStoreErrorKind::Conflict,
+                "controlled client limits",
+                SHARED_RESET_REJECTION,
+            ));
+        }
         if matches!(
             command.period,
             ClientKeyBudgetPeriod::Daily | ClientKeyBudgetPeriod::All

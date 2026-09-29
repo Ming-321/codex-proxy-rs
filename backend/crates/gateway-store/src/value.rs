@@ -25,6 +25,8 @@ pub enum ConflictKind {
 /// Store adapter 的稳定错误边界。
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 pub enum StoreError {
+    /// 共享限额规则拒绝了成员上的操作。`message` 由 Store 组装，只含固定文案和来源 Key 名称，
+    /// 管理端可原样展示；其余 Store 错误仍不得越过 HTTP 边界。
     #[error("{message}")]
     ControlledLimits { message: String },
     #[error("{backend:?} store is unavailable: {message}")]
