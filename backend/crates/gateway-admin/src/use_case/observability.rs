@@ -161,7 +161,7 @@ impl DefaultObservabilityService {
             self.store.dashboard_runtime_slots(observed_at),
         )
         .map_err(|error| map_store_error(error, "dashboard"))?;
-        self.enrich_list_billing(&mut observation.recent_requests);
+        self.enrich_list_records(&mut observation.recent_requests);
         self.enrich_dashboard_quotas(&mut observation.account_usage)
             .await;
         for account in &mut observation.account_usage {
@@ -268,7 +268,7 @@ impl ObservabilityService for DefaultObservabilityService {
             .list_usage_records(query)
             .await
             .map_err(|error| map_store_error(error, "usage records"))?;
-        self.enrich_list_billing(&mut page.items);
+        self.enrich_list_records(&mut page.items);
         Ok(page)
     }
 
@@ -334,29 +334,37 @@ impl ObservabilityService for DefaultObservabilityService {
         filter: UsageFilter,
         dimension: DiagnosticDimension,
     ) -> Result<DiagnosticsResult, AdminError> {
-        let items = self
+        let observation = self
             .store
             .usage_diagnostics(range, filter, dimension)
             .await
             .map_err(|error| map_store_error(error, "usage diagnostics"))?;
-        let total_requests = items.iter().fold(0_u64, |total, item| {
-            total.saturating_add(item.request_count)
-        });
-        let items = items
+        let items = observation
+            .items
             .into_iter()
             .map(|item| {
                 let error_rate = rate_or_zero(item.failure_count, item.request_count);
                 let non_completion_rate =
                     rate_or_zero(item.non_completion_count, item.request_count);
-                let retry_rate = rate_or_zero(item.retry_count, item.request_count);
+                let retry_rate = rate_or_zero(item.retried_request_count, item.request_count);
                 DiagnosticsItem {
                     key: item.key,
                     name: item.name,
+                    account_plan_type_display: item.account_provider_kind.as_deref().and_then(
+                        |provider| {
+                            self.providers
+                                .plan_type_display(provider, item.account_plan_type.as_deref())
+                        },
+                    ),
+                    account_plan_type: item.account_plan_type,
                     request_count: item.request_count,
                     success_count: item.success_count,
                     error_count: item.failure_count,
                     error_rate,
-                    request_share: rate_or_zero(item.request_count, total_requests),
+                    request_share: rate_or_zero(
+                        item.request_count,
+                        observation.total_request_count,
+                    ),
                     average_latency_ms: item.average_latency_ms,
                     latency_p95_ms: item.latency_p95_ms,
                     first_token_p95_ms: item.first_token_p95_ms,
@@ -772,10 +780,15 @@ impl DefaultObservabilityService {
         }
     }
 
-    /// 逐条尽力把可校验的总额升级为完整分解；单条脏数据（非法 Provider kind、
+    /// 补充当前套餐展示名称，逐条尽力把可校验的总额升级为完整分解；单条脏数据（非法 Provider kind、
     /// 不支持的来源或费用规则失败）只保留该条已存的总额，不影响整页返回。
-    fn enrich_list_billing(&self, records: &mut [crate::model::observability::UsageListRecord]) {
+    fn enrich_list_records(&self, records: &mut [crate::model::observability::UsageListRecord]) {
         for record in records {
+            record.provider_account_plan_type_display =
+                record.provider_kind.as_deref().and_then(|provider| {
+                    self.providers
+                        .plan_type_display(provider, record.provider_account_plan_type.as_deref())
+                });
             let Some(UsageBilling::Total { source, total }) = record.billing.as_ref() else {
                 continue;
             };

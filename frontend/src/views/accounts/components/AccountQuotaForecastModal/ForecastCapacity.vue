@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import type { AccountQuotaForecast } from '@/api'
-import { ArrowRight, Info } from '@lucide/vue'
+import { ArrowRight } from '@lucide/vue'
 import { computed } from 'vue'
 
 const props = defineProps<{ forecast: AccountQuotaForecast }>()
@@ -26,8 +26,7 @@ const metrics = computed(() => [
     <div>
       <div class="flex flex-wrap items-center justify-between gap-2">
         <span class="text-cp-xs text-cp-text-secondary">本周期已用</span>
-        <span class="inline-flex items-center gap-1 rounded-cp-sm bg-cp-info-container px-2 py-1 text-cp-xs font-emphasis text-cp-info-on-container">
-          <Info class="size-3" aria-hidden="true" />
+        <span class="inline-flex items-center rounded-cp-sm bg-cp-info-container px-2 py-1 text-cp-xs font-emphasis text-cp-info-on-container">
           {{ forecast.lowSample ? '初步估算 · 仅供参考' : '估算值 · 仅供参考' }}
         </span>
       </div>
@@ -69,15 +68,6 @@ const metrics = computed(() => [
           </div>
         </div>
       </div>
-    </div>
-
-    <div class="flex flex-wrap items-baseline justify-between gap-x-3 gap-y-2 text-cp-xs">
-      <span class="text-cp-text-secondary">更新时的剩余额度</span>
-      <span class="font-mono font-emphasis text-cp-text [html[data-theme=light]_&]:font-medium">
-        {{ forecast.remainingTokensDisplay }} Tokens
-        <span class="mx-1 text-cp-text-tertiary">/</span>
-        {{ forecast.remainingUsdDisplay }}
-      </span>
     </div>
   </section>
 </template>

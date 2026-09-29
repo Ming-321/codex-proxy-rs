@@ -180,10 +180,6 @@ fn quota_forecast_view(forecast: AccountQuotaForecast) -> AccountQuotaForecastVi
         estimated_tokens_display: display_optional_tokens(forecast.estimated_tokens),
         estimated_usd: forecast.estimated_usd,
         estimated_usd_display: forecast_usd_display(forecast.estimated_usd),
-        remaining_tokens: forecast.remaining_tokens,
-        remaining_tokens_display: display_optional_tokens(forecast.remaining_tokens),
-        remaining_usd: forecast.remaining_usd,
-        remaining_usd_display: forecast_usd_display(forecast.remaining_usd),
     }
 }
 

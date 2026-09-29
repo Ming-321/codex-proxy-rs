@@ -4,6 +4,7 @@ import type { UsageDisplayRecord } from '../utils/records'
 import { BaseTable } from '@codex-proxy/ui'
 import { Minimize2 } from '@lucide/vue'
 import ProviderIconGroup from '@/components/ProviderIconGroup.vue'
+import AccountPlanBadge from '@/views/accounts/components/AccountPlanBadge.vue'
 import {
   usageAccountText,
   usageAuthenticationKind,
@@ -70,6 +71,16 @@ withDefaults(
       >
         {{ row.accountNotes }}
       </span>
+    </template>
+
+    <template #accountPlanType="{ row }">
+      <AccountPlanBadge
+        v-if="row.accountPlanType"
+        :plan-type="row.accountPlanType"
+        :plan-type-display="row.accountPlanTypeDisplay || row.accountPlanType"
+        size="sm"
+      />
+      <span v-else class="text-cp-text-quaternary">—</span>
     </template>
 
     <template #clientIp="{ row }">

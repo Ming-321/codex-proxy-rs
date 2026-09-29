@@ -558,6 +558,9 @@ pub struct UsageListRecord {
     pub provider_account_email: Option<String>,
     /// 账号当前备注，按内部账号 ID 关联，不属于请求历史快照。
     pub provider_account_notes: Option<String>,
+    /// 账号当前套餐，不属于请求历史快照。
+    pub provider_account_plan_type: Option<String>,
+    pub provider_account_plan_type_display: Option<String>,
     pub provider_account_authentication_kind: Option<String>,
     pub upstream_model_id: Option<String>,
     pub upstream_transport: Option<String>,
@@ -757,11 +760,20 @@ pub struct UsageSummary {
     pub average_latency_ms: Option<u64>,
 }
 
+/// 诊断聚合结果，分母包含截取展示项之前的全部匹配请求。
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct DiagnosticsObservation {
+    pub total_request_count: u64,
+    pub items: Vec<DiagnosticObservation>,
+}
+
 /// 单个诊断维度值的聚合结果。
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DiagnosticObservation {
     pub key: String,
     pub name: String,
+    pub account_provider_kind: Option<String>,
+    pub account_plan_type: Option<String>,
     pub request_count: u64,
     pub success_count: u64,
     pub failure_count: u64,
@@ -772,6 +784,7 @@ pub struct DiagnosticObservation {
     pub first_token_p95_ms: Option<u64>,
     pub non_completion_count: u64,
     pub retry_count: u64,
+    pub retried_request_count: u64,
     pub cost_coverage: CostCoverage,
     pub costs: Vec<CurrencyCost>,
 }
@@ -1142,6 +1155,8 @@ pub struct UsageInsights {
 pub struct DiagnosticsItem {
     pub key: String,
     pub name: String,
+    pub account_plan_type: Option<String>,
+    pub account_plan_type_display: Option<String>,
     pub request_count: u64,
     pub success_count: u64,
     pub error_count: u64,

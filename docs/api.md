@@ -911,8 +911,6 @@ OAuth start 使用：
 - `estimatedTokens` / `estimatedUsd` 及对应 `*Display`：本周期已记录用量加预计剩余量，
   公式为 `(本周期已记录用量 + 样本用量 × (100 - usedPercent) / sampledPercent) × 目标窗口秒数 / 源窗口秒数`。
   真实周期由上游额度重置边界定义，不按自然周/月累计；只有折算结果才乘以目标与源窗口的时长比
-- `remainingTokens` / `remainingUsd` 及对应 `*Display`：**额度快照时源窗口**的剩余估算，
-  公式为 `样本用量 × (100 - usedPercent) / sampledPercent`；不随目标周期折算，不代表当前可消费余额
 - `source`：源窗口名称 `label`、已用比例 `usedPercent` / `usedPercentDisplay`、
   额度观测时间 `observedAt` / `observedAtDisplay`、用于过期检查的 `resetAt`，以及本周期累计
   已记录的 `tokensDisplay` / `usdDisplay`。`source: null` 表示没有可选的源窗口。
@@ -1560,6 +1558,12 @@ Dashboard 的 `accountUsage[]` 由后端提供 `usageWindow`、`metricLabel`、`
 request/response/upstream ID、outcome 与搜索文本。诊断 `dimension` 可取 `model`、`account`、
 `apiKey`、`provider`、`transport`、`failureClass`、`status`。诊断按请求量降序返回最多 100 项，
 同请求量按维度标识稳定排列
+
+`requestShare` 的分母为该维度筛选后、截取前的全部请求数；`failureClass` 只在带错误类型的请求内计算占比
+`retryCount` 为额外执行尝试次数之和，`retryRate` 为发生过重试的请求数占该组请求数的比例，同一请求多次重试只计一次
+
+账号维度诊断项和使用记录列表的 `accountPlanType` / `accountPlanTypeDisplay` 返回账号当前套餐及展示名称，
+按内部账号 ID 关联；套餐未知或账号已删除时为 `null`，不作为请求发生时的套餐快照
 
 管理端请求列表及 Dashboard 最近请求中的 `accountNotes` 为账号当前备注，按内部账号 ID 关联。
 备注不写入请求历史快照；无备注或账号已删除时返回 `null`，修改备注不改变历史请求的账号归属

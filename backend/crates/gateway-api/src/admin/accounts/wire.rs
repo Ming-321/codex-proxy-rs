@@ -362,10 +362,6 @@ pub struct AccountQuotaForecastView {
     pub estimated_tokens_display: String,
     pub estimated_usd: Option<f64>,
     pub estimated_usd_display: String,
-    pub remaining_tokens: Option<u64>,
-    pub remaining_tokens_display: String,
-    pub remaining_usd: Option<f64>,
-    pub remaining_usd_display: String,
 }
 
 #[derive(Debug, Clone, Serialize)]

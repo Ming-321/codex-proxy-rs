@@ -261,7 +261,7 @@ impl ObservabilityRepository for PgObservabilityRepository {
         range: ObservabilityRange,
         filter: UsageRecordFilter,
         dimension: DiagnosticDimension,
-    ) -> StoreResult<Vec<DiagnosticObservation>> {
+    ) -> StoreResult<DiagnosticsObservation> {
         self.query_budget
             .run(
                 "load usage diagnostics",
@@ -441,18 +441,17 @@ impl AdminObservabilityStore for PgAdminObservabilityStore {
         range: admin_observability::TimeRange,
         filter: admin_observability::UsageFilter,
         dimension: admin_observability::DiagnosticDimension,
-    ) -> AdminStoreResult<Vec<admin_observability::DiagnosticObservation>> {
-        self.repository
+    ) -> AdminStoreResult<admin_observability::DiagnosticsObservation> {
+        let observation = self
+            .repository
             .usage_diagnostics(
                 store_range(range)?,
                 store_usage_filter(filter),
                 store_diagnostic_dimension(dimension),
             )
             .await
-            .map_err(observability_error)?
-            .into_iter()
-            .map(admin_diagnostic_observation)
-            .collect()
+            .map_err(observability_error)?;
+        admin_diagnostics_observation(observation)
     }
 
     async fn list_ops_errors(

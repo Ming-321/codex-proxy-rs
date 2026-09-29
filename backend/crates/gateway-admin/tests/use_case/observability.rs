@@ -16,11 +16,11 @@ use gateway_admin::{
         MutationContext, PageSize, Revision,
         observability::{
             AccountPoolMetrics, AttemptMetrics, CostCoverage, CurrencyCost, DashboardObservation,
-            DashboardRuntimeSlots, DiagnosticDimension, DiagnosticObservation, Granularity,
-            HealthStatus, LatencyPercentiles, OpsErrorPage, OpsErrorQuery, PercentileMilliseconds,
-            RequestMetricPoint, RequestMetrics, TimeRange, TrendKind, UsageBilling,
-            UsageCalculatedBillingFact, UsageDetail, UsageFilter, UsageListRecord, UsageOverview,
-            UsagePage, UsageQuery, china_day_start,
+            DashboardRuntimeSlots, DiagnosticDimension, DiagnosticObservation,
+            DiagnosticsObservation, Granularity, HealthStatus, LatencyPercentiles, OpsErrorPage,
+            OpsErrorQuery, PercentileMilliseconds, RequestMetricPoint, RequestMetrics, TimeRange,
+            TrendKind, UsageBilling, UsageCalculatedBillingFact, UsageDetail, UsageFilter,
+            UsageListRecord, UsageOverview, UsagePage, UsageQuery, china_day_start,
         },
         settings::{
             AdminApiKey, AdminApiKeyMutation, ReplaceRuntimeSettings, RotationStrategy,
@@ -421,7 +421,10 @@ async fn observability_services_should_calculate_usage_insights_and_diagnostic_s
                 .expect("calculated total"),
         },
     }]);
-    store.replace_diagnostics(vec![diagnostic("openai", 3), diagnostic("xai", 1)]);
+    store.replace_diagnostics(DiagnosticsObservation {
+        total_request_count: 4,
+        items: vec![diagnostic("openai", 3), diagnostic("xai", 1)],
+    });
     let services = observability_services_with_calculated_billing(store).await;
 
     let insights = services
@@ -513,7 +516,10 @@ async fn diagnostics_should_preserve_request_order_when_a_small_sample_fails() {
     let mut failure = diagnostic("single_failure", 1);
     failure.success_count = 0;
     failure.failure_count = 1;
-    store.replace_diagnostics(vec![success, failure]);
+    store.replace_diagnostics(DiagnosticsObservation {
+        total_request_count: 101,
+        items: vec![success, failure],
+    });
     let services = observability_services_with_calculated_billing(store).await;
 
     let result = services
@@ -527,6 +533,68 @@ async fn diagnostics_should_preserve_request_order_when_a_small_sample_fails() {
     assert_eq!(result.items[0].error_count, 0);
     assert_eq!(result.items[1].error_count, 1);
     assert_eq!(result.items[1].error_rate, 1.0);
+}
+
+#[tokio::test]
+async fn diagnostics_should_use_the_total_before_truncating_groups() {
+    let range = observation_range(Utc::now());
+    let store = Arc::new(FixtureObservabilityStore::new(range));
+    store.replace_diagnostics(DiagnosticsObservation {
+        total_request_count: 200,
+        items: (0..100)
+            .map(|index| diagnostic(&format!("model-{index}"), 1))
+            .collect(),
+    });
+    let services = observability_services_with_calculated_billing(store).await;
+
+    let result = services
+        .observability()
+        .diagnostics(range, UsageFilter::default(), DiagnosticDimension::Model)
+        .await
+        .expect("limited diagnostics");
+
+    assert!(result.items.iter().all(|item| item.request_share == 0.005));
+}
+
+#[tokio::test]
+async fn diagnostics_should_count_each_retried_request_once() {
+    let range = observation_range(Utc::now());
+    let store = Arc::new(FixtureObservabilityStore::new(range));
+    let mut item = diagnostic("model", 8);
+    item.attempt_count = 14;
+    item.retry_count = 6;
+    item.retried_request_count = 2;
+    store.replace_diagnostics(DiagnosticsObservation {
+        total_request_count: 8,
+        items: vec![item],
+    });
+    let services = observability_services_with_calculated_billing(store).await;
+
+    let result = services
+        .observability()
+        .diagnostics(range, UsageFilter::default(), DiagnosticDimension::Model)
+        .await
+        .expect("retry diagnostics");
+
+    assert_eq!(
+        (result.items[0].retry_count, result.items[0].retry_rate),
+        (6, 0.25)
+    );
+}
+
+#[tokio::test]
+async fn diagnostics_should_preserve_empty_results() {
+    let range = observation_range(Utc::now());
+    let store = Arc::new(FixtureObservabilityStore::new(range));
+    let services = observability_services_with_calculated_billing(store).await;
+
+    let result = services
+        .observability()
+        .diagnostics(range, UsageFilter::default(), DiagnosticDimension::Account)
+        .await
+        .expect("empty diagnostics");
+
+    assert!(result.items.is_empty());
 }
 
 #[tokio::test]
@@ -632,7 +700,7 @@ struct FixtureObservabilityStore {
     overview: Mutex<UsageOverview>,
     calculated_billing_facts: Mutex<Vec<UsageCalculatedBillingFact>>,
     billing_stream_fails: AtomicBool,
-    diagnostics: Mutex<Vec<DiagnosticObservation>>,
+    diagnostics: Mutex<DiagnosticsObservation>,
     runtime_slots: Mutex<Option<DashboardRuntimeSlots>>,
     summary_observed_at: Mutex<Option<DateTime<Utc>>>,
     slots_observed_at: Mutex<Option<DateTime<Utc>>>,
@@ -653,7 +721,7 @@ impl FixtureObservabilityStore {
             }),
             calculated_billing_facts: Mutex::new(Vec::new()),
             billing_stream_fails: AtomicBool::new(false),
-            diagnostics: Mutex::new(Vec::new()),
+            diagnostics: Mutex::new(DiagnosticsObservation::default()),
             runtime_slots: Mutex::new(None),
             summary_observed_at: Mutex::new(None),
             slots_observed_at: Mutex::new(None),
@@ -686,7 +754,7 @@ impl FixtureObservabilityStore {
             .expect("calculated billing facts") = facts;
     }
 
-    fn replace_diagnostics(&self, diagnostics: Vec<DiagnosticObservation>) {
+    fn replace_diagnostics(&self, diagnostics: DiagnosticsObservation) {
         *self.diagnostics.lock().expect("diagnostics") = diagnostics;
     }
 
@@ -798,7 +866,7 @@ impl ObservabilityStore for FixtureObservabilityStore {
         _: TimeRange,
         _: UsageFilter,
         _: DiagnosticDimension,
-    ) -> AdminStoreResult<Vec<DiagnosticObservation>> {
+    ) -> AdminStoreResult<DiagnosticsObservation> {
         Ok(self.diagnostics.lock().expect("diagnostics").clone())
     }
 
@@ -948,6 +1016,8 @@ fn total_record(
         provider_account_name: None,
         provider_account_email: None,
         provider_account_notes: None,
+        provider_account_plan_type: None,
+        provider_account_plan_type_display: None,
         provider_account_authentication_kind: None,
         upstream_model_id: Some("gpt-5.5".to_owned()),
         upstream_transport: None,
@@ -1010,6 +1080,9 @@ fn diagnostic(name: &str, request_count: u64) -> DiagnosticObservation {
         first_token_p95_ms: None,
         non_completion_count: 0,
         retry_count: 0,
+        retried_request_count: 0,
+        account_provider_kind: None,
+        account_plan_type: None,
         key: name.to_owned(),
         name: name.to_owned(),
         request_count,

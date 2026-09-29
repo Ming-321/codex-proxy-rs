@@ -27,7 +27,7 @@ const { now, pause, resume } = useNow({
   scheduler: callback => useIntervalFn(callback, 30_000),
 })
 const options = computed(() => report.value?.forecasts.map(item => ({
-  label: item.extrapolated ? `${item.targetDays}天折算` : item.source?.label ?? (item.period === 'weekly' ? '周额度' : '月额度'),
+  label: item.period === 'weekly' ? '周额度' : '月额度',
   value: item.period,
 })) ?? [
   { label: '周额度', value: 'weekly' },
@@ -75,9 +75,9 @@ function handleExplanationKeydown(event: KeyboardEvent) {
 
     <div class="grid grid-cols-1 gap-4">
       <div class="flex flex-wrap items-center justify-between gap-4">
-        <AccountIdentityCell :account="account" show-plan title-mode="email" class="max-w-full">
+        <AccountIdentityCell :account="account" show-plan title-mode="email" meta-position="secondary" meta-size="xs" class="max-w-full">
           <template #meta>
-            <ProviderIconGroup :provider="account.provider" size="sm" />
+            <ProviderIconGroup :provider="account.provider" size="xs" />
           </template>
         </AccountIdentityCell>
         <BaseSegmented v-model="period" label="预测周期" :options="options" class="w-48" />
@@ -104,7 +104,10 @@ function handleExplanationKeydown(event: KeyboardEvent) {
     </div>
 
     <template #footer>
-      <div class="mr-auto flex min-w-0 items-center gap-2">
+      <div class="mr-auto flex min-w-0 items-center gap-1">
+        <span v-if="forecast?.source?.observedAt" class="hidden text-cp-xs text-cp-text-tertiary sm:block">
+          更新于 {{ forecast.source.observedAtDisplay }}
+        </span>
         <BasePopover v-model="explanationOpen" trigger="hover-click" placement="top-start" :hover-delay="240">
           <template #trigger>
             <BaseIconButton
@@ -132,16 +135,13 @@ function handleExplanationKeydown(event: KeyboardEvent) {
               目前数据还较少，结果可能有较大波动
             </p>
             <p v-if="forecast?.extrapolated" class="m-0">
-              本页预测为折算值，剩余量仍按{{ forecast.source?.label ?? '当前周期' }}计算
+              本页预测由{{ forecast.source?.label ?? '当前周期' }}按 {{ forecast.targetDays }} 天折算
             </p>
             <p class="m-0">
-              剩余量以数据更新时间为准，等价费用不是实际账单或账户余额
+              预测以数据更新时间为准，等价费用不是实际账单或账户余额
             </p>
           </section>
         </BasePopover>
-        <span v-if="forecast?.source?.observedAt" class="hidden text-cp-xs text-cp-text-tertiary sm:block">
-          更新于 {{ forecast.source.observedAtDisplay }}
-        </span>
       </div>
       <BaseButton variant="secondary" @click="open = false">
         关闭

@@ -160,7 +160,7 @@ async fn usage_page_should_always_return_total() {
 }
 
 #[tokio::test]
-async fn usage_list_should_resolve_current_notes_by_account_id() {
+async fn usage_list_and_diagnostics_should_resolve_current_account_metadata_by_id() {
     let Some(database) = TestDatabase::create("usage_account_notes").await else {
         return;
     };
@@ -197,12 +197,20 @@ async fn usage_list_should_resolve_current_notes_by_account_id() {
             .expect("admin observability range");
     let store = admin_observability_store(&database.pool);
 
-    for notes in [None, Some("个人主号"), Some("个人备用号"), None] {
-        sqlx::query("update provider_accounts set notes = $1 where id = 'acct_observe'")
-            .bind(notes)
-            .execute(&database.pool)
-            .await
-            .expect("update current account notes");
+    for (notes, plan) in [
+        (None, Some("pro")),
+        (Some("个人主号"), Some("plus")),
+        (Some("个人备用号"), Some("pro")),
+        (None, None),
+    ] {
+        sqlx::query(
+            "update provider_accounts set notes = $1, plan_type = $2 where id = 'acct_observe'",
+        )
+        .bind(notes)
+        .bind(plan)
+        .execute(&database.pool)
+        .await
+        .expect("update current account notes");
         let page = store
             .list_usage_records(admin_observability::UsageQuery {
                 range,
@@ -230,6 +238,36 @@ async fn usage_list_should_resolve_current_notes_by_account_id() {
         );
         assert_eq!(personal.provider_account_email, team.provider_account_email);
         assert_eq!(personal.provider_account_notes.as_deref(), notes);
+        assert_eq!(personal.provider_account_plan_type.as_deref(), plan);
+        assert_eq!(team.provider_account_plan_type.as_deref(), Some("team"));
+        let diagnostics = store
+            .usage_diagnostics(
+                range,
+                admin_observability::UsageFilter::default(),
+                admin_observability::DiagnosticDimension::Account,
+            )
+            .await
+            .expect("account plans");
+        assert_eq!(
+            diagnostics
+                .items
+                .iter()
+                .find(|item| item.key == "acct_observe")
+                .expect("personal diagnostics")
+                .account_plan_type
+                .as_deref(),
+            plan
+        );
+        assert_eq!(
+            diagnostics
+                .items
+                .iter()
+                .find(|item| item.key == "acct_team")
+                .expect("team diagnostics")
+                .account_plan_type
+                .as_deref(),
+            Some("team")
+        );
         assert_eq!(team.provider_account_notes.as_deref(), Some("团队工作区"));
     }
 
@@ -274,6 +312,19 @@ async fn usage_list_should_resolve_current_notes_by_account_id() {
         Some("account@example.invalid")
     );
     assert_eq!(page.items[0].provider_account_notes, None);
+    assert_eq!(page.items[0].provider_account_plan_type, None);
+    let diagnostics = store
+        .usage_diagnostics(
+            range,
+            admin_observability::UsageFilter {
+                provider_account_ref: Some("acct_team".to_owned()),
+                ..Default::default()
+            },
+            admin_observability::DiagnosticDimension::Account,
+        )
+        .await
+        .expect("deleted account diagnostics");
+    assert_eq!(diagnostics.items[0].account_plan_type, None);
     database.close().await;
 }
 
@@ -765,7 +816,8 @@ async fn recovered_continuation_failure_should_be_visible_in_ops_but_hidden_from
             DiagnosticDimension::Account,
         )
         .await
-        .expect("diagnostics without recovered intermediates");
+        .expect("diagnostics without recovered intermediates")
+        .items;
     assert_eq!(diagnostics[0].request_count, 2);
     assert_eq!(diagnostics[0].failure_count, 0);
 
@@ -1358,7 +1410,8 @@ async fn admin_observability_adapter_preserves_utc_queries_metrics_costs_and_det
             admin_observability::DiagnosticDimension::Account,
         )
         .await
-        .expect("admin diagnostics");
+        .expect("admin diagnostics")
+        .items;
     assert_eq!(diagnostics[0].key, "acct_observe");
     assert_eq!(diagnostics[0].name, "account@example.invalid");
     assert_eq!(diagnostics[0].cost_coverage.provider_reported_count, 1);
@@ -1775,7 +1828,8 @@ async fn observability_queries_preserve_request_account_cost_and_diagnostic_fact
             DiagnosticDimension::Account,
         )
         .await
-        .expect("usage diagnostics");
+        .expect("usage diagnostics")
+        .items;
     assert_eq!(diagnostics[0].key, "acct_observe");
     assert_eq!(diagnostics[0].name, "account@example.invalid");
     assert_eq!(diagnostics[0].request_count, 3);

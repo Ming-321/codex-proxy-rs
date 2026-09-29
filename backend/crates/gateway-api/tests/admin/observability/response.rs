@@ -550,7 +550,9 @@ async fn diagnostics_should_keep_stable_key_and_display_name_contract() {
         body::{Body, to_bytes},
         http::{Request, StatusCode, header},
     };
-    use gateway_admin::model::observability::{CostCoverage, DiagnosticObservation};
+    use gateway_admin::model::observability::{
+        CostCoverage, DiagnosticObservation, DiagnosticsObservation,
+    };
     use gateway_api::admin::observability;
     use tower::ServiceExt as _;
 
@@ -558,26 +560,28 @@ async fn diagnostics_should_keep_stable_key_and_display_name_contract() {
 
     let fixture = AdminTestFixture::new().await;
     fixture.auth.insert_session("valid-session");
-    fixture
-        .diagnostics
-        .lock()
-        .expect("diagnostics")
-        .push(DiagnosticObservation {
+    *fixture.diagnostics.lock().expect("diagnostics") = DiagnosticsObservation {
+        total_request_count: 4,
+        items: vec![DiagnosticObservation {
             key: "acct_diag".to_owned(),
+            account_provider_kind: Some("openai".to_owned()),
+            account_plan_type: Some("pro".to_owned()),
             name: "diag@example.invalid".to_owned(),
             request_count: 2,
             success_count: 2,
             failure_count: 0,
-            attempt_count: 2,
+            attempt_count: 5,
             total_tokens: 200,
             average_latency_ms: Some(100),
             latency_p95_ms: Some(3800),
             first_token_p95_ms: Some(1200),
             non_completion_count: 0,
-            retry_count: 0,
+            retry_count: 3,
+            retried_request_count: 1,
             cost_coverage: CostCoverage::default(),
             costs: Vec::new(),
-        });
+        }],
+    };
     let response = observability::router::<AdminTestState>()
         .with_state(fixture.state())
         .oneshot(
@@ -596,6 +600,11 @@ async fn diagnostics_should_keep_stable_key_and_display_name_contract() {
         .expect("diagnostics body");
     let value: serde_json::Value = serde_json::from_slice(&body).expect("diagnostics JSON");
     assert!(value["data"]["items"][0].get("impactScore").is_none());
+    assert_eq!(value["data"]["items"][0]["requestShare"], 0.5);
+    assert_eq!(value["data"]["items"][0]["retryCount"], 3);
+    assert_eq!(value["data"]["items"][0]["retryRate"], 0.5);
+    assert_eq!(value["data"]["items"][0]["accountPlanType"], "pro");
+    assert_eq!(value["data"]["items"][0]["accountPlanTypeDisplay"], "Pro");
     assert_eq!(
         (
             &value["data"]["items"][0]["key"],
@@ -766,6 +775,8 @@ async fn usage_route_should_expose_table_facts_without_detail_payload() {
             provider_account_name: Some("Snapshot Alpha".to_owned()),
             provider_account_email: Some("alpha@example.invalid".to_owned()),
             provider_account_notes: Some("Team workspace".to_owned()),
+            provider_account_plan_type: Some("supergrok_plus".to_owned()),
+            provider_account_plan_type_display: None,
             provider_account_authentication_kind: Some("oauth".to_owned()),
             upstream_model_id: Some("grok-4.5".to_owned()),
             upstream_transport: Some("http_sse".to_owned()),
@@ -858,6 +869,14 @@ async fn usage_route_should_expose_table_facts_without_detail_payload() {
 
     assert_eq!(value["data"]["items"][0]["clientApiKeyName"], "Production");
     assert_eq!(value["data"]["items"][0]["accountNotes"], "Team workspace");
+    assert_eq!(
+        value["data"]["items"][0]["accountPlanType"],
+        "supergrok_plus"
+    );
+    assert_eq!(
+        value["data"]["items"][0]["accountPlanTypeDisplay"],
+        "SupergrokPlus"
+    );
     assert_eq!(
         value["data"]["items"][0]["billing"]["longContextBillingApplied"],
         true

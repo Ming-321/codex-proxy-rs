@@ -2430,7 +2430,6 @@ async fn quota_forecast_mid_cycle_sampling_accepts_small_reset_jitter_but_not_a_
         .unwrap();
     assert!(result.forecasts[0].unavailable_reason.is_none());
     assert_eq!(result.forecasts[0].estimated_tokens, Some(5_000));
-    assert_eq!(result.forecasts[0].remaining_tokens, Some(3_000));
     assert_eq!(store.quota_window_queries()[0].range.start, added);
     store
         .quota_forecast_history
@@ -2471,7 +2470,6 @@ async fn quota_forecast_mid_cycle_sampling_accepts_small_reset_jitter_but_not_a_
     let cycle = &result.forecasts[0];
     assert!(cycle.unavailable_reason.is_none());
     assert_eq!(cycle.source.as_ref().unwrap().tokens, Some(250));
-    assert_eq!(cycle.remaining_tokens, Some(429));
     assert_eq!(cycle.estimated_tokens, Some(679));
 }
 

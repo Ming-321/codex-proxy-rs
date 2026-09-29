@@ -27,7 +27,7 @@ use crate::model::{
         UpdateClientKey, UpdateClientKeyBudgetLimits,
     },
     observability::{
-        DashboardObservation, DashboardRuntimeSlots, DiagnosticDimension, DiagnosticObservation,
+        DashboardObservation, DashboardRuntimeSlots, DiagnosticDimension, DiagnosticsObservation,
         OpsErrorPage, OpsErrorQuery, RequestMetricPoint, TimeRange, UsageCalculatedBillingFact,
         UsageDetail, UsageFilter, UsageOverview, UsagePage, UsageQuery,
     },
@@ -444,7 +444,7 @@ pub trait ObservabilityStore: Send + Sync {
         range: TimeRange,
         filter: UsageFilter,
         dimension: DiagnosticDimension,
-    ) -> AdminStoreResult<Vec<DiagnosticObservation>>;
+    ) -> AdminStoreResult<DiagnosticsObservation>;
 
     async fn list_ops_errors(&self, query: OpsErrorQuery) -> AdminStoreResult<OpsErrorPage>;
 }
