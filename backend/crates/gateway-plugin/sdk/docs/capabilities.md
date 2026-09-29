@@ -99,16 +99,16 @@ Provider 固定为宿主内置的 OpenAI 与 xAI。插件提供以下扩展能�
 | --- | --- | --- |
 | `call.host.account_facts(query)` | `host.data.accounts.list` | `AccountFactsQuery`：可选 `provider_id`、`cursor`，必填 `limit`（1～200）；按账号 ID 升序，`next_cursor=null` 表示本页已结束 |
 | `call.host.quota_facts(query)` | `host.data.quota.get` | `QuotaFactsQuery { account_id }`：读取 Provider 现有观测，不访问上游刷新 |
-| `call.host.key_facts(query)` | `host.data.keys.get` | `ClientKeyFactsQuery { client_key_id }`：读取当前 Key 的启用状态及显式分组 ID，不返回密钥 |
+| `call.host.key_facts(query)` | `host.data.keys.get` | `ClientKeyFactsQuery { client_key_id }`：读取当前 Key 的启用状态、显式分组、本地配置限额与请求画像，不返回密钥 |
 
 类型在 `call::data`。控制参数为 `{}`，查询和结果使用二进制 JSON；结果固定 `schema_version=1`。
 SDK 解析响应时忽略未知字段，包含账号分页、账号及额度窗口；已知字段按声明校验类型与必填性，查询拒绝未知字段。
-插件须通过 `engines.codex-proxy-rs` 限定支持所用接口和字段的宿主版本
+插件须通过 `engines.codex-proxy-rs` 限定支持所用接口和字段的宿主版本。账号配置／有效上限、Key 配置限额与画像字段是必填响应字段；SDK 遇到缺少这些字段的宿主响应会拒绝解码，不会把缺失配置误判为零或不限
 
-`key_facts` 每次读取当前管理数据，返回 `client_key_id`、`enabled`、`group_ids`；不存在的 Key 沿用事实接口的 `rejected` 错误。它需要 `data` 权限，`keys`、`key_budgets` 和 `quota_observations` 权限不能替代
+`key_facts` 每次读取当前管理数据，返回 `client_key_id`、`enabled`、`group_ids`、`configured_max_concurrency`、`configured_requests_per_minute` 和 `request_profile_overrides`；不存在的 Key 沿用事实接口的 `rejected` 错误。两个限额为持久化配置，零表示不限，不代表共享来源的生效值。画像按 Provider ID 返回宿主保存的配置 JSON，不表示观察到实际客户端软件。它需要 `data` 权限，`keys`、`key_budgets` 和 `quota_observations` 权限不能替代
 
 `group_ids` 表示显式绑定，包含停用分组，不是最终可路由账号集合；空绑定也不代表单账号范围。通过 `account_facts` 关联账号时需完整遍历分页，结果包含停用账号。跨查询关联及同步策略由插件负责，这些调用不构成跨查询事务，管理员修改绑定后应重新检查。
-账号仅返回 `account_id`、`provider_id`、`name`、`email`、`group_ids`、`enabled` 和 `updated_at_ms`，不附带令牌或代理信息。
+账号返回 `account_id`、`provider_id`、`name`、`email`、`group_ids`、`enabled`、`notes`、`configured_concurrency_limit`、`effective_concurrency_limit`、`used_slots` 和 `updated_at_ms`，不附带令牌或代理信息。配置上限为 `null` 时继承全局默认值；有效上限为 `null` 时不限。`used_slots=null` 表示运行租约读取不可用，零表示已知空闲；这是本网关的账号并发占用，不含排队、其他软件或上游隐藏限制。查询仅读取当前页的账号及租约，不刷新上游
 `name` 和 `email` 来自宿主已保存的账号资料；没有邮箱时 `email=null`，读取不会请求上游个人信息。
 额度仅返回观测时间与窗口的 `key`、`window_seconds`、`used_percent`、`reset_at_ms`。
 时间均为 UTC Unix 毫秒，比例为百分数；未知值保留 `null`，不能解释为 0。`observed_at_ms=null` 表示没有可用观测时间，

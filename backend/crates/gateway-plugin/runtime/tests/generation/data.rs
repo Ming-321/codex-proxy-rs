@@ -121,6 +121,13 @@ impl PluginAccountAccess for Facts {
         Ok(PluginAccountPage {
             accounts: vec![account],
             next_cursor: Some(ProviderAccountId::new("acct_facts").unwrap()),
+            capacity: std::collections::BTreeMap::from([(
+                "acct_facts".to_owned(),
+                gateway_admin::model::accounts::AccountCapacity {
+                    used_slots: None,
+                    total_slots: Some(8),
+                },
+            )]),
         })
     }
     async fn get_runtime(&self, _: &ProviderAccountId) -> Result<AccountRecord, AdminError> {
@@ -243,7 +250,8 @@ async fn management_facts_are_minimal_bounded_and_separately_authorized() {
                 json!({"schema_version":1,"accounts":[{
                 "account_id":"acct_facts","provider_id":"openai","group_ids":["grp_11111111111111111111111111111111"],
                 "name":"private name","email":email,
-                "enabled":true,"updated_at_ms":1767225600000i64
+                "enabled":true,"notes":"private notes","configured_concurrency_limit":null,
+                "effective_concurrency_limit":8,"used_slots":null,"updated_at_ms":1767225600000i64
             }],"next_cursor":"acct_facts"})
             );
             let page: gateway_plugin_sdk::call::data::AccountFactsPage =

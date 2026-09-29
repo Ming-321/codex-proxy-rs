@@ -1610,7 +1610,9 @@ async fn typed_key_and_quota_calls_keep_payloads_and_do_not_retry_failures() {
             "key_facts",
             "host.data.keys.get",
             json!({"client_key_id":"key_1"}),
-            json!({"schema_version":1,"client_key_id":"key_1","enabled":false,"group_ids":["grp_1"]}),
+            json!({"schema_version":1,"client_key_id":"key_1","enabled":false,"group_ids":["grp_1"],
+                "configured_max_concurrency":8,"configured_requests_per_minute":60,
+                "request_profile_overrides":{}}),
         ),
         (
             "get_budget",

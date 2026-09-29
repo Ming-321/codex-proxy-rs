@@ -340,12 +340,38 @@ impl AccountStore for PgAdminAccountStore {
                     "plugin account cursor is invalid",
                 )
             })?;
+        let default_concurrency: i64 = sqlx::query_scalar(
+            "select max_concurrent_per_account from runtime_settings where id = 1",
+        )
+        .fetch_one(&self.pool)
+        .await
+        .map_err(|_| {
+            admin_store_error(ENTITY, postgres_unavailable("plugin account concurrency"))
+        })?;
+        let default_concurrency = u64::try_from(default_concurrency).map_err(|_| {
+            AdminStoreError::new(
+                AdminStoreErrorKind::Invalid,
+                ENTITY,
+                "invalid default account concurrency",
+            )
+        })?;
+        let accounts = accounts
+            .into_iter()
+            .map(admin_account_record)
+            .collect::<AdminStoreResult<Vec<_>>>()?;
+        let capacity = accounts
+            .iter()
+            .map(|account| {
+                (
+                    account.id.clone(),
+                    account_capacity(account, default_concurrency, None),
+                )
+            })
+            .collect();
         Ok(PluginAccountPage {
-            accounts: accounts
-                .into_iter()
-                .map(admin_account_record)
-                .collect::<AdminStoreResult<_>>()?,
+            accounts,
             next_cursor,
+            capacity,
         })
     }
 

@@ -431,7 +431,12 @@ async fn initialize_inner(
         snapshot.clone(),
     ));
     let plugin_accounts = plugin_accounts.unwrap_or_else(|| {
-        initialize_plugin_accounts(registry.clone(), store.accounts(), snapshot.clone())
+        initialize_plugin_accounts_with_runtime(
+            registry.clone(),
+            store.accounts(),
+            store.account_runtime(),
+            snapshot.clone(),
+        )
     });
     let import_tasks = use_case::import_tasks::DefaultImportTasksService::new(credentials.clone());
     let import_task = use_case::import_tasks::ImportTaskWorker(import_tasks.clone());
@@ -523,7 +528,22 @@ pub fn initialize_plugin_accounts(
     snapshot: Arc<dyn gateway_core::runtime::SnapshotControl>,
 ) -> Arc<dyn PluginAccountAccess> {
     Arc::new(use_case::plugin_accounts::DefaultPluginAccountAccess::new(
-        providers, accounts, snapshot,
+        providers, accounts, None, snapshot,
+    ))
+}
+
+#[must_use]
+pub fn initialize_plugin_accounts_with_runtime(
+    providers: ports::provider::ProviderAdminRegistry,
+    accounts: Arc<dyn ports::store::AccountStore>,
+    runtime: Arc<dyn ports::store::AccountRuntimeStore>,
+    snapshot: Arc<dyn gateway_core::runtime::SnapshotControl>,
+) -> Arc<dyn PluginAccountAccess> {
+    Arc::new(use_case::plugin_accounts::DefaultPluginAccountAccess::new(
+        providers,
+        accounts,
+        Some(runtime),
+        snapshot,
     ))
 }
 

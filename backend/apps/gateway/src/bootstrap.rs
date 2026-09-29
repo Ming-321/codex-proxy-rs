@@ -175,9 +175,10 @@ async fn launch(
             Some(plugin_runtime.policy_registry()),
             Some(plugin_runtime.middleware_registry()),
         );
-        let accounts = gateway_admin::initialize_plugin_accounts(
+        let accounts = gateway_admin::initialize_plugin_accounts_with_runtime(
             admin_providers.clone(),
             store.admin_ports().accounts(),
+            store.admin_ports().account_runtime(),
             core.snapshot_control(),
         );
         or_shutdown!(plugin_runtime, plugin_runtime.bind_account_ports(&accounts));
@@ -221,9 +222,10 @@ async fn launch(
         Some(plugin_runtime.middleware_registry()),
         Some(plugin_runtime.frontend_authentication_registry()),
     );
-    let plugin_accounts = gateway_admin::initialize_plugin_accounts(
+    let plugin_accounts = gateway_admin::initialize_plugin_accounts_with_runtime(
         admin_providers.clone(),
         store.admin_ports().accounts(),
+        store.admin_ports().account_runtime(),
         core.snapshot_control(),
     );
     or_shutdown!(

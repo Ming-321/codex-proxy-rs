@@ -15,7 +15,9 @@ use crate::{
         },
     },
     ports::{
-        plugin_accounts::PluginAccountAccess, provider::ProviderAdminRegistry, store::AccountStore,
+        plugin_accounts::PluginAccountAccess,
+        provider::ProviderAdminRegistry,
+        store::{AccountRuntimeStore, AccountStore},
     },
 };
 
@@ -28,6 +30,7 @@ use super::{
 pub(crate) struct DefaultPluginAccountAccess {
     providers: ProviderAdminRegistry,
     accounts: Arc<dyn AccountStore>,
+    account_runtime: Option<Arc<dyn AccountRuntimeStore>>,
     snapshot: Arc<dyn SnapshotControl>,
 }
 
@@ -36,11 +39,13 @@ impl DefaultPluginAccountAccess {
     pub(crate) fn new(
         providers: ProviderAdminRegistry,
         accounts: Arc<dyn AccountStore>,
+        account_runtime: Option<Arc<dyn AccountRuntimeStore>>,
         snapshot: Arc<dyn SnapshotControl>,
     ) -> Self {
         Self {
             providers,
             accounts,
+            account_runtime,
             snapshot,
         }
     }
@@ -74,10 +79,31 @@ impl DefaultPluginAccountAccess {
 #[async_trait]
 impl PluginAccountAccess for DefaultPluginAccountAccess {
     async fn list(&self, query: PluginAccountListQuery) -> Result<PluginAccountPage, AdminError> {
-        self.accounts
+        let mut page = self
+            .accounts
             .list_plugin_accounts(query)
             .await
-            .map_err(|error| map_store_error(error, "plugin account list"))
+            .map_err(|error| map_store_error(error, "plugin account list"))?;
+        if let Some(runtime) = &self.account_runtime {
+            let ids = page
+                .accounts
+                .iter()
+                .map(|account| account.id.clone())
+                .collect::<Vec<_>>();
+            if !ids.is_empty() {
+                let in_flight = runtime
+                    .account_runtime(&ids)
+                    .await
+                    .ok()
+                    .and_then(|snapshot| snapshot.in_flight);
+                for (id, capacity) in &mut page.capacity {
+                    capacity.used_slots = in_flight
+                        .as_ref()
+                        .map(|counts| counts.get(id).copied().unwrap_or(0));
+                }
+            }
+        }
+        Ok(page)
     }
 
     async fn get_runtime(

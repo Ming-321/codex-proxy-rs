@@ -1156,6 +1156,7 @@ pub struct PluginAccountListQuery {
 pub struct PluginAccountPage {
     pub accounts: Vec<AccountRecord>,
     pub next_cursor: Option<ProviderAccountId>,
+    pub capacity: std::collections::BTreeMap<String, super::accounts::AccountCapacity>,
 }
 
 /// 原始凭据与当前账号 revision 的同一读取结果。

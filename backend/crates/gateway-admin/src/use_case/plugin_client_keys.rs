@@ -41,6 +41,8 @@ impl PluginClientKeyAccess for DefaultPluginClientKeyAccess {
             id: key.id,
             enabled: key.enabled,
             group_ids: key.groups.into_iter().map(|group| group.id).collect(),
+            limits: key.limits,
+            request_profile_overrides: key.request_profile_overrides,
         })
     }
 

@@ -1,7 +1,17 @@
 //! 基础事实投影；主动刷新由独立的 quota_observations 访问域授权。
 //! 响应忽略未知字段，以兼容宿主新增事实；查询仍严格校验字段。
 
-use serde::{Deserialize, Serialize};
+use std::collections::BTreeMap;
+
+use serde::{Deserialize, Deserializer, Serialize};
+
+fn required_nullable<'de, D, T>(deserializer: D) -> Result<Option<T>, D::Error>
+where
+    D: Deserializer<'de>,
+    T: Deserialize<'de>,
+{
+    Option::deserialize(deserializer)
+}
 
 pub const ACCOUNTS_LIST: &str = "host.data.accounts.list";
 pub const QUOTA_REFRESH: &str = "host.quota_observations.refresh";
@@ -21,6 +31,11 @@ pub struct ClientKeyFacts {
     pub client_key_id: String,
     pub enabled: bool,
     pub group_ids: Vec<String>,
+    /// 持久化配置；零表示不限，绑定来源生效值由独立查询提供。
+    pub configured_max_concurrency: u64,
+    pub configured_requests_per_minute: u64,
+    /// Provider 专属请求画像配置，不表示实际客户端软件。
+    pub request_profile_overrides: BTreeMap<String, serde_json::Value>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -39,6 +54,17 @@ pub struct AccountFacts {
     pub email: Option<String>,
     pub group_ids: Vec<String>,
     pub enabled: bool,
+    #[serde(default)]
+    pub notes: Option<String>,
+    /// `None` 表示继承全局默认值。
+    #[serde(deserialize_with = "required_nullable")]
+    pub configured_concurrency_limit: Option<u32>,
+    /// `None` 表示不限。
+    #[serde(deserialize_with = "required_nullable")]
+    pub effective_concurrency_limit: Option<u64>,
+    /// `None` 表示租约读取不可用，`Some(0)` 表示已知空闲。
+    #[serde(default)]
+    pub used_slots: Option<u64>,
     pub updated_at_ms: i64,
 }
 

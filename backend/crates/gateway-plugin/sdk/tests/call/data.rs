@@ -9,7 +9,9 @@ fn account_page() -> Value {
         "schema_version":1,
         "accounts":[{
             "account_id":"acct_1", "provider_id":"openai", "name":"测试账号",
-            "email":null, "group_ids":[], "enabled":true, "updated_at_ms":0
+            "email":null, "group_ids":[], "enabled":true, "updated_at_ms":0,
+            "notes":null, "configured_concurrency_limit":null,
+            "effective_concurrency_limit":8, "used_slots":0
         }],
         "next_cursor":null
     })
@@ -29,7 +31,8 @@ fn account_facts_accept_additive_page_and_account_fields() {
 fn key_facts_accept_additive_fields() {
     let original = json!({
         "schema_version":1, "client_key_id":"key_1", "enabled":false,
-        "group_ids":["grp_1"]
+        "group_ids":["grp_1"], "configured_max_concurrency":8,
+        "configured_requests_per_minute":60, "request_profile_overrides":{}
     });
     let mut extended = original.clone();
     extended["future_key_field"] = json!({"value":1});
@@ -61,6 +64,12 @@ fn account_facts_still_require_known_fields_and_valid_types() {
         .unwrap()
         .remove("name");
     assert!(serde_json::from_value::<AccountFactsPage>(missing_name).is_err());
+    let mut missing_limit = account_page();
+    missing_limit["accounts"][0]
+        .as_object_mut()
+        .unwrap()
+        .remove("effective_concurrency_limit");
+    assert!(serde_json::from_value::<AccountFactsPage>(missing_limit).is_err());
 
     for (field, invalid) in [
         ("name", json!(42)),
@@ -74,6 +83,15 @@ fn account_facts_still_require_known_fields_and_valid_types() {
             "{field}"
         );
     }
+}
+
+#[test]
+fn key_facts_do_not_treat_missing_limits_as_unlimited() {
+    let old_response = json!({
+        "schema_version":1, "client_key_id":"key_1", "enabled":true,
+        "group_ids":[]
+    });
+    assert!(serde_json::from_value::<ClientKeyFacts>(old_response).is_err());
 }
 
 #[test]

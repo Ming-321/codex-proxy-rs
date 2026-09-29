@@ -406,9 +406,10 @@ impl Environment {
             Some(runtime.middleware_registry()),
             Some(runtime.frontend_authentication_registry()),
         );
-        let access = gateway_admin::initialize_plugin_accounts(
+        let access = gateway_admin::initialize_plugin_accounts_with_runtime(
             providers,
             self.store.admin_ports().accounts(),
+            self.store.admin_ports().account_runtime(),
             core.snapshot_control(),
         );
         runtime.bind_account_ports(&access).unwrap();

@@ -125,6 +125,18 @@ impl PluginData {
                         .into_iter()
                         .map(|id| id.as_str().to_owned())
                         .collect(),
+                    configured_max_concurrency: key.limits.max_concurrency,
+                    configured_requests_per_minute: key.limits.requests_per_minute,
+                    request_profile_overrides: key
+                        .request_profile_overrides
+                        .into_iter()
+                        .map(|(provider, profile)| {
+                            (
+                                provider.as_str().to_owned(),
+                                serde_json::Value::Object(profile.into_inner()),
+                            )
+                        })
+                        .collect(),
                 })
             }
             data::ACCOUNTS_LIST => {
@@ -152,18 +164,28 @@ impl PluginData {
                     accounts: page
                         .accounts
                         .into_iter()
-                        .map(|account| data::AccountFacts {
-                            account_id: account.id,
-                            provider_id: account.provider_kind.as_str().to_owned(),
-                            name: account.name,
-                            email: account.email,
-                            group_ids: account
-                                .groups
-                                .into_iter()
-                                .map(|group| group.id.as_str().to_owned())
-                                .collect(),
-                            enabled: account.enabled,
-                            updated_at_ms: account.updated_at.timestamp_millis(),
+                        .map(|account| {
+                            let capacity = page.capacity.get(&account.id);
+                            data::AccountFacts {
+                                configured_concurrency_limit: account
+                                    .concurrency_limit
+                                    .map(|limit| limit.get()),
+                                effective_concurrency_limit: capacity
+                                    .and_then(|value| value.total_slots),
+                                used_slots: capacity.and_then(|value| value.used_slots),
+                                notes: account.notes,
+                                account_id: account.id,
+                                provider_id: account.provider_kind.as_str().to_owned(),
+                                name: account.name,
+                                email: account.email,
+                                group_ids: account
+                                    .groups
+                                    .into_iter()
+                                    .map(|group| group.id.as_str().to_owned())
+                                    .collect(),
+                                enabled: account.enabled,
+                                updated_at_ms: account.updated_at.timestamp_millis(),
+                            }
                         })
                         .collect(),
                     next_cursor: page.next_cursor.map(|id| id.as_str().to_owned()),

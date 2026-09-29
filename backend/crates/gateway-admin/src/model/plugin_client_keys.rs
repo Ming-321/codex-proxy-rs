@@ -11,6 +11,8 @@ pub struct PluginClientKeyFacts {
     pub id: ClientApiKeyId,
     pub enabled: bool,
     pub group_ids: Vec<AccountGroupId>,
+    pub limits: gateway_core::policy::RateLimits,
+    pub request_profile_overrides: super::client_keys::ProviderRequestProfileOverrides,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
