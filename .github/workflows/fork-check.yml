@@ -1,0 +1,13 @@
+name: Fork integration check
+on:
+  workflow_dispatch:
+  push:
+    branches: [integrate/car-plugin-controls-facts]
+    paths-ignore: [release/version.yaml, release/notes.md]
+permissions:
+  contents: read
+jobs:
+  quality:
+    uses: ./.github/workflows/_quality.yml
+    with:
+      ref: ${{ github.sha }}
