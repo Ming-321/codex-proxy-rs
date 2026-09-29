@@ -524,6 +524,72 @@ async fn http_request_with_body(
 }
 
 #[tokio::test]
+async fn http_requests_should_honor_stream_preference() {
+    let admin = crate::admin::AdminTestFixture::new().await.services;
+    for stream in [None, Some(false), Some(true)] {
+        let trace = Arc::new(Trace::default());
+        let streaming = stream == Some(true);
+        let session = if streaming {
+            FakeSession::streaming(
+                Arc::clone(&trace),
+                vec![
+                    NextStep::Event(delivery(started(), CommitRequirement::CommitBeforeDelivery)),
+                    NextStep::Event(delivery(completed(), CommitRequirement::AlreadyCommitted)),
+                    NextStep::FinalizeSuccess,
+                ],
+            )
+        } else {
+            FakeSession::buffered(Arc::clone(&trace), vec![started(), completed()])
+        };
+        let execution = Arc::new(SessionExecution {
+            client: authenticated_client_for_provider("sk_stream_test", "openai"),
+            session: Mutex::new(Some(Box::new(session))),
+            middleware: None,
+        });
+        let mut body = json!({"model": "model-a", "input": "hello"});
+        if let Some(stream) = stream {
+            body["stream"] = json!(stream);
+        }
+        let response = crate::openai::api_router_with_admin_and_execution(admin.clone(), execution)
+            .oneshot(
+                Request::post("/v1/responses")
+                    .header(AUTHORIZATION, "Bearer sk_stream_test")
+                    .header(CONTENT_TYPE, "application/json")
+                    .body(Body::from(body.to_string()))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::OK, "stream={stream:?}");
+        assert_eq!(
+            response.headers()[CONTENT_TYPE],
+            if streaming {
+                "text/event-stream"
+            } else {
+                "application/json"
+            },
+            "stream={stream:?}",
+        );
+        let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
+        if streaming {
+            let body = String::from_utf8(body.to_vec()).unwrap();
+            assert!(body.contains("event: response.completed\n"));
+            assert!(body.ends_with("data: [DONE]\n\n"));
+        } else {
+            assert_eq!(
+                serde_json::from_slice::<Value>(&body).unwrap(),
+                json!({
+                    "id": "resp_test", "model": "public-model", "status": "completed", "output": []
+                }),
+            );
+            assert_eq!(trace.snapshot(), vec!["collect", "commit"]);
+        }
+        assert!(!trace.is_cancelled());
+    }
+}
+
+#[tokio::test]
 async fn compressed_http_requests_should_preserve_execution_context_without_transport_headers() {
     let body = json!({
         "model": "model-a", "input": "hello", "previous_response_id": "resp_previous",
