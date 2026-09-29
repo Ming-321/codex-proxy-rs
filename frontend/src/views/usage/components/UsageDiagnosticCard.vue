@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import type { TableColumnSize } from '@codex-proxy/ui'
 import type { getUsageRecordInsightsDiagnostics } from '@/api'
 import { BaseCard, BaseEmpty, BaseSegmented, BaseTable, defineTableColumns } from '@codex-proxy/ui'
 
@@ -37,12 +38,21 @@ const resultDimensionLabel = computed(
   () => dimensionOptions.find(option => option.value === resultDimension.value)?.label ?? '维度',
 )
 
+const dimensionNameSizes: Record<string, TableColumnSize> = {
+  model: 'xl',
+  account: '2xl',
+  apiKey: 'md',
+  provider: 'lg',
+  transport: 'sm',
+  failureClass: 'xl',
+}
+
 const diagnosticColumns = computed(() => defineTableColumns<DiagnosticDisplayItem>([
   {
     key: 'nameDisplay',
     label: '维度',
     kind: 'custom',
-    size: 'xl',
+    size: dimensionNameSizes[resultDimension.value] ?? 'xl',
   },
   ...(resultDimension.value === 'account'
     ? defineTableColumns<DiagnosticDisplayItem>([
@@ -54,22 +64,19 @@ const diagnosticColumns = computed(() => defineTableColumns<DiagnosticDisplayIte
     label: '请求',
     kind: 'numeric',
     size: 'xs',
-    fixedWidth: true,
   },
   {
     key: 'errorCount',
     label: '失败',
     kind: 'numeric',
     size: 'xs',
-    fixedWidth: true,
   },
-  { key: 'firstTokenP95Ms', label: '性能', kind: 'numeric', size: 'lg', fixedWidth: true },
+  { key: 'firstTokenP95Ms', label: '性能', kind: 'numeric', size: 'lg' },
   {
     key: 'estimatedCost',
     label: '费用',
     kind: 'numeric',
     size: 'sm',
-    fixedWidth: true,
   },
 ]))
 
