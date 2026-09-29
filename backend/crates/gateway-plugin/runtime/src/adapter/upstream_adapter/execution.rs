@@ -23,7 +23,7 @@ use super::{
 use crate::{
     RpcError, RpcStream,
     callback::{
-        NetworkScope,
+        CallbackScope,
         upstream::{ConnectionOwner, ManagedUpstream},
     },
 };
@@ -50,7 +50,7 @@ struct ActiveCall {
     context: CallContext,
     stream: RpcStream,
     managed: Arc<ManagedUpstream>,
-    _scope: Arc<NetworkScope>,
+    _scope: Arc<CallbackScope>,
 }
 
 pub(super) fn execute(

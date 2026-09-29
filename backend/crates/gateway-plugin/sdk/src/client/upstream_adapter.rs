@@ -1,8 +1,11 @@
 //! 已选账号的受管 WebSocket；连接归属与跨轮续接由宿主管理。
 
+use tokio::sync::{Mutex, OnceCell};
+
 use super::{
-    HostClient,
+    HostClient, HostReply, SessionError,
     http::{callback, empty_callback, invalid},
+    read::PendingRead,
 };
 use crate::{
     ErrorCode, PluginFault,
@@ -28,20 +31,21 @@ pub enum UpstreamWebSocketUpgrade {
     },
 }
 
-/// 本次调用的单消费者连接入口；不暴露凭据或可跨账号复用的连接句柄。
+/// 本次调用的连接入口；读写可同时进行，有先后依赖的发送须按顺序等待。
 ///
 /// 结束调用时宿主关闭连接；只有成功终态携带连接内续接状态时才保留连接。
 /// 因此丢弃此对象不会提前关闭宿主尚待确认的续接连接。
 pub struct UpstreamWebSocket {
     host: HostClient,
-    closed: bool,
+    closed: OnceCell<()>,
+    read: Mutex<PendingRead<Result<HostReply, SessionError>>>,
 }
 
 impl HostClient {
     /// 建立连接，续接时复用宿主恢复的同一连接。
     ///
     /// # Errors
-    /// 目标、权限、握手或续接归属无效时失败。
+    /// 目标、握手或续接归属无效时失败。
     pub async fn upstream_websocket(
         &self,
         request: UpstreamWebSocketRequest,
@@ -56,7 +60,8 @@ impl HostClient {
                 headers: response.headers,
                 connection: UpstreamWebSocket {
                     host: self.clone(),
-                    closed: false,
+                    closed: OnceCell::new(),
+                    read: Mutex::new(PendingRead::default()),
                 },
             }
         } else {
@@ -74,12 +79,8 @@ impl UpstreamWebSocket {
     ///
     /// # Errors
     /// 连接关闭、消息无效、网络失败或期限到达时失败。
-    pub async fn send(
-        &mut self,
-        kind: WebSocketMessageKind,
-        body: Vec<u8>,
-    ) -> Result<(), PluginFault> {
-        if self.closed {
+    pub async fn send(&self, kind: WebSocketMessageKind, body: Vec<u8>) -> Result<(), PluginFault> {
+        if self.closed.get().is_some() {
             return Err(PluginFault::new(
                 ErrorCode::InvalidInput,
                 "WebSocket is closed",
@@ -95,23 +96,38 @@ impl UpstreamWebSocket {
     }
 
     /// 按需读取完整消息，EOF 后再次读取返回 None；Ping/Pong 由宿主处理。
+    /// 取消等待不丢弃消息；同时只允许一个读取者，发送和关闭不受读取等待阻塞。
     ///
     /// # Errors
     /// 父调用结束、网络失败或期限到达时失败。
-    pub async fn read(&mut self) -> Result<Option<(WebSocketMessageKind, Vec<u8>)>, PluginFault> {
-        if self.closed {
+    pub async fn read(&self) -> Result<Option<(WebSocketMessageKind, Vec<u8>)>, PluginFault> {
+        if self.closed.get().is_some() {
             return Ok(None);
         }
-        let (read, body): (UpstreamWebSocketRead, _) = callback(
-            &self.host,
-            "host.upstream.websocket.read",
-            serde_json::json!({}),
-            vec![],
-        )
-        .await?;
+        let mut pending = self
+            .read
+            .try_lock()
+            .map_err(|_| PluginFault::new(ErrorCode::Capacity, "WebSocket already has a reader"))?;
+        let reply = pending
+            .run(|| {
+                let host = self.host.clone();
+                async move {
+                    host.call(
+                        "host.upstream.websocket.read",
+                        serde_json::json!({}),
+                        vec![],
+                    )
+                    .await
+                }
+            })
+            .await
+            .map_err(SessionError::into_plugin_fault)?;
+        let read: UpstreamWebSocketRead =
+            serde_json::from_value(reply.result).map_err(|_| invalid())?;
+        let body = reply.payload;
         match (read.eof, read.kind) {
             (true, None) if body.is_empty() => {
-                self.closed = true;
+                let _ = self.closed.set(());
                 Ok(None)
             }
             (false, Some(kind)) => Ok(Some((kind, body))),
@@ -119,22 +135,26 @@ impl UpstreamWebSocket {
         }
     }
 
-    /// 提前关闭并放弃连接内续接，重复关闭不调用宿主。
+    /// 提前关闭并放弃连接内续接；并发关闭等待同一次回调，失败或取消后可重试。
     ///
     /// # Errors
     /// 父调用已结束或宿主拒绝释放时失败。
-    pub async fn close(&mut self) -> Result<(), PluginFault> {
-        if self.closed {
-            return Ok(());
+    pub async fn close(&self) -> Result<(), PluginFault> {
+        self.closed
+            .get_or_try_init(|| async {
+                empty_callback(
+                    &self.host,
+                    "host.upstream.websocket.close",
+                    serde_json::json!({}),
+                    vec![],
+                )
+                .await
+            })
+            .await?;
+        // 活跃读取由宿主关闭唤醒；不等待读锁，避免 close 与 read 互相等待。
+        if let Ok(mut pending) = self.read.try_lock() {
+            pending.clear();
         }
-        empty_callback(
-            &self.host,
-            "host.upstream.websocket.close",
-            serde_json::json!({}),
-            vec![],
-        )
-        .await?;
-        self.closed = true;
         Ok(())
     }
 }

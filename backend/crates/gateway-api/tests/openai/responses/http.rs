@@ -2382,7 +2382,7 @@ async fn buffered_response_never_merges_items_from_a_different_wire_response() {
 }
 
 #[tokio::test]
-async fn buffered_response_middleware_replaces_body_and_filters_unsafe_headers() {
+async fn buffered_response_middleware_replaces_body_and_preserves_explicit_headers() {
     let admin = crate::admin::AdminTestFixture::new().await.services;
     let trace = Arc::new(Trace::default());
     let session = FakeSession::buffered(Arc::clone(&trace), vec![started(), completed()]);
@@ -2395,7 +2395,7 @@ async fn buffered_response_middleware_replaces_body_and_filters_unsafe_headers()
             )])
             .with_response_headers(vec![
                 MiddlewareHeader::new("x-policy-result", Bytes::from_static(b"replaced")),
-                MiddlewareHeader::new("authorization", Bytes::from_static(b"hidden")),
+                MiddlewareHeader::new("authorization", Bytes::from_static(b"plugin-value")),
             ]),
     );
 
@@ -2403,7 +2403,7 @@ async fn buffered_response_middleware_replaces_body_and_filters_unsafe_headers()
         response_with_middleware(&admin, "openai", session, false, Some(middleware)).await;
     assert_eq!(response.status(), StatusCode::OK);
     assert_eq!(response.headers()["x-policy-result"], "replaced");
-    assert!(response.headers().get(AUTHORIZATION).is_none());
+    assert_eq!(response.headers()[AUTHORIZATION], "plugin-value");
     let body = to_bytes(response.into_body(), usize::MAX)
         .await
         .expect("read policy JSON body");

@@ -9,9 +9,7 @@ use std::{
 
 use bytes::Bytes;
 use futures::{StreamExt as _, future::BoxFuture};
-use gateway_admin::model::plugins::instances::{
-    PluginCapabilityBinding, PluginFailurePolicy, PluginPermissionGrant,
-};
+use gateway_admin::model::plugins::instances::{PluginCapabilityBinding, PluginFailurePolicy};
 use gateway_core::{
     account::{AccountSelectionPolicy, CredentialRevision, OutboundProxy, ProviderAccountId},
     engine::{
@@ -31,7 +29,7 @@ use gateway_core::{
     runtime::extensions::{ExtensionPreparationPort, ExtensionSetReference},
     upstream::{UpstreamSendState, UpstreamTransport},
 };
-use gateway_plugin_sdk::{Capability, Contributions, Permission, Stage};
+use gateway_plugin_sdk::{Capability, Contributions, Stage};
 use serde_json::{Value, json};
 use wiremock::{
     Mock, MockServer, ResponseTemplate,
@@ -102,7 +100,6 @@ async fn setup(
     Arc<super::Store>,
     gateway_plugin_runtime::PluginRuntime,
 ) {
-    let permissions = vec![Permission::Requests, Permission::UpstreamConnections];
     let contributes = Contributions::from([crate::support::contribution(
         Capability::UpstreamAdapter,
         vec![Stage::Upstream],
@@ -110,17 +107,11 @@ async fn setup(
         vec!["openai".into()],
     )]);
     let (cache, store, runtime) =
-        super::setup_with_permissions(contributes, Default::default(), permissions.clone()).await;
+        super::setup_with_contributions_and_restart_circuit(contributes, Default::default()).await;
     {
         let mut snapshot = store.snapshot.lock().unwrap();
         let instance = &mut snapshot.instances[0];
         instance.configuration = config;
-        instance.grants = permissions
-            .into_iter()
-            .map(|permission| PluginPermissionGrant {
-                permission: permission.as_str().into(),
-            })
-            .collect();
         instance.bindings = vec![PluginCapabilityBinding {
             contribution: "test.example.upstreamAdapter".into(),
             stage: "upstream".into(),
@@ -130,16 +121,11 @@ async fn setup(
             account_group_ids: vec![],
             provider_ids: vec!["openai".into()],
             models: vec![],
+            event: None,
             identity_bindings: vec![],
         }];
     }
-    (
-        cache,
-        store,
-        runtime.with_network_policy(
-            gateway_host::outbound::NetworkPolicy::new(&["127.0.0.0/8".into()]).unwrap(),
-        ),
-    )
+    (cache, store, runtime)
 }
 
 fn context(generation: &ExtensionSetReference, key: &str) -> AttemptContext {
@@ -335,11 +321,11 @@ async fn adapter_failure_preserves_upstream_diagnostics_and_native_feedback() {
 }
 
 #[tokio::test]
-async fn adapter_rejects_forged_auth_headers_and_cross_key_continuation_before_send() {
+async fn adapter_overrides_auth_headers_and_rejects_stale_continuation() {
     let server = MockServer::start().await;
     Mock::given(method("POST"))
         .respond_with(ResponseTemplate::new(200).set_body_string("{}"))
-        .expect(1)
+        .expect(2)
         .mount(&server)
         .await;
     let (cache, _, runtime) = setup(configuration(&server.uri(), false)).await;
@@ -375,13 +361,17 @@ async fn adapter_rejects_forged_auth_headers_and_cross_key_continuation_before_s
     let generation = ExtensionPreparationPort::prepare(&runtime, ConfigRevision::new(1).unwrap())
         .await
         .unwrap();
-    let error = execute(&generation, Account::new(), "key-one", None)
-        .next()
-        .await
-        .unwrap()
-        .err()
-        .unwrap();
-    assert_eq!(error.send_state(), UpstreamSendState::NotSent);
+    let mut stream = execute(&generation, Account::new(), "key-one", None);
+    while let Some(event) = stream.next().await {
+        event.unwrap();
+    }
+    drop(stream);
+    let requests = server.received_requests().await.unwrap();
+    assert_eq!(requests.len(), 2);
+    assert_eq!(
+        requests[1].headers.get("authorization").unwrap(),
+        "injected"
+    );
     drop(generation);
     runtime.shutdown().await;
     super::wait_until_empty(cache.path()).await;
@@ -534,6 +524,62 @@ async fn websocket_continuation_reuses_exact_connection_and_consumes_each_handle
 }
 
 #[tokio::test]
+async fn websocket_adapter_can_send_while_a_read_callback_is_pending() {
+    use futures::SinkExt as _;
+    use tokio_tungstenite::tungstenite::Message;
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let base = format!("http://{}", listener.local_addr().unwrap());
+    let server = tokio::spawn(async move {
+        let (socket, _) = listener.accept().await.unwrap();
+        let mut socket = tokio_tungstenite::accept_async(socket).await.unwrap();
+        assert_eq!(
+            socket.next().await.unwrap().unwrap(),
+            Message::Text("control".into())
+        );
+        socket.send(Message::Text("{}".into())).await.unwrap();
+        assert!(socket.next().await.is_none_or(|result| result.is_err()));
+    });
+    let mut config = configuration(&base, false);
+    config["upstream_registration"]["adapters"][0]["transport"] = json!("websocket");
+    config["upstream_events"][1]["continuation"]["scope"] = json!("connection_local");
+    config["upstream_callbacks"] = json!([
+        {"method":"host.upstream.websocket.open","params":{"path":"responses","headers":[]}},
+        [
+            {"method":"host.upstream.websocket.read","params":{}},
+            {"method":"host.upstream.websocket.send","params":{"kind":"text"},"body":"control"}
+        ]
+    ]);
+    let (cache, _, runtime) = setup(config).await;
+    let generation = ExtensionPreparationPort::prepare(&runtime, ConfigRevision::new(1).unwrap())
+        .await
+        .unwrap();
+    let mut stream = execute(&generation, Account::new(), "key-one", None);
+    let mut continuation = None;
+    tokio::time::timeout(Duration::from_secs(3), async {
+        while let Some(event) = stream.next().await {
+            continuation = event.unwrap().take_session_update().or(continuation.take());
+        }
+    })
+    .await
+    .unwrap();
+    assert!(
+        continuation
+            .unwrap()
+            .extension_owner()
+            .unwrap()
+            .connection_local
+    );
+    drop(stream);
+    drop(generation);
+    runtime.shutdown().await;
+    super::wait_until_empty(cache.path()).await;
+    tokio::time::timeout(Duration::from_secs(2), server)
+        .await
+        .unwrap()
+        .unwrap();
+}
+
+#[tokio::test]
 async fn cancelling_adapter_body_closes_pending_websocket_and_releases_selected_account() {
     use tokio_tungstenite::tungstenite::Message;
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
@@ -617,7 +663,7 @@ async fn usage_without_response_model_still_uses_native_account_pricing() {
 
 #[tokio::test]
 async fn core_published_adapter_uses_normal_attempt_usage_and_cost_ledger() {
-    use crate::support::environment::{Environment, account_grant};
+    use crate::support::environment::Environment;
     let Some(mut environment) = Environment::create_command().await else {
         eprintln!("SKIP: plugin integration environment absent");
         return;
@@ -641,13 +687,7 @@ async fn core_published_adapter_uses_normal_attempt_usage_and_cost_ledger() {
         )
         .await;
     environment
-        .install_plugin(
-            configuration(&server.uri(), false),
-            vec![
-                account_grant("requests"),
-                account_grant("upstream_connections"),
-            ],
-        )
+        .install_plugin(configuration(&server.uri(), false))
         .await;
     environment.install_plugin(json!({
         "plugin_id":"test.adapter-ledger-caller",
@@ -657,7 +697,7 @@ async fn core_published_adapter_uses_normal_attempt_usage_and_cost_ledger() {
             "body":{"model":crate::support::native::MODEL,"input":"adapter ledger"}
         },
         "command_result":{"stdout":"ok","stderr":"","exit_code":0}
-    }), vec![account_grant("models"), account_grant("accounts")]).await;
+    })).await;
     let (runtime, core) = environment.command_plane().await;
     let snapshot = environment
         .store
@@ -789,4 +829,62 @@ async fn adapter_reconfiguration_disable_and_rollback_keep_inflight_generation_a
     runtime.shutdown().await;
     super::wait_until_empty(cache.path()).await;
     assert_eq!(Arc::strong_count(&account), 1);
+}
+
+#[tokio::test]
+async fn upstream_adapter_can_dispatch_http_after_its_instance_entered_the_scope() {
+    struct Http(Arc<AtomicUsize>);
+    impl gateway_core::middleware::http::Dispatcher for Http {
+        fn dispatch(
+            &self,
+            context: gateway_core::middleware::http::Context,
+            request: gateway_core::middleware::http::Request,
+        ) -> BoxFuture<
+            'static,
+            Result<
+                gateway_core::middleware::http::Response,
+                gateway_core::engine::middleware::MiddlewareError,
+            >,
+        > {
+            assert!(
+                context
+                    .extensions
+                    .contains(context.plugin_instance_id.as_deref().unwrap())
+            );
+            assert_eq!(context.extensions.len(), 1);
+            assert_eq!(request.uri(), "/api/admin/settings");
+            self.0.fetch_add(1, Ordering::SeqCst);
+            Box::pin(async {
+                Ok(gateway_core::middleware::http::Response::new(
+                    gateway_core::middleware::http::empty_body(),
+                ))
+            })
+        }
+    }
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .respond_with(ResponseTemplate::new(200).set_body_string("{\"id\":\"response-one\"}"))
+        .mount(&server)
+        .await;
+    let mut config = configuration(&server.uri(), false);
+    config["upstream_callbacks"].as_array_mut().unwrap().insert(0, json!({
+        "method":"host.http.dispatch", "params": {"settings":null,"method":"GET", "uri":"/api/admin/settings", "version":"HTTP/1.1", "headers":[], "timeout_ms":null, "body":{"kind":"empty"}}
+    }));
+    let (_cache, _, runtime) = setup(config).await;
+    let calls = Arc::new(AtomicUsize::new(0));
+    let dispatcher: Arc<dyn gateway_core::middleware::http::Dispatcher> =
+        Arc::new(Http(calls.clone()));
+    runtime.bind_http(&dispatcher).unwrap();
+    let generation = ExtensionPreparationPort::prepare(&runtime, ConfigRevision::new(1).unwrap())
+        .await
+        .unwrap();
+    let mut stream = execute(&generation, Account::new(), "key-one", None);
+    while let Some(event) = stream.next().await {
+        event.unwrap();
+    }
+    assert_eq!(calls.load(Ordering::SeqCst), 1);
+    drop(stream);
+    drop(generation);
+    drop(dispatcher);
+    runtime.shutdown().await;
 }

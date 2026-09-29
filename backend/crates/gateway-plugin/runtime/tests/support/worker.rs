@@ -129,9 +129,16 @@ impl Peer {
         method: &str,
         value: Value,
     ) -> Result<Value, PluginFault> {
-        let (result, payload) = self
+        let reply = self
             .callback_payload(id, method, json!({}), serde_json::to_vec(&value).unwrap())
-            .await?;
+            .await;
+        if self.configuration["maintenance_fixture"] == true {
+            self.append_observation_marker(
+                "maintenance_marker",
+                &json!({"phase":"callback", "method":method, "error":reply.as_ref().err().map(|error| error.code)}),
+            );
+        }
+        let (result, payload) = reply?;
         assert_eq!(result, json!({}));
         Ok(serde_json::from_slice(&payload).unwrap())
     }
@@ -559,13 +566,16 @@ impl Peer {
                     self.send(Message::Error { id, error }, vec![]).await;
                     return;
                 }
-                let response = self
+                let mut response = self
                     .configuration
                     .get("management_response")
                     .cloned()
                     .unwrap_or_else(
                         || json!({"status":200,"content_type":"application/octet-stream"}),
                     );
+                if self.configuration["management_echo_headers"] == true {
+                    response["headers"] = serde_json::to_value(request.headers).unwrap();
+                }
                 self.send(
                     Message::Result {
                         id,
@@ -577,6 +587,8 @@ impl Peer {
                 return;
             }
             "management.callback" => {
+                let request: gateway_plugin_sdk::call::management::ManagementRequest =
+                    serde_json::from_value(params).unwrap();
                 for method in [
                     "host.auth.list",
                     "host.auth.save",
@@ -585,13 +597,13 @@ impl Peer {
                     "host.log",
                 ] {
                     assert!(
-                        matches!(self.callback(id, method, json!({})).await, Err(error) if error.code == ErrorCode::PermissionDenied)
+                        !matches!(self.callback(id, method, json!({})).await, Err(error) if error.code == ErrorCode::PermissionDenied)
                     );
                 }
                 self.send(
                     Message::Result {
                         id,
-                        result: json!({"status":200,"content_type":"text/plain"}),
+                        result: json!({"status":200,"content_type":"text/plain","headers":request.headers}),
                     },
                     b"callback received".to_vec(),
                 )
@@ -603,7 +615,7 @@ impl Peer {
                     for method in ["host.http.do", "host.auth.save", "host.state.put"] {
                         let reply = self.callback(id, method, json!({})).await;
                         assert!(
-                            matches!(reply, Err(ref error) if error.code == ErrorCode::PermissionDenied)
+                            !matches!(reply, Err(ref error) if error.code == ErrorCode::PermissionDenied)
                         );
                     }
                 }
@@ -657,7 +669,20 @@ impl Peer {
                     .await;
                     return;
                 }
-                let result = if let Some(results) = self.data_queries(id).await {
+                let result = if let Some(request) =
+                    self.configuration.get("command_service_request")
+                {
+                    let (result, payload) = self
+                        .callback(
+                            id,
+                            gateway_plugin_sdk::call::services::CALL_METHOD,
+                            request.clone(),
+                        )
+                        .await
+                        .unwrap();
+                    assert!(payload.is_empty());
+                    json!({"stdout":serde_json::to_string(&result).unwrap(),"stderr":"","exit_code":0})
+                } else if let Some(results) = self.data_queries(id).await {
                     json!({"stdout":serde_json::to_string(&results).unwrap(),"stderr":"","exit_code":0})
                 } else if self.configuration["command_echo"] == true {
                     json!({"stdout":serde_json::to_string(&invocation).unwrap(),"stderr":"typed command\n","exit_code":0})
@@ -835,7 +860,6 @@ impl Peer {
                         "mount":request.mount,
                         "protocol":request.protocol,
                         "headers":request.headers,
-                        "body_visible":request.body_visible,
                         "body":String::from_utf8_lossy(&payload),
                     }),
                 );
@@ -860,6 +884,7 @@ impl Peer {
                         id,
                         NEXT_METHOD,
                         serde_json::to_value(MiddlewareNextRequest {
+                            settings: None,
                             protocol: None,
                             header_mutations: Vec::new(),
                             body: MiddlewareRequestBody::Preserve,
@@ -953,195 +978,198 @@ impl Peer {
                 self.send(Message::End { id, error: None }, vec![]).await;
                 return;
             }
-            "websocket.response_event" => {
-                let observation: gateway_plugin_sdk::call::observation::ObserveWebSocketResponse =
-                    serde_json::from_value(params).unwrap();
-                let payload_text = (payload.len() <= 4096)
-                    .then(|| std::str::from_utf8(&payload).ok())
-                    .flatten();
-                let marked = json!({
-                    "label": self.configuration.get("observation_label"),
-                    "observation": observation,
-                    "payload_bytes": payload.len(),
-                    "payload_text": payload_text,
-                });
-                self.append_observation_marker("websocket_observation_started_marker", &marked);
-                if let Some(delay) = self
-                    .configuration
-                    .get("websocket_observation_delay_ms")
-                    .and_then(Value::as_u64)
-                {
-                    tokio::time::sleep(Duration::from_millis(delay)).await;
-                }
-                self.append_observation_marker("websocket_observation_marker", &marked);
-                if self.configuration.get("websocket_observation_fault") == Some(&Value::Bool(true))
-                {
+            "observer.observe" => match serde_json::from_value::<
+                gateway_plugin_sdk::call::observation::Event,
+            >(params)
+            .unwrap()
+            {
+                gateway_plugin_sdk::call::observation::Event::WebSocketResponse(observation) => {
+                    let payload_text = (payload.len() <= 4096)
+                        .then(|| std::str::from_utf8(&payload).ok())
+                        .flatten();
+                    let marked = json!({
+                        "label": self.configuration.get("observation_label"),
+                        "observation": observation,
+                        "payload_bytes": payload.len(),
+                        "payload_text": payload_text,
+                    });
+                    self.append_observation_marker("websocket_observation_started_marker", &marked);
+                    if let Some(delay) = self
+                        .configuration
+                        .get("websocket_observation_delay_ms")
+                        .and_then(Value::as_u64)
+                    {
+                        tokio::time::sleep(Duration::from_millis(delay)).await;
+                    }
+                    self.append_observation_marker("websocket_observation_marker", &marked);
+                    if self.configuration.get("websocket_observation_fault")
+                        == Some(&Value::Bool(true))
+                    {
+                        self.send(
+                            Message::Error {
+                                id,
+                                error: PluginFault::new(
+                                    ErrorCode::Fault,
+                                    "fixture WebSocket observation failure",
+                                ),
+                            },
+                            vec![],
+                        )
+                        .await;
+                        return;
+                    }
                     self.send(
-                        Message::Error {
+                        Message::Result {
                             id,
-                            error: PluginFault::new(
-                                ErrorCode::Fault,
-                                "fixture WebSocket observation failure",
-                            ),
+                            result: Value::Null,
                         },
                         vec![],
                     )
                     .await;
                     return;
                 }
-                self.send(
-                    Message::Result {
-                        id,
-                        result: Value::Null,
-                    },
-                    vec![],
-                )
-                .await;
-                return;
-            }
-            "policy.observe_request" => {
-                let observation: gateway_plugin_sdk::call::policy::ObserveRequest =
-                    serde_json::from_slice(&payload).unwrap();
-                let marked = json!({
-                    "label": self.configuration.get("observation_label"),
-                    "observation": observation,
-                });
-                self.append_observation_marker("observation_started_marker", &marked);
-                if let Some(fixture) = self.configuration.get("state_fixture") {
-                    let namespace = fixture["namespace"].as_str().unwrap();
-                    let key = fixture["key"].as_str().unwrap();
-                    let value = fixture["value"].clone();
-                    let put = gateway_plugin_sdk::call::host::StatePutRequest {
-                        namespace: namespace.into(),
-                        key: key.into(),
-                        value: value.clone(),
-                        expected_version: None,
-                    };
-                    let put = match self
-                        .callback(id, "host.state.put", serde_json::to_value(put).unwrap())
-                        .await
-                    {
-                        Ok((result, payload)) if payload.is_empty() => serde_json::from_value::<
-                            gateway_plugin_sdk::call::host::StatePutResult,
-                        >(
-                            result
-                        )
-                        .unwrap(),
-                        Ok(_) => panic!("state put returned an unexpected payload"),
-                        Err(error) => {
-                            self.send(Message::Error { id, error }, vec![]).await;
-                            return;
+                gateway_plugin_sdk::call::observation::Event::RequestCompleted(observation) => {
+                    let marked = json!({
+                        "label": self.configuration.get("observation_label"),
+                        "observation": observation,
+                    });
+                    self.append_observation_marker("observation_started_marker", &marked);
+                    if let Some(fixture) = self.configuration.get("state_fixture") {
+                        let namespace = fixture["namespace"].as_str().unwrap();
+                        let key = fixture["key"].as_str().unwrap();
+                        let value = fixture["value"].clone();
+                        let put = gateway_plugin_sdk::call::host::StatePutRequest {
+                            namespace: namespace.into(),
+                            key: key.into(),
+                            value: value.clone(),
+                            expected_version: None,
+                        };
+                        let put = match self
+                            .callback(id, "host.state.put", serde_json::to_value(put).unwrap())
+                            .await
+                        {
+                            Ok((result, payload)) if payload.is_empty() => {
+                                serde_json::from_value::<
+                                    gateway_plugin_sdk::call::host::StatePutResult,
+                                >(result)
+                                .unwrap()
+                            }
+                            Ok(_) => panic!("state put returned an unexpected payload"),
+                            Err(error) => {
+                                self.send(Message::Error { id, error }, vec![]).await;
+                                return;
+                            }
+                        };
+                        let get = gateway_plugin_sdk::call::host::StateGetRequest {
+                            namespace: namespace.into(),
+                            key: key.into(),
+                        };
+                        let get = match self
+                            .callback(id, "host.state.get", serde_json::to_value(get).unwrap())
+                            .await
+                        {
+                            Ok((result, payload)) if payload.is_empty() => {
+                                serde_json::from_value::<
+                                    gateway_plugin_sdk::call::host::StateGetResult,
+                                >(result)
+                                .unwrap()
+                            }
+                            Ok(_) => panic!("state get returned an unexpected payload"),
+                            Err(error) => {
+                                self.send(Message::Error { id, error }, vec![]).await;
+                                return;
+                            }
+                        };
+                        let record = get.record.unwrap();
+                        assert_eq!(record.value, value);
+                        assert_eq!(record.version, put.version);
+                        if let Some(denied_namespace) =
+                            fixture.get("denied_namespace").and_then(Value::as_str)
+                        {
+                            let denied = self
+                                .callback(
+                                    id,
+                                    "host.state.get",
+                                    serde_json::to_value(
+                                        gateway_plugin_sdk::call::host::StateGetRequest {
+                                            namespace: denied_namespace.into(),
+                                            key: key.into(),
+                                        },
+                                    )
+                                    .unwrap(),
+                                )
+                                .await;
+                            assert!(matches!(
+                                denied,
+                                Err(error) if error.code == ErrorCode::PermissionDenied
+                            ));
                         }
-                    };
-                    let get = gateway_plugin_sdk::call::host::StateGetRequest {
-                        namespace: namespace.into(),
-                        key: key.into(),
-                    };
-                    let get = match self
-                        .callback(id, "host.state.get", serde_json::to_value(get).unwrap())
-                        .await
-                    {
-                        Ok((result, payload)) if payload.is_empty() => serde_json::from_value::<
-                            gateway_plugin_sdk::call::host::StateGetResult,
-                        >(
-                            result
-                        )
-                        .unwrap(),
-                        Ok(_) => panic!("state get returned an unexpected payload"),
-                        Err(error) => {
-                            self.send(Message::Error { id, error }, vec![]).await;
-                            return;
-                        }
-                    };
-                    let record = get.record.unwrap();
-                    assert_eq!(record.value, value);
-                    assert_eq!(record.version, put.version);
-                    if let Some(denied_namespace) =
-                        fixture.get("denied_namespace").and_then(Value::as_str)
-                    {
-                        let denied = self
+                        let deleted = match self
                             .callback(
                                 id,
-                                "host.state.get",
+                                "host.state.delete",
                                 serde_json::to_value(
-                                    gateway_plugin_sdk::call::host::StateGetRequest {
-                                        namespace: denied_namespace.into(),
+                                    gateway_plugin_sdk::call::host::StateDeleteRequest {
+                                        namespace: namespace.into(),
                                         key: key.into(),
+                                        expected_version: put.version,
                                     },
                                 )
                                 .unwrap(),
                             )
-                            .await;
-                        assert!(matches!(
-                            denied,
-                            Err(error) if error.code == ErrorCode::PermissionDenied
-                        ));
-                    }
-                    let deleted = match self
-                        .callback(
-                            id,
-                            "host.state.delete",
-                            serde_json::to_value(
-                                gateway_plugin_sdk::call::host::StateDeleteRequest {
-                                    namespace: namespace.into(),
-                                    key: key.into(),
-                                    expected_version: put.version,
-                                },
-                            )
-                            .unwrap(),
-                        )
-                        .await
-                    {
-                        Ok((result, payload)) if payload.is_empty() => {
-                            serde_json::from_value::<
-                                gateway_plugin_sdk::call::host::StateDeleteResult,
-                            >(result)
-                            .unwrap()
-                        }
-                        Ok(_) => panic!("state delete returned an unexpected payload"),
-                        Err(error) => {
-                            self.send(Message::Error { id, error }, vec![]).await;
-                            return;
-                        }
-                    };
-                    assert!(deleted.deleted);
-                    self.append_observation_marker(
+                            .await
+                        {
+                            Ok((result, payload)) if payload.is_empty() => {
+                                serde_json::from_value::<
+                                    gateway_plugin_sdk::call::host::StateDeleteResult,
+                                >(result)
+                                .unwrap()
+                            }
+                            Ok(_) => panic!("state delete returned an unexpected payload"),
+                            Err(error) => {
+                                self.send(Message::Error { id, error }, vec![]).await;
+                                return;
+                            }
+                        };
+                        assert!(deleted.deleted);
+                        self.append_observation_marker(
                         "state_marker",
                         &json!({"version": put.version, "schema_version": record.schema_version}),
                     );
-                }
-                if let Some(delay) = self
-                    .configuration
-                    .get("observation_delay_ms")
-                    .and_then(Value::as_u64)
-                {
-                    tokio::time::sleep(Duration::from_millis(delay)).await;
-                }
-                self.append_observation_marker("observation_marker", &marked);
-                if self.configuration.get("observation_fault") == Some(&Value::Bool(true)) {
+                    }
+                    if let Some(delay) = self
+                        .configuration
+                        .get("observation_delay_ms")
+                        .and_then(Value::as_u64)
+                    {
+                        tokio::time::sleep(Duration::from_millis(delay)).await;
+                    }
+                    self.append_observation_marker("observation_marker", &marked);
+                    if self.configuration.get("observation_fault") == Some(&Value::Bool(true)) {
+                        self.send(
+                            Message::Error {
+                                id,
+                                error: PluginFault::new(
+                                    ErrorCode::Fault,
+                                    "fixture observation failure",
+                                ),
+                            },
+                            vec![],
+                        )
+                        .await;
+                        return;
+                    }
                     self.send(
-                        Message::Error {
+                        Message::Result {
                             id,
-                            error: PluginFault::new(
-                                ErrorCode::Fault,
-                                "fixture observation failure",
-                            ),
+                            result: Value::Null,
                         },
                         vec![],
                     )
                     .await;
                     return;
                 }
-                self.send(
-                    Message::Result {
-                        id,
-                        result: Value::Null,
-                    },
-                    vec![],
-                )
-                .await;
-                return;
-            }
+            },
             "slow" => tokio::time::sleep(Duration::from_millis(400)).await,
             "hang" | "hang_uncancellable" => return,
             "crash" => std::process::exit(7),
@@ -1433,36 +1461,46 @@ impl Peer {
             .into_iter()
             .flatten()
         {
-            let payload = if callback["body"] == "request" {
-                body.clone()
-            } else {
-                vec![]
-            };
-            let (result, payload) = self
-                .callback_payload(
+            let callbacks = callback
+                .as_array()
+                .map_or_else(|| std::slice::from_ref(callback), Vec::as_slice);
+            let results = futures::future::try_join_all(callbacks.iter().map(|callback| {
+                let payload = if callback["body"] == "request" {
+                    body.clone()
+                } else {
+                    callback["body"]
+                        .as_str()
+                        .unwrap_or_default()
+                        .as_bytes()
+                        .to_vec()
+                };
+                self.callback_payload(
                     id,
                     callback["method"].as_str().unwrap(),
                     callback["params"].clone(),
                     payload,
                 )
-                .await?;
-            if let Some(stream) = result["stream"].as_str() {
-                loop {
-                    let (result, chunk) = self
-                        .callback_payload(
-                            id,
-                            "host.upstream.http.stream_read",
-                            json!({"stream":stream,"maximum_bytes":65536}),
-                            vec![],
-                        )
-                        .await?;
-                    response_body.extend(chunk);
-                    if result["eof"] == true {
-                        break;
+            }))
+            .await?;
+            for (result, payload) in results {
+                if let Some(stream) = result["stream"].as_str() {
+                    loop {
+                        let (result, chunk) = self
+                            .callback_payload(
+                                id,
+                                "host.upstream.http.stream_read",
+                                json!({"stream":stream,"maximum_bytes":65536}),
+                                vec![],
+                            )
+                            .await?;
+                        response_body.extend(chunk);
+                        if result["eof"] == true {
+                            break;
+                        }
                     }
+                } else if !payload.is_empty() {
+                    response_body = payload;
                 }
-            } else if !payload.is_empty() {
-                response_body = payload;
             }
         }
         let events = self.configuration["upstream_events"].as_array().unwrap();

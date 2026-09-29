@@ -130,7 +130,7 @@ pub struct UpstreamContinuation {
     pub state: serde_json::Map<String, serde_json::Value>,
 }
 
-/// 一个完整 GPE1 事件与可选的结算／续接事实；见 [`Self::encode`]。
+/// 一个完整 GPE2 事件与可选的结算／续接事实；见 [`Self::encode`]。
 pub struct UpstreamAdapterEvent {
     pub event: ExecutionEvent,
     /// 上游回显的最新服务档位，可在终态确定；是否参与计价由内置 Provider 决定。
@@ -150,7 +150,7 @@ impl UpstreamAdapterEvent {
         }
     }
 
-    /// 编码有界事件，wire 原字节仍使用 GPE1 二进制段。
+    /// 编码有界事件，wire 原字节仍使用 GPE2 二进制段。
     pub fn encode(self) -> Result<Vec<u8>, super::model::ExecutionEncodingError> {
         codec::encode(self)
     }

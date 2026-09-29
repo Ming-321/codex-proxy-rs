@@ -1,4 +1,4 @@
-//! 基础事实投影；主动刷新由独立的 quota_observations 访问域授权。
+//! 基础事实查询与主动额度刷新。
 //! 响应忽略未知字段，以兼容宿主新增事实；查询仍严格校验字段。
 
 use serde::{Deserialize, Serialize};

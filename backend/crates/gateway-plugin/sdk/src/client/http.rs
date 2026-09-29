@@ -2,7 +2,7 @@
 
 use serde::{Serialize, de::DeserializeOwned};
 
-use super::{HostClient, SessionError};
+use super::{HostClient, HostReply, SessionError, read::PendingRead};
 use crate::{
     ErrorCode, PluginFault,
     call::{host as wire, upstream_adapter::UpstreamHttpRequest},
@@ -20,13 +20,14 @@ pub struct HostHttpBody {
     host: HostClient,
     stream: Option<String>,
     upstream: bool,
+    read: PendingRead<Result<HostReply, SessionError>>,
 }
 
 impl HostClient {
-    /// 使用普通网络授权发送请求；账号上游使用 [`Self::upstream_http`]。
+    /// 使用受管 HTTP 发送请求；账号上游使用 [`Self::upstream_http`]。
     ///
     /// # Errors
-    /// 权限、期限、请求或网络无效时失败。
+    /// 期限、请求或网络无效时失败。
     pub async fn http(
         &self,
         request: wire::HttpRequest,
@@ -39,7 +40,7 @@ impl HostClient {
     /// 由宿主附加已选账号的认证与代理，返回统一的惰性正文。
     ///
     /// # Errors
-    /// 路径、权限、期限、网络或宿主响应无效时失败。
+    /// 路径、期限、网络或宿主响应无效时失败。
     pub async fn upstream_http(
         &self,
         request: UpstreamHttpRequest,
@@ -68,6 +69,7 @@ impl HostClient {
                 host: self.clone(),
                 stream: response.stream,
                 upstream,
+                read: PendingRead::default(),
             },
         })
     }
@@ -75,6 +77,7 @@ impl HostClient {
 
 impl HostHttpBody {
     /// 按需读取至多 64 KiB，EOF 后再次读取不再调用宿主。
+    /// 取消一次等待后，再次调用会继续同一次读取，不丢弃分块。
     ///
     /// # Errors
     /// 父调用结束、流无效或网络失败时返回错误。
@@ -89,20 +92,22 @@ impl HostHttpBody {
         }
         let maximum_bytes = u32::try_from(self.host.maximum_stream_chunk_bytes().min(64 * 1024))
             .map_err(|_| invalid())?;
-        let (result, payload): (Read, _) = callback(
-            &self.host,
-            if self.upstream {
-                "host.upstream.http.stream_read"
-            } else {
-                "host.http.stream_read"
-            },
-            wire::StreamRead {
-                stream: stream.clone(),
-                maximum_bytes,
-            },
-            vec![],
-        )
-        .await?;
+        let reply = self
+            .read
+            .run(|| {
+                let host = self.host.clone();
+                let params = serde_json::json!({"stream": stream, "maximum_bytes": maximum_bytes});
+                let method = if self.upstream {
+                    "host.upstream.http.stream_read"
+                } else {
+                    "host.http.stream_read"
+                };
+                async move { host.call(method, params, vec![]).await }
+            })
+            .await
+            .map_err(SessionError::into_plugin_fault)?;
+        let result: Read = serde_json::from_value(reply.result).map_err(|_| invalid())?;
+        let payload = reply.payload;
         if payload.len() > maximum_bytes as usize || (result.eof && !payload.is_empty()) {
             let _ = self.close().await;
             return Err(invalid());
@@ -162,6 +167,7 @@ impl HostHttpBody {
         )
         .await?;
         self.stream = None;
+        self.read.clear();
         Ok(())
     }
 }

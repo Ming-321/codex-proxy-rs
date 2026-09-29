@@ -1,3 +1,5 @@
+mod middleware;
+
 use std::{
     fmt,
     pin::Pin,
@@ -237,7 +239,14 @@ impl Stream for TestSocket {
     type Item = Result<Message, TestSocketError>;
 
     fn poll_next(mut self: Pin<&mut Self>, context: &mut Context<'_>) -> Poll<Option<Self::Item>> {
-        self.incoming.poll_recv(context)
+        let event = self.incoming.poll_recv(context);
+        // 模拟 Axum transport 的自动 Pong；pump 不再重复实现协议层应答。
+        if let Poll::Ready(Some(Ok(Message::Ping(payload)))) = &event {
+            self.written
+                .send(Message::Pong(payload.clone()))
+                .expect("automatic Pong");
+        }
+        event
     }
 }
 
@@ -720,12 +729,43 @@ async fn start_active_response() -> (
     TestClientSocket,
     tokio::task::JoinHandle<()>,
 ) {
+    start_active_response_with_middleware(None, "/v1/responses").await
+}
+
+async fn start_active_response_with_middleware(
+    plan: Option<gateway_core::engine::middleware::FrozenMiddlewarePlan>,
+    path: &str,
+) -> (
+    Arc<CrossingLimitTrace>,
+    TestClientSocket,
+    tokio::task::JoinHandle<()>,
+) {
     let trace = Arc::new(CrossingLimitTrace::default());
     let execution = Arc::new(CrossingLimitExecution {
         client: authenticated_client("sk_ws_crossing_limit"),
         trace: Arc::clone(&trace),
     });
-    let app = api_router(execution).await;
+    let app = if let Some(plan) = plan {
+        let admin = crate::admin::AdminTestFixture::new().await;
+        gateway_api::initialize(
+            gateway_api::ApiConfig {
+                asset_directory: std::env::temp_dir(),
+                cors_allowed_origins: Vec::new(),
+                request_timeout_seconds: None,
+                request_id_header: "x-request-id".into(),
+            },
+            execution,
+            admin.services,
+            Vec::new(),
+            Arc::new(crate::openai::EmptyWorkerHealth),
+            Arc::new(crate::openai::TestLifecycle::default()),
+        )
+        .unwrap()
+        .with_middleware(move |_| Some(plan.clone()))
+        .router()
+    } else {
+        api_router(execution).await
+    };
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
         .await
         .expect("bind WebSocket test server");
@@ -735,7 +775,7 @@ async fn start_active_response() -> (
             .await
             .expect("serve WebSocket test router");
     });
-    let mut request = format!("ws://{address}/v1/responses")
+    let mut request = format!("ws://{address}{path}")
         .into_client_request()
         .expect("WebSocket request");
     request.headers_mut().insert(
@@ -1096,4 +1136,34 @@ async fn active_response_receives_heartbeats_during_two_hundred_seconds_of_silen
     assert_eq!(trace.starts.load(Ordering::Acquire), 1);
     socket.close(None).await.expect("close WebSocket");
     server.abort();
+}
+
+#[tokio::test(start_paused = true)]
+async fn client_close_interrupts_a_blocked_write() {
+    let PumpHarness {
+        mut connection,
+        incoming,
+        dropped,
+        ..
+    } = test_connection(true);
+    let write = connection.send_text(
+        "blocked".to_owned(),
+        WriteContext::connection(FramePhase::Data),
+    );
+    tokio::pin!(write);
+    assert!(
+        tokio::time::timeout(Duration::from_millis(1), &mut write)
+            .await
+            .is_err()
+    );
+    incoming
+        .send(Ok(Message::Close(None)))
+        .expect("client close");
+    assert!(matches!(
+        tokio::time::timeout(Duration::from_secs(1), write)
+            .await
+            .expect("read side observes close while write is blocked"),
+        Err(ConnectionWriteError::Closed)
+    ));
+    assert!(dropped.load(Ordering::Acquire));
 }

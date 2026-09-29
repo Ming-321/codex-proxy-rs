@@ -14,6 +14,10 @@
 
 ## 1. 鉴权与公共约定
 
+下文描述宿主路由的默认行为。已启用的 `http` 中间件在路由匹配、认证和正文解析前统一进入，
+可改写请求、覆盖本次请求设置、直接返回响应或接管 WebSocket 升级；管理、模型、健康检查和静态资源使用同一入口。
+挂载与覆盖合同见 [SDK 洋葱中间件](../backend/crates/gateway-plugin/sdk/docs/capabilities.md#洋葱中间件)
+
 ### OpenAI 数据面客户端接口
 
 默认情况下，`/v1/*` 使用管理端创建的 Client Key：
@@ -263,6 +267,10 @@ Codex/OAuth 上游的历史回填按字段形状兼容，不以 User-Agent 品�
 `x-codex-turn-metadata` 内普通扩展的同名 `parent_response_id` 保持原样
 
 #### WebSocket 与上游传输
+
+公开 HTTP 请求在路由匹配前经过已绑定的 `http` 中间件；插件可以改写握手路径和请求参数。
+已升级的 Responses 连接在入站解析前和出站写入前经过 `websocket` 中间件，完整消息与主动发送接口见
+[SDK 洋葱中间件](../backend/crates/gateway-plugin/sdk/docs/capabilities.md#洋葱中间件)。下述规则描述默认协议处理
 
 Responses WebSocket 接受文本 `response.create` 和 `response.interrupt`，创建请求在同一连接串行执行。当前响应期间收到的后续业务帧
 留在有界接收队列中，待当前响应完成终结和写出后再逐条校验、准入与执行，不因请求提前到达而断开。
@@ -1036,7 +1044,7 @@ Client Key 绑定的任一分组开启此限制（包括已禁用分组）时，
 未绑定分组的 Key 不限制 Fast，不按最终所选账号的分组判断
 
 关闭 Fast 只将顶层 `service_tier` 的 `priority`（含 `fast` 别名）改为显式 `default`，继续处理请求；
-不改变 `flex`、`ultrafast`、缺失值、默认档、嵌套字段或其他 Provider。
+不改变 `flex`、`ultrafast`、缺失值、默认档、嵌套字段或其他 Provider。宿主设置先形成 attempt 输入基线；已安装插件显式改写档位时，以改写后的实际发送值为准。
 HTTP 和每个 WebSocket `response.create` 均使用请求开始时的分组策略，同一请求重试保持该策略；
 HTTP 请求头及新建 WS 的握手提示按当时的最终出站档位构造；复用 WS 时不重发握手头，
 每个 `response.create` 仍独立应用档位策略，请求档位统计与本地费用估算使用各帧的最终出站档位
@@ -1162,9 +1170,14 @@ HTTP 返回 `429`，`error.code` 为 `key_daily_budget_exceeded` 或 `key_weekly
 | `POST` | `/api/admin/settings/admin-api-key/delete` | 删除管理 API Key |
 | `POST` | `/api/admin/settings/admin-api-key/regenerate` | 重新生成并一次性返回完整管理 API Key |
 
+读取设置返回 `configRevision`。更新请求必须携带读取时的同一版本；版本比较、设置替换和审计在同一事务内完成。
+并发修改导致版本过期时返回 `409`，不保存当前请求；读取最新设置并确认差异后再提交，不能静默重试覆盖。
+成功响应返回新版本，后续请求使用发布后的快照
+
 设置更新字段包括：
 
 ```text
+configRevision
 providerRequestProfiles
 openaiClientProfile
 xaiClientProfile
@@ -1665,7 +1678,7 @@ Provider metadata 分别保留 `requestedServiceTier` 与 `upstreamServiceTier` 
 下载并解包后，Admin 会以目标发行清单声明的宿主插件合同检查每个启用实例的精确制品；回滚则对备份发行清单
 执行同一检查。两条路径都会在文件交换前后复核同一全局插件配置版本。任一实例不兼容、制品缺失、请求取消或
 配置并发变化都会失败；已交换的二进制、Web 资源和官方插件目录会成组恢复。预检不会自动停用实例、切换插件
-版本或增加权限
+版本或接受其他制品
 
 状态响应的 `currentVersion` 表示已安装文件的版本，运行中的版本仍以 `/version` 为准。
 `needRestart=true` 表示已验证的安装文件尚未在当前进程生效，此时应调用重启接口，不能重复发起更新或切换通道。
@@ -1679,7 +1692,7 @@ Host 关闭或任务取消会记录失败终态；状态查询会收敛无执行
 ## 12. 插件管理
 
 除明确标注的公开入口外，以下接口需要管理身份。图标读取及 12.2 中标注的原始响应接口直接返回资源、插件响应
-或模型响应，其余接口使用统一管理响应信封。制品按摘要接受其不可变访问域；首次安装某个插件时会尝试创建默认配置，
+或模型响应，其余接口使用统一管理响应信封。制品按摘要记录用户的完整信任决定；首次安装某个插件时会尝试创建默认配置，
 配置完整则启用，缺少必填项则保留为待配置。操作流程见 [插件使用](plugins.md)，开发合同见
 [SDK](../backend/crates/gateway-plugin/sdk/README.md)。不提供官方商店或第三方市场订阅接口
 
@@ -1689,11 +1702,11 @@ Host 关闭或任务取消会记录失败终态；状态查询会收敛无执行
 | --- | --- | --- |
 | GET | `/api/admin/plugins/artifacts` | 列出制品的 `metadata`、固定 `source`、`installedAt` 与可为 `null` 的 `acceptedAt` |
 | GET | `/api/admin/plugins/artifacts/{sha256}/icon?theme=light\|dark` | 管理身份；按不可变制品摘要读取已校验图标；无图标返回 404 |
-| POST | `/api/admin/plugins/artifacts/upload` | 上传原始 tar.gz 包体，最多 32 MiB；查询参数 `sha256` 必须固定已解析的包；接受访问域并完成安装 |
+| POST | `/api/admin/plugins/artifacts/upload` | 上传原始 tar.gz 包体，最多 32 MiB；查询参数 `sha256` 必须固定已解析的包；确认信任并完成安装 |
 | POST | `/api/admin/plugins/artifacts/upload/verify` | 同样接收原始包体，只读解析并校验，返回 `metadata` 与 `source`，不安装 |
-| POST | `/api/admin/plugins/artifacts/install` | 从 URL 或固定 GitHub Release 下载、校验，接受访问域并完成安装 |
+| POST | `/api/admin/plugins/artifacts/install` | 从 URL 或固定 GitHub Release 下载、校验，确认信任并完成安装 |
 | POST | `/api/admin/plugins/artifacts/verify` | 按远程来源只读解析并校验完整包，返回 `metadata` 与固定 `source`，不持久化或启动插件 |
-| POST | `/api/admin/plugins/artifacts/accept` | 严格请求 `{ "sha256": "<小写 SHA-256>" }`，接受已导入制品的访问域并完成安装 |
+| POST | `/api/admin/plugins/artifacts/accept` | 严格请求 `{ "sha256": "<小写 SHA-256>" }`，确认信任已导入制品并完成安装 |
 | POST | `/api/admin/plugins/artifacts/delete` | 请求 `{ "sha256": "<小写 SHA-256>" }`，删除未被引用的制品 |
 | POST | `/api/admin/plugins/releases/query` | 查询指定 GitHub 仓库的最新稳定版或明确 tag |
 | POST | `/api/admin/plugins/updates/check` | 按插件已保存的来源和策略查询 Release，只读，不下载或切换实例 |
@@ -1711,9 +1724,8 @@ Host 关闭或任务取消会记录失败终态；状态查询会收敛无执行
 插件 ID 由 `publisher + "." + name` 派生；`displayName` 和可选 `author` 仅用于展示
 
 制品 `metadata` 返回 `pluginId`、`name`、`displayName`、`publisher`、可为 `null` 的 `author`、`version`、
-`description`、`license`、`sha256`、`platforms`、可为 `null` 的 `icon`、`contributes`、`requestedPermissions`、
-`permissionDescriptions`、`configurationSchema`、`secretFields` 和 `stateNamespaces`。`permissionDescriptions` 的每项为
-`{ permission, label, description }`，供安装确认直接展示。`contributes` 是以稳定 snake_case capability 为 key 的对象；每个值包含
+`description`、`license`、`sha256`、`platforms`、可为 `null` 的 `icon`、`contributes`、
+`configurationSchema`、`secretFields` 和 `stateNamespaces`。`contributes` 是以稳定 snake_case capability 为 key 的对象；每个值包含
 `id`、`version`、`stages`、`inputFormats` 和 `outputFormats`。`id` 是实例绑定引用的完整贡献项 ID，客户端必须通过
 当前制品的 `contributes` 映射确定其 capability，不能解析 ID 文本推测能力
 
@@ -1735,7 +1747,7 @@ Host 关闭或任务取消会记录失败终态；状态查询会收敛无执行
 #### 解析与确认安装
 
 本地包先调用 `artifacts/upload/verify`，远程包先调用 `artifacts/verify`。校验只返回包信息与来源，
-不保存、不接受访问域、不启动插件，也不代表实例配置或私有状态已经兼容。
+不保存、不确认信任、不启动插件，也不代表实例配置或私有状态已经兼容。
 修改文件、地址、Release、摘要、凭据或代理选择后必须重新校验；确认安装时固定校验返回的身份、版本与摘要
 
 远程解析请求包含 `location`、可选 `credentialIds` 和 `outboundProxyId`，不需要预先提供 ID 或版本。
@@ -1779,13 +1791,12 @@ URL 与 GitHub 的 `location.sha256` 在解析时均可省略，由服务端计�
 ```
 
 接受制品时，若该插件没有任何实例，服务端使用稳定的 creation ID 创建一份默认实例：普通配置取 schema 默认值，
-敏感字段不复制默认值；除 `management`、`command_line` 和 `frontend_authentication` 外，为声明的贡献项及阶段建立
-空范围默认 binding。仅缺少必填项时 `configurationRequired=true` 且实例保持停用；配置完整时实例直接启用。
+敏感字段不复制默认值；按下文[能力绑定规则](#能力绑定与范围)为适用贡献项及阶段建立空范围默认 binding。
+仅缺少必填项时 `configurationRequired=true` 且实例保持停用；配置完整时实例直接启用。
 非法 schema、类型错误或把敏感字段放入普通配置会拒绝安装。已有该插件实例时不额外创建或切换实例，
 `defaultInstanceId=null`。相同摘要的接受和默认实例创建可重试，不产生副本
 
-宿主发行目录导入的制品只写入不可变包和来源，`acceptedAt=null`；在严格复核
-`permissionDescriptions` 后调用 `artifacts/accept`。未接受制品不能用于创建、更新或启用实例
+宿主发行目录导入的制品只写入不可变包和来源，`acceptedAt=null`；确认来源与版本后调用 `artifacts/accept`。未接受制品不能用于创建、更新或启用实例
 
 GitHub 的 `location` 使用 `kind: "github"`、`repository: "owner/repo"`、`tag`、`asset`、
 `allow_prerelease` 和 `sha256`。解析时优先使用显式摘要或 GitHub 的 SHA-256，缺失时读取同一 Release 的
@@ -1842,7 +1853,7 @@ GitHub 的 `location` 使用 `kind: "github"`、`repository: "owner/repo"`、`ta
 
 创建与更新的配置字段为 `name`、`artifactSha256`、`enabled`、`configuration` 和必填的 `bindings`，
 `secrets` 可选。输入严格拒绝未知字段；`trustedProcess` 和 `grants` 不是输入字段。`artifactSha256` 必须指向
-已接受的制品，其访问域由制品声明精确派生，实例不能增加或删减。`configuration` 是匹配插件 schema 的 JSON 对象；敏感字段必须
+已接受的制品。`configuration` 是匹配插件 schema 的 JSON 对象；敏感字段必须
 放入 `secrets`，空对象清除全部值。省略时同版本编辑保留当前值；跨版本编辑优先保留目标版本快照的密钥，没有快照则保留当前值
 
 创建可传 `creationId`（标准小写 UUID），同一草稿重试复用该 ID，已保存且内容不同则返回 409，不创建副本或覆盖旧配置。
@@ -1870,50 +1881,43 @@ GitHub 的 `location` 使用 `kind: "github"`、`repository: "owner/repo"`、`ta
 最后一项表示使用了目标版本的配置快照。没有快照时只补充缺失的 schema 默认值，保留当前显式值；功能范围按能力与阶段映射到目标声明，
 新能力使用默认绑定，已关闭的既有能力继续关闭，客户端认证仍须显式身份映射。草稿不代表已通过校验
 
-`switch-version` 重新生成草稿并执行准备与提交，名称和启停状态保持不变，权限从目标制品派生。不兼容设置返回 400，当前设置不变；
+`switch-version` 重新生成草稿并执行准备与提交，名称和启停状态保持不变。不兼容设置返回 400，当前设置不变；
 可读取草稿并通过 `instances/update` 携带原 `expectedRevision` 提交修正。不会推断字段改名或丢弃未知参数与密钥
 
 每个实例、制品摘要保存一份最近启用时提交的配置快照，包含普通配置、secret 与 binding，停用草稿不覆盖快照。
 `rollback` 只接受有快照的较早语义版本，恢复该版本设置并重新检查平台、配置与私有状态，保留当前名称与启停状态。
 快照与实例修改共享事务，不从审计日志重建，也不恢复私有业务数据；删除实例或制品时删除对应快照
 
-#### 访问域与受管资源
+#### 完整信任与受管资源
 
-清单的 `requestedPermissions` 接受 `network`、`models`、`accounts`、`data`、`requests`、`public_endpoints`，确认结果以制品摘要为边界；实例输入没有单独授权字段
+安装并启用插件意味着完整信任其代码与行为，安全由安装者承担。清单与握手不包含权限声明，宿主回调不按访问域或阶段授权，参见[插件信任说明](plugins.md#完整信任)
 
-| 标识 | 含义 |
-| --- | --- |
-| `network` | 访问网络 |
-| `models` | 查询模型和 Client Key 基本信息并调用模型，可能产生消耗 |
-| `accounts` | 读取和修改账号，包括访问原始凭据 |
-| `data` | 仅在管理或命令入口只读全部账号的基础信息和已有额度观测，不含凭据或预测 |
-| `requests` | 查看和处理请求、响应、路由及账号选择 |
-| `public_endpoints` | 提供无需登录即可访问的资源与回调入口 |
+回调保持类型、期限、取消、实例 revision、资源归属和事务一致性检查。模型调用可显式选择 Key，按所选 Key 的准入、预算、用量与计费合同执行；省略 Key 时继承现有模型父请求身份
 
-访问域不是 operation、Provider、账号、origin 或命名空间白名单。Runtime 仍按当前贡献项、调用阶段、父调用和宿主业务
-端口限制可用方法，不能把一个域借给无关调用。账号资源以每次请求的 `accountId` 查找权威 Provider，不接受插件提供的
-Provider 事实；Client Key 列表只投影 `id`、`name`、`enabled`，不返回前缀、明文、账号绑定或额度策略。模型调用须显式
-选择 Key ID，并继续经过该 Key 的当前准入、范围、预算、用量与计费合同。私有状态只能访问清单声明的命名空间
-
-受管 HTTP 还会执行宿主网络策略。目标默认只允许常规公网地址；每次请求重新校验全部解析地址，连接使用通过校验的
-固定地址并保留原始 Host 与 TLS 域名校验。托管回调由宿主解析目标域名，HTTP/HTTPS/SOCKS 代理接收固定 IP；
-无法由宿主安全解析的目标会被拒绝。代理沿用所选账号配置，不自动回退直连；重定向不会自动跟随，后续地址必须重新校验
+受管 HTTP 不限制插件目标地址段。宿主解析 DNS，连接保留原始 Host 与 TLS 域名校验；代理沿用账号配置，失败不自动回退直连，重定向不自动跟随
 
 #### 能力绑定与范围
 
 `bindings` 通过 `contribution` 指定清单已声明的贡献项，并包含该贡献项声明支持的 `stage`、顺序和失败策略；
 尚未声明、尚未注册或阶段不匹配的贡献项不能启用。
-首次安装生成的默认实例会为适用贡献项的每个声明阶段创建 binding，`order=0`，观察阶段使用 `observe`，
-其他阶段使用 `reject`，所有范围数组为空。`management`、`command_line` 按清单声明注册，不接受 binding；
+首次安装生成的默认实例会为适用贡献项的每个声明阶段创建 binding；`observer` 分别创建完成与 WebSocket 两类事件绑定。
+默认 `order=0`、所有范围数组为空；观察阶段使用 `observe`，重试阶段使用 `delegate`，其他阶段使用 `reject`。
+`model_catalog`、`management`、`command_line` 和 `maintenance` 按清单声明注册，不接受 binding；
 `frontend_authentication` 必须由管理员显式配置身份映射，也不自动创建
 
-请求终态观察的绑定格式如下；同一实例同时订阅 `request_lifecycle` 和 `usage` 时使用相同 `order`，
-宿主合并为一次调用，仅附带命中订阅的事实
+`middleware` v3 可绑定 `http`、`websocket`、`service`、`request` 和 `attempt`，按声明的挂载阶段分别配置。
+`http`、`websocket` 和 `service` 不使用 Key、分组、Provider 或模型范围，这些数组必须为空；插件在处理器内匹配路径、消息或服务操作。
+`request` 与 `routing` 支持 Key、分组和公开模型范围，Provider 范围必须为空；`attempt`、`upstream`、`scheduling`、`retry` 与 `observation` 可使用 Provider 范围
+
+`observer` 固定使用 `observation/observe`，必填 `event` 为 `request_completed` 或 `websocket_response`。
+每种事件最多一条绑定，可分别设置请求范围；同一实例两类事件的 `order` 必须相同。其他能力不接受非空 `event`。
+完成事件完整提供终态、用量、费用与耗时，订阅不裁剪字段
 
 ```json
 {
-  "contribution": "acme.usage-observer.usage",
+  "contribution": "acme.request-observer.observer",
   "stage": "observation",
+  "event": "request_completed",
   "order": 10,
   "failurePolicy": "observe",
   "clientKeyIds": [],
@@ -1935,11 +1939,11 @@ Provider 范围匹配最终实际尝试的 Provider；未进入 Provider 的拒�
 普通 binding 不能携带 `identityBindings`。已停用、删除或不再授权的 Key 不会因映射恢复访问
 
 实例不为管理页面或命令行预绑定模型执行 Key。管理页面经 12.2 的模型桥在每次调用时显式提交 `clientKeyId`；
-CLI 插件也须在具体调用中选择当前 Key。管理员身份本身不提升为推理身份，Key 明文不会发送给插件
+CLI 插件也须在具体调用中选择当前 Key。管理员身份本身不提升为推理身份；模型桥用 Key ID 选择身份，不在桥参数中传递 Key 明文
 
-观察失败只记录诊断，不改变响应、路由、标准 Usage 或账单。当前仅派发一次终态，过载直接丢弃，
-不承诺进程崩溃后的持久投递；这不是请求前拦截、流逐帧观察或账单重算接口。
-尚未通过重新鉴权、未建立冻结请求上下文的失败不触发当前终态观察
+观察失败只记录诊断，不改变响应、路由、标准 Usage 或账单。完成事件最多派发一次；上游 WebSocket 事件按请求保序，
+原始帧通过独立载荷传递，完成通知不等待消息队列排空。过载可能丢弃事件，不承诺进程崩溃后的持久投递。
+尚未通过重新鉴权、未建立冻结请求上下文的失败不触发完成观察；下游消息改写使用 `websocket` 中间件，普通响应流改写使用请求中间件
 
 #### 发布状态
 
@@ -1968,35 +1972,36 @@ CLI 插件也须在具体调用中选择当前 Key。管理员身份本身不提
 | GET | `/api/admin/plugins/extensions/{target}/resources/{path}` | 管理身份；已校验的静态字节 |
 | POST | `/api/admin/plugins/extensions/{target}/models/responses?clientKeyId=<ID>` | 管理身份；原生 Responses JSON 或 SSE，不套管理信封 |
 | POST | `/api/admin/plugins/extensions/{target}/callback-tickets` | 管理身份；统一信封中的一次性回调票据 |
-| GET | `/plugins/resources/{target}/{path}` | 无须登录，但资源须声明公开且制品已接受 `public_endpoints` 访问域 |
+| GET | `/plugins/resources/{target}/{path}` | 无须登录，但资源须声明公开且制品已被接受 |
 | GET | `/plugins/callbacks/{target}/{path}` | 无须登录，但必须携带有效且未消费的 `state` 票据 |
 
 实例目标失效返回 409，调用方应刷新扩展目录，不重放原操作。尚无可用发布视图时返回 503。
-所有入口都要求当前实例仍启用、制品已接受且版本匹配；公开资源与回调还要求制品声明 `public_endpoints`。
+所有入口都要求当前实例仍启用、制品已接受且版本匹配；公开资源与回调按插件注册内容开放。
 公开入口不是读取任意包文件的路径。
 单项静态资源最多 1 MiB，总量最多 8 MiB；资源必须同时出现在制品清单和注册结果中
 
-管理 API 只转交方法、相对路径、查询字符串、Content-Type、宿主请求关联与原始正文，不转交管理 Cookie
-或任意认证头。仅接受注册的方法、路径和内容类型；查询最多 8 KiB，正文最多 1 MiB 且受运行帧预算约束，
-GET/HEAD 不接受正文。响应状态码为 200–599，内容类型须在注册列表内，204/304 不允许正文；插件不能
-自选 Set-Cookie、Location 或其他响应头。失败可能发生在副作用之后，不提供自动重试
+管理 API 转交方法、相对路径、查询字符串、完整请求头、宿主请求关联与原始正文，保留 Cookie、认证头、
+重复头与非 UTF-8 值。仅接受注册的方法、路径和内容类型；查询最多 8 KiB，正文最多 1 MiB 且受运行帧预算约束，
+GET/HEAD 不接受正文。响应状态码为 200–599，内容类型元数据须在注册列表内，204/304 不允许正文；
+插件返回的完整响应头在 HTTP 语法校验后覆盖默认值。失败可能发生在副作用之后，不提供自动重试
 
 动态 API 与登录回调设置 `Cache-Control: no-store`。静态资源成功响应设置 `private, no-cache` 与内容 ETag，
 浏览器可保存正文，但每次复用前必须重新校验管理员身份（公开资源除外）、实例版本和资源授权；
 `If-None-Match` 匹配时返回无正文的 `304`。停用、版本或授权变更后，旧目标仍被拒绝，不返回缓存命中。
-两类响应均设置 nosniff、no-referrer 与限制性 CSP。管理端页面使用隔离 iframe，
+两类响应默认设置 nosniff、no-referrer 与限制性 CSP，动态处理器可显式覆盖默认响应头。管理端页面使用隔离 iframe，
 仅允许脚本，不具有父页面同源权限；联网、弹窗、表单、嵌套页面和顶层导航均不开放。
 页面访问已声明管理路由须经过固定目标的宿主桥，不能指定其他实例或版本。插件页面作者合同见
 [SDK 管理 API 与页面](../backend/crates/gateway-plugin/sdk/docs/capabilities.md#管理页面公开入口与-cli)
 
 模型桥只接受严格的 `clientKeyId` 查询参数和 Responses JSON 正文；传输正文与解压后的正文均最多 8 MiB。
-服务端先复核固定目标与 `models` 访问域，再按 ID 查询当前 Client Key，并使用普通 Responses HTTP/SSE 执行链；
+服务端先复核固定目标与实例 revision，再按 ID 查询当前 Client Key，并使用普通 Responses HTTP/SSE 执行链；
 因此仍执行当前 Key 的准入、账号范围、预算、用量、计费与请求插件链，包括发起页面所属插件自己的适用 hook。
 这不是嵌套的宿主模型回调，管理身份本身也不提供推理身份，Key 明文不会离开宿主
 
-等待首帧、非流式生成和流式正文交付期间约每秒复核一次固定目标与 `models` 访问域。实例停用、制品或 revision
+等待首帧、非流式生成和流式正文交付期间约每秒复核一次固定目标与实例 revision。实例停用、制品或 revision
 变化以及访问资格失效会取消底层执行并停止响应。成功或协议错误沿用 Responses 内容类型，并返回可检索的
-`x-request-id` 与 `x-gateway-request-id`；响应移除 Cookie 和认证头并设置 nosniff、no-referrer 与限制性 CSP。
+`x-request-id` 与 `x-gateway-request-id`。模型插件读取完整请求头，响应头不按插件身份裁剪；
+页面桥传递浏览器 `Headers` 可读取的全部字段，浏览器自身对 Cookie 等字段的规则仍适用。
 内置页面桥最多并发 4 个模型请求，每次拉取最多 64 KiB，总期限 10 分钟；页面在已收到响应后 30 秒不继续拉取会取消，
 等待首个响应本身不受该空闲计时误杀
 
@@ -2004,5 +2009,5 @@ GET/HEAD 不接受正文。响应状态码为 200–599，内容类型须在注�
 `{ "state": "<一次性不透明票据>", "expiresAtMs": 0 }`。state 绑定签发管理身份、实例、制品、版本与路径，
 不得记录或截图。公开回调只接受无正文的 GET，查询参数必须恰好包含一个 `state`；过期、错路径、跨实例、
 并发重复或已消费票据均拒绝。宿主在执行前原子消费票据，因此超时或插件失败后不能重放。
-公开调用使用无宿主回调权限的独立阶段，不能读取或保存账号、读写状态、发送受管 HTTP 或日志。
+公开调用使用 `public_management` 阶段，插件可以使用宿主回调；票据仍用于关联和消费一次登录流程。
 票据用于受控接收第三方返回结果，不代替敏感管理操作的身份校验

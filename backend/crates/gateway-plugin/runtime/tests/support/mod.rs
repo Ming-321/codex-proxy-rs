@@ -46,9 +46,7 @@ pub fn contribution_for_id(
         Capability::RetryPolicy => "retryPolicy",
         Capability::Middleware => "middleware",
         Capability::UpstreamAdapter => "upstreamAdapter",
-        Capability::RequestLifecycle => "requestLifecycle",
-        Capability::WebSocketObserver => "webSocketObserver",
-        Capability::Usage => "usage",
+        Capability::Observer => "observer",
         Capability::CommandLine => "commandLine",
         Capability::Management => "management",
         Capability::Maintenance => "maintenance",
@@ -57,7 +55,11 @@ pub fn contribution_for_id(
         capability,
         ContributionDeclaration {
             id: format!("{plugin_id}.{local_id}"),
-            version: 1,
+            version: if capability == Capability::Middleware {
+                3
+            } else {
+                1
+            },
             stages,
             input_formats,
             output_formats,
@@ -85,46 +87,35 @@ pub fn worker() -> &'static [u8] {
 }
 
 pub fn package(worker: &[u8]) -> Arc<[u8]> {
-    package_with_permissions(worker, Vec::new())
+    package_with_contributions(worker, Contributions::new())
 }
 
-pub fn package_with_permissions(
-    worker: &[u8],
-    permissions: Vec<gateway_plugin_sdk::Permission>,
-) -> Arc<[u8]> {
-    package_with_contributions(worker, permissions, Contributions::new())
-}
-
-pub fn package_with_contributions(
-    worker: &[u8],
-    permissions: Vec<gateway_plugin_sdk::Permission>,
-    contributes: Contributions,
-) -> Arc<[u8]> {
-    package_with_contributions_and_state(worker, permissions, contributes, vec![])
+pub fn package_with_contributions(worker: &[u8], contributes: Contributions) -> Arc<[u8]> {
+    package_with_contributions_and_state(worker, contributes, vec![])
 }
 
 pub fn package_with_contributions_for_id(
     worker: &[u8],
     plugin_id: &str,
-    permissions: Vec<gateway_plugin_sdk::Permission>,
+
     contributes: Contributions,
 ) -> Arc<[u8]> {
-    package_with_identity_and_state(worker, plugin_id, permissions, contributes, vec![])
+    package_with_identity_and_state(worker, plugin_id, contributes, vec![])
 }
 
 pub fn package_with_contributions_and_state(
     worker: &[u8],
-    permissions: Vec<gateway_plugin_sdk::Permission>,
+
     contributes: Contributions,
     state: Vec<gateway_plugin_sdk::StateNamespace>,
 ) -> Arc<[u8]> {
-    package_with_identity_and_state(worker, DEFAULT_PLUGIN_ID, permissions, contributes, state)
+    package_with_identity_and_state(worker, DEFAULT_PLUGIN_ID, contributes, state)
 }
 
 fn package_with_identity_and_state(
     worker: &[u8],
     plugin_id: &str,
-    permissions: Vec<gateway_plugin_sdk::Permission>,
+
     contributes: Contributions,
     state: Vec<gateway_plugin_sdk::StateNamespace>,
 ) -> Arc<[u8]> {
@@ -152,7 +143,7 @@ fn package_with_identity_and_state(
         main: "bin/worker".to_owned(),
         runtime: RuntimeKind::TrustedProcess,
         contributes,
-        permissions: permissions.into_iter().collect::<BTreeSet<_>>(),
+
         configuration_schema: serde_json::json!({}),
         secret_fields: BTreeSet::new(),
         resources: BTreeMap::new(),

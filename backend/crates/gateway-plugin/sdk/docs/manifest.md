@@ -11,14 +11,13 @@
 | `displayName` / `author` | 人类可读名称 / 可选作者文字，不参与身份与授权 |
 | `version` / `engines` | 插件业务版本 / 宿主版本范围；安装包不能使用全版本通配 `*` |
 | `contributes` | 插件提供的扩展能力；作者可省略可推导字段 |
-| `permissions` | 需要访问的宿主资源域；安装即接受该版本声明的域 |
 | `configurationSchema` / `secretFields` | 普通设置的 schema / 单独保存的敏感字段 |
 | `main` / `resources` | 包内可执行文件 / 资源路径与 MIME 类型 |
 | `state` | [私有状态](capabilities.md#状态日志与迁移)的命名空间、schema 与配额 |
 | `package` | CLI 生成的协议版本、单一目标平台与文件摘要，不需作者手写 |
 
 作者清单不能包含 `package`。使用 `Manifest::from_author_slice()` 校验并规范化；直接反序列化的 `Manifest`
-代表完整合同，不会隐式补全作者字段。打包后，`main` 和所有资源都必须进入 `package.files`；宿主用
+不会执行作者清单的 ID 与固定阶段推导，声明的可选字段仍使用其默认值。打包后，`main` 和所有资源都必须进入 `package.files`；宿主用
 `package_for(host, os, architecture)` 检查版本与平台。运行模式仅为 `trustedProcess`：插件拥有与宿主
 相同的系统身份，**不是进程沙箱**
 
@@ -32,11 +31,17 @@
 | `contributes.<capability>.version` / `capabilities[].versions` | 指定扩展能力的行为合同 |
 | 宿主声明的 `schema_version` | 宿主兼容声明自身的格式 |
 
-`capabilities` 使用扩展能力标识，`permissions` 使用资源访问域标识；Provider、模型和账号 ID 不属于这两个集合
+`capabilities` 使用扩展能力标识；Provider、模型和账号 ID 不属于这个集合
+
+当前清单、进程协议和宿主兼容声明的格式版本均为 `2`。清单不接受 `permissions` 字段；使用其他格式版本的包须用匹配的 SDK 和 CLI 重新构建
+
+安装包清单校验与已安装元数据读取是两个边界：清单拒绝未知字段，并检查必需字段、类型和版本；
+数据库元数据允许的字段增减见[持久化规则](../../../../../docs/architecture.md#发布与执行边界)，不改变清单或 RPC 合同。
+插件依赖新增接口或字段时，应通过 `engines.codex-proxy-rs` 声明所需宿主版本；字段语义不兼容时不能只修改版本号绕过校验
 
 ## 扩展项简写
 
-普通作者声明可以省略 `id`、`version` 和固定阶段：
+作者声明可以省略 `id` 和固定阶段；默认版本为 `1`，中间件必须显式选择版本 `3`：
 
 ```json
 {
@@ -44,6 +49,7 @@
     "management": {},
     "command_line": {},
     "middleware": {
+      "version": 3,
       "stages": ["request"],
       "inputFormats": ["openai"],
       "outputFormats": ["openai"]
@@ -52,27 +58,28 @@
 }
 ```
 
-默认扩展项 ID 为 `<publisher>.<name>.<capability-kebab>`，版本默认为 `1`；使用能力需求声明的 `middleware` 选择 `2`。除 `middleware` 外，阶段由
+默认扩展项 ID 为 `<publisher>.<name>.<capability-kebab>`。宿主只接受 middleware v3；使用 v1/v2 的插件须更新 SDK、处理器及清单后重新打包。除 `middleware` 外，阶段由
 capability 固定并由工具生成：
 
 | 阶段 | 能力 |
 | --- | --- |
 | `authentication` / `routing` / `scheduling` | `frontend_authentication` / `model_router` / `scheduler` |
 | `registration` / `retry` | `model_catalog` / `retry_policy` |
-| `observation` | `request_lifecycle`、`web_socket_observer`、`usage` |
+| `observation` | `observer` |
+| `upstream` | `upstream_adapter` |
 | `management` / `command_line` | `management` / `command_line` |
 | `maintenance` | `maintenance` |
 
-`middleware` 必须显式选择 `request`、`attempt` 或两者；协议格式等真实业务选择也不能省略。
+`observer` 使用一个处理器接收完成与上游 WebSocket 事件，实例绑定按 `event` 选择订阅类型；具体合同见[观察事件](capabilities.md#路由调度与观察)。宿主仅接受 `observer` 声明；使用 `request_lifecycle`、`usage` 或 `web_socket_observer` 声明的插件须更新清单、处理器与绑定后重新打包
+
+`middleware` 必须从 `http`、`websocket`、`service`、`request`、`attempt` 中显式选择挂载；同一处理器可覆盖多个边界，协议格式等真实业务选择也不能省略。
 安装清单若携带不同的固定阶段会被拒绝，而不是在加载时静默改写
 
-## 权限
+## 完整信任
 
-`permissions` 按[访问域](capabilities.md#访问域)声明所需宿主资源，安装时统一接受该版本的声明
+安装并启用插件意味着信任其全部代码和行为。插件与宿主使用相同的系统身份，可以访问数据、凭据和网络；安全由安装者承担，宿主不提供插件安全沙箱
 
-不填写逐方法、用途、Key、账号或 Provider 白名单；调用仍受阶段、父调用、Key 规则、账号 revision、资源归属和流生命周期约束
-
-日志与清单声明的本插件私有状态属于基础设施，无需单独 permission
+清单只声明处理器、配置和资源。宿主回调不需要权限声明，也不按调用阶段授予访问域；类型校验、期限、取消、实例 revision、事务及流资源生命周期仍然生效
 
 ## 插件图标
 

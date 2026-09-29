@@ -56,7 +56,7 @@ async fn websocket_preserves_frames_handles_ping_and_releases_connection_on_drop
         .await
         .unwrap();
     assert_eq!(response.status, 101);
-    let mut websocket = response.connection.take().unwrap();
+    let websocket = response.connection.take().unwrap();
     websocket
         .send(
             WebSocketMessage::Text("first".into()),
@@ -71,6 +71,123 @@ async fn websocket_preserves_frames_handles_ping_and_releases_connection_on_drop
     };
     assert_eq!(&bytes[..], &[0, 255, 7]);
     drop(websocket);
+    tokio::time::timeout(Duration::from_secs(2), server)
+        .await
+        .unwrap()
+        .unwrap();
+}
+
+#[tokio::test]
+async fn websocket_can_send_control_while_waiting_for_a_response() {
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let url = format!("http://{}/responses", listener.local_addr().unwrap());
+    let server = tokio::spawn(async move {
+        let (socket, _) = listener.accept().await.unwrap();
+        let mut socket = tokio_tungstenite::accept_async(socket).await.unwrap();
+        assert_eq!(
+            socket.next().await.unwrap().unwrap(),
+            Message::Text("control".into())
+        );
+        socket
+            .send(Message::Text("acknowledged".into()))
+            .await
+            .unwrap();
+    });
+    let websocket = HttpClient::new()
+        .unwrap()
+        .open_websocket(request(url), None, &network(), Duration::from_secs(2))
+        .await
+        .unwrap()
+        .connection
+        .unwrap();
+    let read = websocket.read(Duration::from_secs(2));
+    tokio::pin!(read);
+    assert!(futures::poll!(&mut read).is_pending());
+    websocket
+        .send(
+            WebSocketMessage::Text("control".into()),
+            Duration::from_secs(2),
+        )
+        .await
+        .unwrap();
+    assert!(
+        matches!(read.await.unwrap(), Some(WebSocketMessage::Text(text)) if text == "acknowledged")
+    );
+    server.await.unwrap();
+}
+
+#[tokio::test]
+async fn websocket_close_wakes_pending_reads_and_releases_the_socket() {
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let url = format!("http://{}/responses", listener.local_addr().unwrap());
+    let server = tokio::spawn(async move {
+        let (socket, _) = listener.accept().await.unwrap();
+        let mut socket = tokio_tungstenite::accept_async(socket).await.unwrap();
+        assert!(socket.next().await.is_none_or(|result| result.is_err()));
+    });
+    let websocket = HttpClient::new()
+        .unwrap()
+        .open_websocket(request(url), None, &network(), Duration::from_secs(2))
+        .await
+        .unwrap()
+        .connection
+        .unwrap();
+    let read = websocket.read(Duration::from_secs(60));
+    tokio::pin!(read);
+    assert!(futures::poll!(&mut read).is_pending());
+    let (result, ()) = tokio::time::timeout(Duration::from_secs(2), async {
+        tokio::join!(read, websocket.close())
+    })
+    .await
+    .unwrap();
+    assert!(result.unwrap().is_none());
+    assert!(websocket.is_closed());
+    assert!(
+        websocket
+            .read(Duration::from_secs(1))
+            .await
+            .unwrap()
+            .is_none()
+    );
+    assert!(
+        websocket
+            .send(
+                WebSocketMessage::Text("late".into()),
+                Duration::from_secs(1)
+            )
+            .await
+            .is_err()
+    );
+    websocket.close().await;
+    tokio::time::timeout(Duration::from_secs(2), server)
+        .await
+        .unwrap()
+        .unwrap();
+}
+
+#[tokio::test]
+async fn websocket_read_timeout_closes_the_connection() {
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let url = format!("http://{}/responses", listener.local_addr().unwrap());
+    let server = tokio::spawn(async move {
+        let (socket, _) = listener.accept().await.unwrap();
+        let mut socket = tokio_tungstenite::accept_async(socket).await.unwrap();
+        assert!(socket.next().await.is_none_or(|result| result.is_err()));
+    });
+    let websocket = HttpClient::new()
+        .unwrap()
+        .open_websocket(request(url), None, &network(), Duration::from_secs(2))
+        .await
+        .unwrap()
+        .connection
+        .unwrap();
+    let error = websocket
+        .read(Duration::from_millis(20))
+        .await
+        .err()
+        .unwrap();
+    assert_eq!(error.kind(), HttpErrorKind::Timeout);
+    assert!(websocket.is_closed());
     tokio::time::timeout(Duration::from_secs(2), server)
         .await
         .unwrap()

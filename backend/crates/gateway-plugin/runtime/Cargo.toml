@@ -14,6 +14,9 @@ bytes = "1.11.1"
 chrono = { version = "0.4.44", default-features = false, features = ["clock"] }
 flate2 = "1.1.9"
 futures = "0.3.32"
+http = "1.5.0"
+http-body = "1.0.1"
+http-body-util = "0.1.5"
 gateway-admin = { path = "../../gateway-admin" }
 gateway-core = { path = "../../gateway-core" }
 gateway-host = { path = "../../gateway-host" }
@@ -56,7 +59,7 @@ path = "tests/main.rs"
 
 [[bin]]
 name = "gateway-plugin-test-middleware"
-path = "tests/support/middleware.rs"
+path = "tests/support/middleware/mod.rs"
 test = false
 bench = false
 doc = false

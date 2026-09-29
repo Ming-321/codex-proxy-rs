@@ -401,27 +401,35 @@ async fn attempt_middleware_runs_once_before_native_encoding() {
         );
     }
 
-    let conflict_transport = StubInferenceTransport::success();
-    let conflict_provider = provider(StubSelector::success(), conflict_transport.clone()).await;
-    let mut conflict = conflict_provider
+    let overridden_transport = StubInferenceTransport::success();
+    let overridden_provider = provider(StubSelector::success(), overridden_transport.clone()).await;
+    let mut overridden = overridden_provider
         .execute(
             provider_request("xai"),
             context_with_middleware(Arc::new(RecordingMiddleware {
                 observed: Arc::default(),
                 replacement: None,
                 request_headers: vec![MiddlewareHeader::new(
-                    "x-grok-client-version",
-                    Bytes::from_static(b"plugin-value"),
+                    "Authorization",
+                    Bytes::from_static(b"Bearer plugin-value"),
                 )],
             })),
         )
         .await
         .expect("header validation remains on the cold Provider stream");
-    let error = next_provider_error(&mut conflict).await;
-    assert_eq!(error.kind(), ProviderErrorKind::Protocol);
-    assert_eq!(error.send_state(), UpstreamSendState::NotSent);
-    assert_eq!(conflict_transport.calls.load(Ordering::SeqCst), 0);
-    assert!(conflict_transport.requests.lock().unwrap().is_empty());
+    while let Some(event) = overridden.next().await {
+        event.unwrap();
+    }
+    assert_eq!(overridden_transport.calls.load(Ordering::SeqCst), 1);
+    let requests = overridden_transport.requests.lock().unwrap();
+    let values = requests[0]
+        .headers()
+        .iter()
+        .filter(|header| header.name().eq_ignore_ascii_case("authorization"))
+        .map(|header| header.value().expose())
+        .collect::<Vec<_>>();
+    assert_eq!(values, ["Bearer plugin-value"]);
+    assert!(!format!("{:?}", requests[0].headers()).contains("Bearer plugin-value"));
 }
 
 #[tokio::test]
@@ -1483,7 +1491,7 @@ fn provider_request_with_model_capabilities(
     ));
     let snapshot = RuntimeSnapshot::new(
         ConfigRevision::new(1).expect("revision"),
-        selection_policy(),
+        gateway_core::settings::SettingsValues::new(2, 0, "smart", Default::default(), None, None),
         vec![provider],
         vec![provider_model],
         vec![],
@@ -1519,7 +1527,7 @@ impl MiddlewarePlan for TranslationMiddleware {
         &self,
         context: MiddlewareContext,
         request: MiddlewareRequest,
-        next: Box<dyn MiddlewareNext>,
+        next: MiddlewareNext,
     ) -> BoxFuture<'static, Result<MiddlewareResponse, MiddlewareError>> {
         assert_eq!(context.mount(), MiddlewareMount::Attempt);
         assert!(context.account_id().is_some());
@@ -1541,7 +1549,7 @@ impl MiddlewarePlan for PassThroughMiddleware {
         &self,
         _: MiddlewareContext,
         request: MiddlewareRequest,
-        next: Box<dyn MiddlewareNext>,
+        next: MiddlewareNext,
     ) -> BoxFuture<'static, Result<MiddlewareResponse, MiddlewareError>> {
         next.run(request)
     }
@@ -1561,7 +1569,7 @@ impl MiddlewarePlan for RecordingMiddleware {
         &self,
         context: MiddlewareContext,
         request: MiddlewareRequest,
-        next: Box<dyn MiddlewareNext>,
+        next: MiddlewareNext,
     ) -> BoxFuture<'static, Result<MiddlewareResponse, MiddlewareError>> {
         assert_eq!(context.mount(), MiddlewareMount::Attempt);
         let (protocol, mut headers, bytes) = request.into_parts();

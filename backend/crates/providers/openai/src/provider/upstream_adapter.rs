@@ -23,7 +23,7 @@ impl CodexProvider {
     #[expect(clippy::too_many_arguments)]
     pub(super) fn execute_upstream_adapter(
         self: Arc<Self>,
-        mut operation: Operation,
+        operation: Operation,
         headers: Vec<MiddlewareHeader>,
         model: UpstreamModelId,
         context: AttemptContext,
@@ -37,29 +37,6 @@ impl CodexProvider {
                 ProviderErrorKind::InvalidRequest,
                 UpstreamSendState::NotSent,
             ));
-        }
-        if context.disable_fast()
-            && let Operation::Generate(generate) = &operation
-            && generate.protocol_payload().protocol() == PROVIDER_NAME
-        {
-            // 适配器终端同样在 attempt 加工后应用原生强制策略，不另写一套档位规则。
-            let mut request =
-                CodexResponsesRequest::from_body(generate.protocol_payload().body().clone());
-            request.apply_fast_policy(true);
-            let body = serde_json::to_vec(request.body()).map_err(|_| {
-                provider_error(
-                    ProviderErrorKind::InvalidRequest,
-                    UpstreamSendState::NotSent,
-                )
-            })?;
-            operation = operation
-                .replace_middleware_wire(PROVIDER_NAME, body.into())
-                .map_err(|_| {
-                    provider_error(
-                        ProviderErrorKind::InvalidRequest,
-                        UpstreamSendState::NotSent,
-                    )
-                })?;
         }
         let requested_service_tier = match &operation {
             Operation::Generate(generate)

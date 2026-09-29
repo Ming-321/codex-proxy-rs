@@ -22,10 +22,7 @@ use gateway_plugin_sdk::{
 };
 
 use super::{denied, http::HttpCallbacks, invalid};
-use crate::{
-    RpcReply,
-    adapter::upstream_adapter::target::{UpstreamTarget, protected_header},
-};
+use crate::{RpcReply, adapter::upstream_adapter::target::UpstreamTarget};
 
 pub(crate) use sessions::{ConnectionOwner, ConnectionPool};
 
@@ -58,7 +55,7 @@ pub(crate) struct ManagedUpstream {
     pub(crate) send_state: Arc<SendWatermark>,
     pub(crate) effects: Option<Arc<ExecutionEffects>>,
     target: Arc<UpstreamTarget>,
-    socket: tokio::sync::Mutex<Option<(String, ManagedWebSocket)>>,
+    socket: tokio::sync::Mutex<Option<(String, Arc<ManagedWebSocket>)>>,
     pool: Arc<ConnectionPool>,
     owner: ConnectionOwner,
     websocket_allowed: bool,
@@ -74,7 +71,10 @@ impl ManagedUpstream {
         connection: Option<&str>,
         websocket_allowed: bool,
     ) -> Result<Arc<Self>, PluginFault> {
-        let socket = connection.map(|id| pool.take(id, &owner)).transpose()?;
+        let socket = connection
+            .map(|id| pool.take(id, &owner))
+            .transpose()?
+            .map(|(url, socket)| (url, Arc::new(socket)));
         Ok(Arc::new(Self {
             account,
             target,
@@ -88,8 +88,43 @@ impl ManagedUpstream {
     }
 
     pub(crate) async fn retain_connection(&self) -> Result<String, PluginFault> {
-        let socket = self.socket.lock().await.take().ok_or_else(denied)?;
-        self.pool.put(self.owner.clone(), socket)
+        let (url, socket) = self.socket.lock().await.take().ok_or_else(denied)?;
+        // 旧调用仍在收发时不能把同一连接交给下一次执行。
+        let socket = match Arc::try_unwrap(socket) {
+            Ok(socket) if !socket.is_closed() => socket,
+            Ok(_) => return Err(denied()),
+            Err(socket) => {
+                socket.close().await;
+                return Err(PluginFault::new(
+                    ErrorCode::Conflict,
+                    "upstream connection is still in use",
+                ));
+            }
+        };
+        self.pool.put(self.owner.clone(), (url, socket))
+    }
+
+    async fn connection(&self) -> Result<Arc<ManagedWebSocket>, PluginFault> {
+        self.socket
+            .lock()
+            .await
+            .as_ref()
+            .map(|(_, socket)| Arc::clone(socket))
+            .ok_or_else(denied)
+    }
+
+    async fn remove_closed_connection(&self, connection: &Arc<ManagedWebSocket>) {
+        if !connection.is_closed() {
+            return;
+        }
+        let mut socket = self.socket.lock().await;
+        // 关闭后的读取结果可能晚于下一次 open，不能移除新连接。
+        if socket
+            .as_ref()
+            .is_some_and(|(_, current)| Arc::ptr_eq(current, connection))
+        {
+            socket.take();
+        }
     }
 
     fn request(
@@ -98,13 +133,8 @@ impl ManagedUpstream {
         body: Vec<u8>,
     ) -> Result<(HttpRequest, UpstreamPathPurpose), PluginFault> {
         let (target, purpose) = self.target.resolve(&request.path, &request.query)?;
-        if request.headers.len() > 128
-            || request
-                .headers
-                .iter()
-                .any(|(name, _)| protected_header(name))
-        {
-            return Err(denied());
+        if request.headers.len() > 128 {
+            return Err(invalid());
         }
         let authorization = self.account.authorization().map_err(|_| {
             PluginFault::new(
@@ -112,22 +142,26 @@ impl ManagedUpstream {
                 "selected account authentication is unavailable",
             )
         })?;
-        if request.headers.iter().any(|(name, _)| {
-            authorization
-                .iter()
-                .any(|header| name.eq_ignore_ascii_case(header.name()))
-        }) {
-            return Err(denied());
-        }
-        let headers = request
-            .headers
+        // 账号设置先构成基线；插件同名输入替换默认值，多值头保持原顺序。
+        let mut headers: Vec<_> = authorization
             .into_iter()
-            .map(|(name, value)| (name, value.into_bytes()))
-            .chain(authorization.into_iter().map(|header| {
+            .filter(|header| {
+                !request
+                    .headers
+                    .iter()
+                    .any(|(name, _)| name.eq_ignore_ascii_case(header.name()))
+            })
+            .map(|header| {
                 let (name, value) = header.into_parts();
                 (name, value.to_vec())
-            }))
+            })
             .collect();
+        headers.extend(
+            request
+                .headers
+                .into_iter()
+                .map(|(name, value)| (name, value.into_bytes())),
+        );
         Ok((
             HttpRequest {
                 method: request.method,
@@ -148,18 +182,15 @@ pub(super) async fn dispatch(
 ) -> Result<RpcReply, PluginFault> {
     let HttpCallbacks {
         client,
-        authorization,
+        network,
         scope,
         call,
         maximum_payload,
     } = *http;
     let managed = scope.upstream.as_ref().ok_or_else(denied)?;
     let timeout = || {
-        call.deadline
-            .checked_duration_since(tokio::time::Instant::now())
-            .filter(|remaining| !remaining.is_zero())
+        call.timeout()
             .map(|remaining| remaining.min(Duration::from_secs(120)))
-            .ok_or_else(|| PluginFault::new(ErrorCode::Timeout, "upstream deadline elapsed"))
     };
     match method {
         "host.upstream.http.do" | "host.upstream.http.do_stream" => {
@@ -199,7 +230,10 @@ pub(super) async fn dispatch(
                 return Err(denied());
             }
             let mut socket = managed.socket.try_lock().map_err(|_| denied())?;
-            if let Some((url, _)) = socket.as_ref() {
+            if let Some((url, _)) = socket
+                .as_ref()
+                .filter(|(_, connection)| !connection.is_closed())
+            {
                 if *url != request.url {
                     return Err(denied());
                 }
@@ -214,7 +248,7 @@ pub(super) async fn dispatch(
                 .open_websocket(
                     request,
                     managed.account.outbound_proxy(),
-                    &authorization.network,
+                    network,
                     timeout()?,
                 )
                 .await;
@@ -245,7 +279,7 @@ pub(super) async fn dispatch(
                 }
             }
             if let Some(connection) = response.connection {
-                *socket = Some((url, connection));
+                *socket = Some((url, Arc::new(connection)));
             }
             Ok(RpcReply {
                 result: serde_json::to_value(wire::HttpResponse {
@@ -266,8 +300,7 @@ pub(super) async fn dispatch(
                 }
                 adapter::WebSocketMessageKind::Binary => WebSocketMessage::Binary(payload.into()),
             };
-            let mut socket = managed.socket.try_lock().map_err(|_| denied())?;
-            let (_, socket) = socket.as_mut().ok_or_else(denied)?;
+            let socket = managed.connection().await?;
             let attempt = scope.start_upstream(Some(UpstreamPathPurpose::Inference));
             let result = socket.send(message, timeout()?).await;
             attempt.finish(
@@ -275,6 +308,7 @@ pub(super) async fn dispatch(
                     .as_ref()
                     .map_or_else(|error| error.send_state, |()| UpstreamSendState::Sent),
             );
+            managed.remove_closed_connection(&socket).await;
             result.map_err(super::http::http_error)?;
             Ok(RpcReply {
                 result: serde_json::json!({}),
@@ -285,12 +319,10 @@ pub(super) async fn dispatch(
             if params != serde_json::json!({}) || !payload.is_empty() {
                 return Err(invalid());
             }
-            let mut socket = managed.socket.try_lock().map_err(|_| denied())?;
-            let (_, connection) = socket.as_mut().ok_or_else(denied)?;
-            let result = connection
-                .read(timeout()?)
-                .await
-                .map_err(super::http::http_error)?;
+            let connection = managed.connection().await?;
+            let result = connection.read(timeout()?).await;
+            managed.remove_closed_connection(&connection).await;
+            let result = result.map_err(super::http::http_error)?;
             let (kind, payload) = match result {
                 Some(WebSocketMessage::Text(text)) => {
                     (Some(adapter::WebSocketMessageKind::Text), text.into_bytes())
@@ -298,13 +330,11 @@ pub(super) async fn dispatch(
                 Some(WebSocketMessage::Binary(bytes)) => {
                     (Some(adapter::WebSocketMessageKind::Binary), bytes.to_vec())
                 }
-                None => {
-                    socket.take();
-                    (None, vec![])
-                }
+                None => (None, vec![]),
             };
             if payload.len() > maximum_payload {
-                socket.take();
+                connection.close().await;
+                managed.remove_closed_connection(&connection).await;
                 return Err(invalid());
             }
             Ok(RpcReply {
@@ -320,7 +350,10 @@ pub(super) async fn dispatch(
             if params != serde_json::json!({}) || !payload.is_empty() {
                 return Err(invalid());
             }
-            managed.socket.try_lock().map_err(|_| denied())?.take();
+            let socket = managed.socket.lock().await.take();
+            if let Some((_, socket)) = socket {
+                socket.close().await;
+            }
             Ok(RpcReply {
                 result: serde_json::json!({}),
                 payload: vec![],

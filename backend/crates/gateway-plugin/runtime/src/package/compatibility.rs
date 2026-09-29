@@ -4,7 +4,7 @@ use gateway_admin::model::{
     AdminError,
     plugins::{PluginCompatibilityRequirements, PluginHostCompatibility},
 };
-use gateway_plugin_sdk::{Capability, MANIFEST_VERSION, Manifest, PROTOCOL_VERSION, Permission};
+use gateway_plugin_sdk::{Capability, MANIFEST_VERSION, Manifest, PROTOCOL_VERSION};
 
 const HOST_COMPATIBILITY_JSON: &str = include_str!("../../plugin-host-compatibility.json");
 
@@ -33,9 +33,6 @@ pub(crate) fn host_compatibility() -> Result<&'static PluginHostCompatibility, A
                                 .all(|version| capability.contract_versions().contains(version))
                         },
                     )
-                })
-                && compatibility.permissions.iter().all(|permission| {
-                    serde_json::from_value::<Permission>(permission.clone().into()).is_ok()
                 });
             (compatibility.is_valid() && known_contracts)
                 .then_some(compatibility)
@@ -63,11 +60,6 @@ pub(crate) fn requirements(
                 (capability.identifier().to_owned(), declaration.version)
             })
             .collect(),
-        permissions: manifest
-            .permissions
-            .iter()
-            .map(|permission| permission.as_str().to_owned())
-            .collect(),
     })
 }
 
@@ -83,9 +75,5 @@ pub(crate) fn supports(manifest: &Manifest) -> Result<bool, AdminError> {
         && requirements
             .capabilities
             .iter()
-            .all(|(capability, version)| compatibility.supports_capability(capability, *version))
-        && requirements
-            .permissions
-            .iter()
-            .all(|permission| compatibility.supports_permission(permission)))
+            .all(|(capability, version)| compatibility.supports_capability(capability, *version)))
 }

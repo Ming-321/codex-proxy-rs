@@ -82,6 +82,7 @@ pub struct PluginRuntimeConfig {
 
 /// 只索引有主人的候选；当前代次仅由 Core 的发布视图持有。
 pub struct PluginRuntime {
+    service_ports: Arc<crate::callback::services::ServicePorts>,
     pub(super) store: Arc<dyn PluginStore>,
     state: Arc<dyn PluginStateStore>,
     config: PluginRuntimeConfig,
@@ -105,7 +106,6 @@ pub struct PluginRuntime {
     authentications: FrontendAuthenticationExtensionIndex,
     oauth_pending: Option<Arc<dyn OAuthPendingFlowPort>>,
     http: Arc<gateway_host::outbound::HttpClient>,
-    network_policy: gateway_host::outbound::NetworkPolicy,
 }
 
 #[derive(Clone)]
@@ -238,6 +238,7 @@ impl PluginRuntime {
             shutdown_lock: Mutex::new(()),
             processes,
             validators: Arc::new(Semaphore::new(2)),
+            service_ports: Arc::new(crate::callback::services::ServicePorts::default()),
             account_ports: Arc::new(PluginAccountPortSlot::new()),
             client_key_ports: Arc::new(PluginClientKeyPortSlot::new()),
             resource_ports: Arc::new(crate::callback::PluginResourcePorts::new()),
@@ -249,7 +250,6 @@ impl PluginRuntime {
             authentications: FrontendAuthenticationExtensionIndex::default(),
             oauth_pending: None,
             http,
-            network_policy: gateway_host::outbound::NetworkPolicy::default(),
         }
     }
 
@@ -259,14 +259,21 @@ impl PluginRuntime {
         self
     }
 
-    /// 宿主统一决定可到达的地址段；插件配置与请求不能自行放宽 DNS/IP 边界。
-    #[must_use]
-    pub fn with_network_policy(mut self, policy: gateway_host::outbound::NetworkPolicy) -> Self {
-        self.network_policy = policy;
-        self
+    /// API 完成组装后绑定唯一内部 HTTP 分派端口；不持有服务端强引用。
+    pub fn bind_http(
+        &self,
+        dispatcher: &Arc<dyn gateway_core::middleware::http::Dispatcher>,
+    ) -> Result<(), AdminError> {
+        self.service_ports.bind_http(dispatcher)
     }
 
-    /// Admin 初始化后一次性绑定窄账号端口；Runtime 仅保存 Weak，避免组合根强环。
+    pub fn bind_services(
+        &self,
+        registry: &Arc<gateway_admin::service::Registry>,
+    ) -> Result<(), AdminError> {
+        self.service_ports.bind(registry)
+    }
+
     pub fn bind_account_ports(
         &self,
         access: &Arc<dyn PluginAccountAccess>,
@@ -274,7 +281,7 @@ impl PluginRuntime {
         self.account_ports.bind(access)
     }
 
-    /// Key 目录与预算端口由 Admin 组合并保活，Runtime 不取得明文访问端口。
+    /// Key 目录与预算端口由 Admin 组合并保活，完整字段由对应公开合同返回。
     pub fn bind_client_key_ports(
         &self,
         access: &Arc<dyn PluginClientKeyAccess>,
@@ -725,23 +732,17 @@ impl PluginRuntime {
 
 #[async_trait]
 impl gateway_admin::ports::plugin_management::PluginManagement for PluginRuntime {
-    async fn authorize_models(
+    async fn validate_target(
         &self,
         published: &ExtensionSetReference,
         target: &gateway_admin::model::plugins::management::PluginManagementTarget,
     ) -> Result<(), AdminError> {
         let set = self.prepared_set(published).await?;
-        let entry = set
-            .management
+        set.management
             .iter()
             .find(|entry| &entry.view.target == target)
             .ok_or_else(|| AdminError::conflict("插件页面版本已变化，请刷新页面"))?;
-        if !entry.models_authorized {
-            return Err(AdminError::new(
-                gateway_admin::model::AdminErrorKind::Forbidden,
-                "插件未声明模型访问能力",
-            ));
-        }
+
         Ok(())
     }
 
@@ -878,7 +879,7 @@ impl PluginPreparation for PluginRuntime {
             let package =
                 ValidatedPackage::read(artifact.archive, Some(&instance.artifact_sha256), limits)
                     .map_err(|_| AdminError::invalid("插件制品校验失败"))?;
-            let (_, _, state) = super::configuration::validate(&instance, package.manifest())?;
+            let (_, state) = super::configuration::validate(&instance, package.manifest())?;
             crate::adapter::observer::validate_bindings(package.manifest(), &instance.bindings)?;
             crate::adapter::policy::validate_bindings(package.manifest(), &instance.bindings)?;
             crate::adapter::catalog::validate_bindings(package.manifest(), &instance.bindings)?;
@@ -1238,7 +1239,7 @@ fn instance_fingerprint(
         .iter()
         .map(|(name, value)| (name, value.expose_secret()))
         .collect();
-    let mut value = serde_json::json!({"id":instance.id,"artifact":instance.artifact_sha256,"revision":instance.revision.get(),"trusted":instance.trusted_process,"configuration":instance.configuration,"secrets":secrets,"grants":instance.grants,"bindings":instance.bindings});
+    let mut value = serde_json::json!({"id":instance.id,"artifact":instance.artifact_sha256,"revision":instance.revision.get(),"trusted":instance.trusted_process,"configuration":instance.configuration,"secrets":secrets,"bindings":instance.bindings});
     // JSONB 恢复可以改变对象键顺序，不能因此替换已经准备好的同一配置。
     value.sort_all_objects();
     let bytes = serde_json::to_vec(&value).map_err(|_| AdminError::invalid("插件配置无法编码"))?;

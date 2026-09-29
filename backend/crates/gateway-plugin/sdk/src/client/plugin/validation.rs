@@ -26,8 +26,7 @@ pub(super) fn validate(
             C::ModelCatalog => required(methods::MODEL_CATALOG_REGISTER.name)?,
             C::RetryPolicy => required(methods::RETRY_DECISION.name)?,
             C::Scheduler => required(methods::SCHEDULE_ACCOUNT.name)?,
-            C::RequestLifecycle | C::Usage => required(methods::OBSERVE_REQUEST.name)?,
-            C::WebSocketObserver => required(methods::OBSERVE_WEBSOCKET.name)?,
+            C::Observer => required(methods::OBSERVE.name)?,
             C::Management => {
                 required(methods::MANAGEMENT_REGISTER.name)?;
                 required(methods::MANAGEMENT_HANDLE.name)?;

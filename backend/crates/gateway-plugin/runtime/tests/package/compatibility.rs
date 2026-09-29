@@ -2,7 +2,7 @@ use gateway_admin::{
     model::plugins::PluginHostCompatibility, ports::plugins::PluginPackageInspector as _,
 };
 use gateway_plugin_runtime::{PackageInspector, PackageLimits};
-use gateway_plugin_sdk::{Capability, Contributions, Permission, Stage};
+use gateway_plugin_sdk::{Capability, Contributions, Stage};
 use sha2::{Digest as _, Sha256};
 
 #[test]
@@ -32,30 +32,23 @@ fn host_compatibility_only_advertises_known_contracts() {
             );
         }
     }
-    for identifier in &compatibility.permissions {
-        let permission: Permission = serde_json::from_value(identifier.clone().into())
-            .expect("host permission is understood by the SDK");
-        assert_eq!(identifier, permission.as_str());
-    }
 }
 
 #[test]
-fn host_compatibility_preserves_both_middleware_contracts() {
+fn host_compatibility_requires_the_trusted_middleware_contract() {
     let compatibility: PluginHostCompatibility =
         serde_json::from_str(include_str!("../../plugin-host-compatibility.json"))
             .expect("compatibility JSON");
-    assert!(compatibility.supports_capability("middleware", 1));
-    assert!(compatibility.supports_capability("middleware", 2));
-    assert!(!compatibility.supports_capability("middleware", 3));
+    assert!(!compatibility.supports_capability("middleware", 1));
+    assert!(!compatibility.supports_capability("middleware", 2));
+    assert!(compatibility.supports_capability("middleware", 3));
     assert!(!compatibility.supports_capability("openai", 1));
-    assert!(!compatibility.supports_permission("xai"));
 }
 
 #[tokio::test]
 async fn package_inspector_returns_static_requirements_without_starting_the_plugin() {
     let archive = crate::support::package_with_contributions(
         b"not-an-executable",
-        vec![],
         Contributions::from([crate::support::contribution(
             Capability::Middleware,
             vec![Stage::Request],
@@ -79,6 +72,5 @@ async fn package_inspector_returns_static_requirements_without_starting_the_plug
         requirements.protocol_version,
         gateway_plugin_sdk::PROTOCOL_VERSION
     );
-    assert_eq!(requirements.capabilities, vec![("middleware".into(), 1)]);
-    assert!(requirements.permissions.is_empty());
+    assert_eq!(requirements.capabilities, vec![("middleware".into(), 3)]);
 }

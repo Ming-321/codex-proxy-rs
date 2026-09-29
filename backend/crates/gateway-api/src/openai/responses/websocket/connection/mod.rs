@@ -1,5 +1,7 @@
 //! 下游客户端 WebSocket 的单 owner pump 与有界收发边界。
 
+mod middleware;
+
 use std::{
     collections::VecDeque,
     fmt,
@@ -12,7 +14,11 @@ use std::{
 
 use axum::extract::ws::{CloseFrame, Message, WebSocket, close_code};
 use futures::{Sink, SinkExt, Stream, StreamExt};
-use gateway_core::lifecycle::CancellationToken;
+use gateway_core::{
+    engine::middleware::{FrozenMiddlewarePlan, MiddlewareHeader},
+    lifecycle::CancellationToken,
+    middleware::websocket as contract,
+};
 use thiserror::Error;
 use tokio::{
     sync::{OwnedSemaphorePermit, Semaphore, mpsc, oneshot},
@@ -145,6 +151,7 @@ pub enum PumpExitReason {
     InboundOverload,
     ServerClose,
     PumpStopped,
+    MiddlewareFailed,
 }
 
 impl PumpExitReason {
@@ -161,6 +168,7 @@ impl PumpExitReason {
             Self::InboundOverload => "inbound_overload",
             Self::ServerClose => "server_close",
             Self::PumpStopped => "pump_stopped",
+            Self::MiddlewareFailed => "middleware_failed",
         }
     }
 }
@@ -176,10 +184,17 @@ pub enum ConnectionWriteError {
     Transport { message: String },
 }
 
+/// 只有实际 transport 写入才记为 Written；插件丢弃消息不伪造写入成功。
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum WriteOutcome {
+    Written,
+    Suppressed,
+}
+
 struct ConnectionCommand {
     message: Message,
     context: WriteContext,
-    acknowledged: oneshot::Sender<Result<(), ConnectionWriteError>>,
+    acknowledged: oneshot::Sender<Result<WriteOutcome, ConnectionWriteError>>,
 }
 
 #[derive(Default)]
@@ -187,7 +202,6 @@ struct ConnectionStats {
     command_queue_high_water: AtomicUsize,
     command_backpressure_count: AtomicU64,
     ping_received_count: AtomicU64,
-    pong_written_count: AtomicU64,
     ping_written_count: AtomicU64,
     pong_received_count: AtomicU64,
     last_read_ms: AtomicU64,
@@ -243,12 +257,16 @@ impl ResponsesWebSocketConnection {
         socket: WebSocket,
         connection_id: String,
         cancellation: CancellationToken,
+        middleware: Option<FrozenMiddlewarePlan>,
+        headers: Arc<[MiddlewareHeader]>,
     ) -> Self {
-        spawn_connection(
+        spawn_with_middleware(
             socket,
             Arc::<str>::from(connection_id),
             cancellation,
             ConnectionConfig::PRODUCTION,
+            middleware,
+            headers,
         )
     }
 
@@ -337,7 +355,7 @@ impl ResponsesWebSocketConnection {
         &mut self,
         payload: String,
         context: WriteContext,
-    ) -> Result<(), ConnectionWriteError> {
+    ) -> Result<WriteOutcome, ConnectionWriteError> {
         self.send(Message::Text(payload.into()), context).await
     }
 
@@ -392,7 +410,7 @@ impl ResponsesWebSocketConnection {
         &mut self,
         message: Message,
         context: WriteContext,
-    ) -> Result<(), ConnectionWriteError> {
+    ) -> Result<WriteOutcome, ConnectionWriteError> {
         let Some(commands) = self.commands.as_ref().cloned() else {
             return Err(ConnectionWriteError::Closed);
         };
@@ -423,19 +441,20 @@ impl ResponsesWebSocketConnection {
         };
         let duration = started_at.elapsed();
         match &result {
-            Ok(()) if phase.is_milestone() => tracing::info!(
+            Ok(WriteOutcome::Written) if phase.is_milestone() => tracing::info!(
                 websocket_connection_id = %self.connection_id,
                 request_id = request_id.as_deref().unwrap_or(""),
                 frame_phase = phase.as_str(),
                 write_duration_ms = duration.as_millis(),
                 "Responses WebSocket frame write succeeded"
             ),
-            Ok(()) => tracing::debug!(
+            Ok(outcome) => tracing::debug!(
                 websocket_connection_id = %self.connection_id,
                 request_id = request_id.as_deref().unwrap_or(""),
                 frame_phase = phase.as_str(),
                 write_duration_ms = duration.as_millis(),
-                "Responses WebSocket frame write succeeded"
+                ?outcome,
+                "Responses WebSocket frame processed"
             ),
             Err(error) => tracing::info!(
                 websocket_connection_id = %self.connection_id,
@@ -487,7 +506,6 @@ impl ResponsesWebSocketConnection {
                 .command_backpressure_count
                 .load(Ordering::Relaxed),
             ping_received_count = self.stats.ping_received_count.load(Ordering::Relaxed),
-            pong_written_count = self.stats.pong_written_count.load(Ordering::Relaxed),
             ping_written_count = self.stats.ping_written_count.load(Ordering::Relaxed),
             pong_received_count = self.stats.pong_received_count.load(Ordering::Relaxed),
             read_idle_ms,
@@ -506,12 +524,34 @@ impl Drop for ResponsesWebSocketConnection {
     }
 }
 
-/// 为一个 socket 启动单 owner pump，并返回协调层句柄。
+/// 为自动处理 Ping/Pong 的 WebSocket transport 启动单 owner pump。
 pub fn spawn_connection<S, E>(
     socket: S,
     connection_id: Arc<str>,
     cancellation: CancellationToken,
     config: ConnectionConfig,
+) -> ResponsesWebSocketConnection
+where
+    S: Stream<Item = Result<Message, E>> + Sink<Message, Error = E> + Unpin + Send + 'static,
+    E: fmt::Display + Send + 'static,
+{
+    spawn_with_middleware(
+        socket,
+        connection_id,
+        cancellation,
+        config,
+        None,
+        Arc::from([]),
+    )
+}
+
+fn spawn_with_middleware<S, E>(
+    socket: S,
+    connection_id: Arc<str>,
+    cancellation: CancellationToken,
+    config: ConnectionConfig,
+    middleware: Option<FrozenMiddlewarePlan>,
+    headers: Arc<[MiddlewareHeader]>,
 ) -> ResponsesWebSocketConnection
 where
     S: Stream<Item = Result<Message, E>> + Sink<Message, Error = E> + Unpin + Send + 'static,
@@ -534,6 +574,8 @@ where
         Arc::clone(&expired),
         Arc::clone(&stats),
         config,
+        middleware,
+        headers,
     ));
     ResponsesWebSocketConnection {
         connection_id,
@@ -552,8 +594,8 @@ where
 
 #[expect(clippy::too_many_arguments)]
 async fn run_pump<S, E>(
-    mut socket: S,
-    mut commands: mpsc::Receiver<ConnectionCommand>,
+    socket: S,
+    commands: mpsc::Receiver<ConnectionCommand>,
     incoming: mpsc::Sender<PendingConnectionEvent>,
     exited: oneshot::Sender<PumpExitReason>,
     connection_id: Arc<str>,
@@ -562,150 +604,206 @@ async fn run_pump<S, E>(
     expired: Arc<AtomicBool>,
     stats: Arc<ConnectionStats>,
     config: ConnectionConfig,
+    middleware: Option<FrozenMiddlewarePlan>,
+    headers: Arc<[MiddlewareHeader]>,
 ) where
-    S: Stream<Item = Result<Message, E>> + Sink<Message, Error = E> + Unpin,
+    S: Stream<Item = Result<Message, E>> + Sink<Message, Error = E> + Unpin + Send + 'static,
+    E: fmt::Display + Send + 'static,
+{
+    let context = Arc::new(PumpContext {
+        connection_id,
+        cancellation: cancellation.child_token(),
+        opened_at,
+        expired,
+        stats,
+        config,
+        middleware,
+        headers,
+    });
+    let _lifetime = middleware::CancelOnDrop(Some(context.cancellation.clone()));
+    let (writer, mut reader) = socket.split();
+    let writer = Arc::new(middleware::Writer::new(writer, context.clone()));
+    let sender: Arc<dyn contract::Sender> = writer.clone();
+    // 同一个受管任务同时驱动两侧；等待写入不能阻塞入站控制、关闭或取消。
+    let reason = tokio::select! {
+        biased;
+        reason = read_connection(&mut reader, &incoming, sender.clone(), &context) => reason,
+        reason = write_connection(writer.clone(), commands, &context) => reason,
+    };
+    context.cancellation.cancel();
+    let _ = exited.send(reason);
+    tracing::debug!(websocket_connection_id = %context.connection_id, pump_exit_reason = reason.as_str(), "Responses WebSocket pump exited");
+}
+
+struct PumpContext {
+    middleware: Option<FrozenMiddlewarePlan>,
+    headers: Arc<[MiddlewareHeader]>,
+    connection_id: Arc<str>,
+    cancellation: CancellationToken,
+    opened_at: Instant,
+    expired: Arc<AtomicBool>,
+    stats: Arc<ConnectionStats>,
+    config: ConnectionConfig,
+}
+
+async fn read_connection<S, E>(
+    socket: &mut S,
+    incoming: &mpsc::Sender<PendingConnectionEvent>,
+    sender: Arc<dyn contract::Sender>,
+    context: &PumpContext,
+) -> PumpExitReason
+where
+    S: Stream<Item = Result<Message, E>> + Unpin,
     E: fmt::Display,
 {
     let event_slots = Arc::new(Semaphore::new(INBOUND_EVENT_BUFFER));
-    let deadline = tokio::time::sleep_until(opened_at + config.max_age);
+    let deadline = tokio::time::sleep_until(context.opened_at + context.config.max_age);
     tokio::pin!(deadline);
     let mut deadline_elapsed = false;
+    loop {
+        tokio::select! {
+            biased;
+            () = context.cancellation.cancelled() => return PumpExitReason::LifecycleShutdown,
+            () = &mut deadline, if !deadline_elapsed => {
+                deadline_elapsed = true;
+                context.expired.store(true, Ordering::Release);
+                // 到期只阻止下一轮，当前响应仍由协调层按原有合同收尾。
+                match emit_incoming(incoming, &event_slots, ConnectionEvent::Expired) {
+                    Ok(()) | Err(PumpExitReason::InboundOverload) => {}
+                    Err(reason) => return reason,
+                }
+            }
+            message = socket.next() => {
+                if matches!(&message, Some(Ok(_))) { context.stats.record_read(context.opened_at); }
+                let message = match message {
+                    Some(Ok(message)) => match middleware::transform(message, contract::Direction::Incoming, sender.clone(), context).await {
+                        Ok(Some(message)) => Some(Ok(message)),
+                        Ok(None) => continue,
+                        Err(_) => return PumpExitReason::MiddlewareFailed,
+                    },
+                    other => other,
+                };
+                let event = match message {
+                    Some(Ok(Message::Text(payload))) => Some(ConnectionEvent::Text(payload.to_string())),
+                    Some(Ok(Message::Binary(_))) => Some(ConnectionEvent::Binary),
+                    Some(Ok(Message::Ping(_))) => {
+                        // Axum/tungstenite 在继续读取时自动刷新 Pong，不能再手工发送一份。
+                        context.stats.ping_received_count.fetch_add(1, Ordering::Relaxed);
+                        None
+                    }
+                    Some(Ok(Message::Pong(_))) => {
+                        context.stats.pong_received_count.fetch_add(1, Ordering::Relaxed);
+                        None
+                    }
+                    Some(Ok(Message::Close(_))) => return PumpExitReason::ClientClose,
+                    Some(Err(error)) => {
+                        tracing::info!(websocket_connection_id = %context.connection_id, error = %error, "Responses WebSocket receive failed");
+                        return PumpExitReason::ReadError;
+                    }
+                    None => return PumpExitReason::PeerEof,
+                };
+                if let Some(event) = event && let Err(reason) = emit_incoming(incoming, &event_slots, event) { return reason; }
+            }
+        }
+    }
+}
+
+async fn write_connection<S, E>(
+    writer: Arc<middleware::Writer<S>>,
+    mut commands: mpsc::Receiver<ConnectionCommand>,
+    context: &PumpContext,
+) -> PumpExitReason
+where
+    S: Sink<Message, Error = E> + Unpin + Send + 'static,
+    E: fmt::Display + Send + 'static,
+{
     let mut heartbeat = tokio::time::interval_at(
-        opened_at + DOWNSTREAM_PING_INTERVAL,
+        context.opened_at + DOWNSTREAM_PING_INTERVAL,
         DOWNSTREAM_PING_INTERVAL,
     );
     heartbeat.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
     let mut ping_sequence = 0_u64;
-    let reason = loop {
-        tokio::select! {
+    loop {
+        let message = tokio::select! {
             biased;
-            () = cancellation.cancelled() => break PumpExitReason::LifecycleShutdown,
-            () = &mut deadline, if !deadline_elapsed => {
-                deadline_elapsed = true;
-                expired.store(true, Ordering::Release);
-                // 满队列本身已能唤醒空闲协调层；到期标志仍阻止启动下一轮。
-                // 不能因无法追加 Expired 通知而中断正在收尾的响应。
-                match emit_incoming(&incoming, &event_slots, ConnectionEvent::Expired) {
-                    Ok(()) | Err(PumpExitReason::InboundOverload) => {}
-                    Err(reason) => break reason,
-                }
-            }
+            () = context.cancellation.cancelled() => return PumpExitReason::LifecycleShutdown,
             command = commands.recv() => {
-                let Some(command) = command else {
-                    break PumpExitReason::CoordinatorDropped;
-                };
-                let ConnectionCommand {
-                    message,
-                    context,
-                    acknowledged,
-                } = command;
+                let Some(command) = command else { return PumpExitReason::CoordinatorDropped; };
+                let ConnectionCommand { message, context: write_context, acknowledged } = command;
                 let closing = matches!(message, Message::Close(_));
-                let result = socket.send(message).await.map_err(|error| {
-                    let message = error.to_string();
-                    tracing::debug!(
-                        websocket_connection_id = %connection_id,
-                        request_id = context.request_id.as_deref().unwrap_or(""),
-                        frame_phase = context.phase.as_str(),
-                        error = %message,
-                        "Responses WebSocket pump transport write failed"
-                    );
-                    ConnectionWriteError::Transport { message }
-                });
-                let failed = result.is_err();
-                if !failed {
-                    stats.record_write(opened_at);
+                let result = match middleware::transform(message, contract::Direction::Outgoing, writer.clone(), context).await {
+                    Ok(Some(message)) => writer.write(message).await.map(|()| WriteOutcome::Written),
+                    Ok(None) => Ok(WriteOutcome::Suppressed),
+                    Err(error) => Err(ConnectionWriteError::Transport { message: error.to_string() }),
+                };
+                let reason = result.as_ref().err().map(|error| write_exit_reason(error, context));
+                if let Err(error) = &result {
+                    tracing::debug!(websocket_connection_id = %context.connection_id, request_id = write_context.request_id.as_deref().unwrap_or(""), frame_phase = write_context.phase.as_str(), error = %error, "Responses WebSocket pump transport write failed");
                 }
                 let _ = acknowledged.send(result);
-                if failed {
-                    break PumpExitReason::WriteError;
-                }
-                if closing {
-                    break PumpExitReason::ServerClose;
-                }
+                if let Some(reason) = reason { return reason; }
+                if closing { return PumpExitReason::ServerClose; }
+                continue;
             }
-            // 官方 Codex WsStream 在独立 pump 中回复 Pong，且不将控制帧交给业务流。
-            // 这里只为下游链路保活，不设置 Pong deadline，也不延长业务请求预算。
             _ = heartbeat.tick() => {
                 ping_sequence = ping_sequence.wrapping_add(1);
-                let ping = Message::Ping(ping_sequence.to_be_bytes().to_vec().into());
-                let result = tokio::select! {
-                    biased;
-                    () = cancellation.cancelled() => break PumpExitReason::LifecycleShutdown,
-                    result = timeout(config.write_timeout, socket.send(ping)) => result,
-                };
-                match result {
-                    Ok(Ok(())) => {
-                        stats.ping_written_count.fetch_add(1, Ordering::Relaxed);
-                        stats.record_write(opened_at);
-                    }
-                    Ok(Err(error)) => {
-                        tracing::info!(
-                            websocket_connection_id = %connection_id,
-                            error = %error,
-                            "Responses WebSocket Ping write failed"
-                        );
-                        break PumpExitReason::WriteError;
-                    }
-                    Err(_) => break PumpExitReason::WriteTimeout,
-                }
+                Message::Ping(ping_sequence.to_be_bytes().to_vec().into())
             }
-            message = socket.next() => {
-                if matches!(&message, Some(Ok(_))) {
-                    stats.record_read(opened_at);
-                }
-                match message {
-                    Some(Ok(Message::Text(payload))) => {
-                        if let Err(reason) = emit_incoming(&incoming, &event_slots, ConnectionEvent::Text(payload.to_string())) {
-                            break reason;
-                        }
-                    }
-                    Some(Ok(Message::Binary(_))) => {
-                        if let Err(reason) = emit_incoming(&incoming, &event_slots, ConnectionEvent::Binary) {
-                            break reason;
-                        }
-                    }
-                    Some(Ok(Message::Ping(payload))) => {
-                        stats.ping_received_count.fetch_add(1, Ordering::Relaxed);
-                        match timeout(config.write_timeout, socket.send(Message::Pong(payload))).await {
-                            Ok(Ok(())) => {
-                                stats.pong_written_count.fetch_add(1, Ordering::Relaxed);
-                                stats.record_write(opened_at);
-                            }
-                            Ok(Err(error)) => {
-                                tracing::info!(
-                                    websocket_connection_id = %connection_id,
-                                    error = %error,
-                                    "Responses WebSocket Pong write failed"
-                                );
-                                break PumpExitReason::WriteError;
-                            }
-                            Err(_) => break PumpExitReason::WriteTimeout,
-                        }
-                    }
-                    Some(Ok(Message::Pong(_))) => {
-                        stats.pong_received_count.fetch_add(1, Ordering::Relaxed);
-                    }
-                    Some(Ok(Message::Close(_))) => break PumpExitReason::ClientClose,
-                    Some(Err(error)) => {
-                        tracing::info!(
-                            websocket_connection_id = %connection_id,
-                            error = %error,
-                            "Responses WebSocket receive failed"
-                        );
-                        break PumpExitReason::ReadError;
-                    }
-                    None => break PumpExitReason::PeerEof,
-                }
-            },
+        };
+        let message = match middleware::transform(
+            message,
+            contract::Direction::Outgoing,
+            writer.clone(),
+            context,
+        )
+        .await
+        {
+            Ok(Some(message)) => message,
+            Ok(None) => continue,
+            Err(_) => return PumpExitReason::MiddlewareFailed,
+        };
+        if let Err(error) = writer.write(message).await {
+            tracing::info!(websocket_connection_id = %context.connection_id, error = %error, "Responses WebSocket control write failed");
+            return write_exit_reason(&error, context);
         }
-    };
-    // 退出不能排在待执行请求之后，也不能因业务队列已满而丢失。
-    let _ = exited.send(reason);
-    tracing::debug!(
-        websocket_connection_id = %connection_id,
-        pump_exit_reason = reason.as_str(),
-        "Responses WebSocket pump exited"
-    );
+        context
+            .stats
+            .ping_written_count
+            .fetch_add(1, Ordering::Relaxed);
+    }
+}
+
+async fn write_message<S, E>(
+    socket: &mut S,
+    message: Message,
+    context: &PumpContext,
+) -> Result<(), ConnectionWriteError>
+where
+    S: Sink<Message, Error = E> + Unpin,
+    E: fmt::Display,
+{
+    tokio::select! {
+        biased;
+        () = context.cancellation.cancelled() => Err(ConnectionWriteError::Closed),
+        result = timeout(context.config.write_timeout, socket.send(message)) => {
+            match result {
+                Ok(Ok(())) => { context.stats.record_write(context.opened_at); Ok(()) }
+                Ok(Err(error)) => Err(ConnectionWriteError::Transport { message: error.to_string() }),
+                Err(_) => Err(ConnectionWriteError::Timeout { timeout: context.config.write_timeout }),
+            }
+        }
+    }
+}
+
+fn write_exit_reason(error: &ConnectionWriteError, context: &PumpContext) -> PumpExitReason {
+    match error {
+        ConnectionWriteError::Timeout { .. } => PumpExitReason::WriteTimeout,
+        ConnectionWriteError::Transport { .. } => PumpExitReason::WriteError,
+        ConnectionWriteError::Closed if context.cancellation.is_cancelled() => {
+            PumpExitReason::LifecycleShutdown
+        }
+        ConnectionWriteError::Closed => PumpExitReason::PumpStopped,
+    }
 }
 
 fn emit_incoming(

@@ -189,8 +189,6 @@ impl CodexProvider {
         let continuation_requested = generate.native_continuation_requested();
         let mut upstream = encode_generate_request(generate, upstream_model.as_str(), None)
             .map_err(map_request_error)?;
-        // 插件加工后仍重新应用宿主强制策略与本地会话身份。
-        upstream.apply_fast_policy(context.disable_fast());
         if let Some(conversation_id) = previous_session
             .as_ref()
             .and_then(|state| state.conversation_id.as_ref())
@@ -466,6 +464,33 @@ impl Provider for CodexProvider {
                 ProviderErrorKind::Unsupported,
                 UpstreamSendState::NotSent,
             ));
+        };
+        // 请求设置先形成原生正文基线；attempt 的显式改写进入终端后不再次被覆盖。
+        let mut operation = Operation::Generate(generate.clone());
+        if context.disable_fast()
+            && let Operation::Generate(generate) = &operation
+            && generate.protocol_payload().protocol() == PROVIDER_NAME
+        {
+            let mut request =
+                CodexResponsesRequest::from_body(generate.protocol_payload().body().clone());
+            request.apply_fast_policy(true);
+            let body = serde_json::to_vec(request.body()).map_err(|_| {
+                provider_error(
+                    ProviderErrorKind::InvalidRequest,
+                    UpstreamSendState::NotSent,
+                )
+            })?;
+            operation = operation
+                .replace_middleware_wire(PROVIDER_NAME, body.into())
+                .map_err(|_| {
+                    provider_error(
+                        ProviderErrorKind::InvalidRequest,
+                        UpstreamSendState::NotSent,
+                    )
+                })?;
+        }
+        let Operation::Generate(generate) = &operation else {
+            unreachable!("generate settings keep the operation kind")
         };
         let Some(upstream_model) = candidate.upstream_model() else {
             return Err(provider_error(

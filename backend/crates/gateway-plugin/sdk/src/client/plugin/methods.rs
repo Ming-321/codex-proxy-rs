@@ -107,16 +107,9 @@ pub const SCHEDULE_ACCOUNT: Method<
     decode_metadata_without_payload,
     encode_metadata,
 );
-pub const OBSERVE_REQUEST: Method<policy::ObserveRequest, Empty> = Method::new(
-    "policy.observe_request",
-    &[C::RequestLifecycle, C::Usage],
-    &[S::Observation],
-    decode_payload,
-    encode_metadata,
-);
-pub const OBSERVE_WEBSOCKET: Method<observation::ObserveWebSocketResponse, Empty> = Method::new(
-    "websocket.response_event",
-    &[C::WebSocketObserver],
+pub const OBSERVE: Method<observation::Event, Empty> = Method::new(
+    "observer.observe",
+    &[C::Observer],
     &[S::Observation],
     decode_metadata,
     encode_metadata,

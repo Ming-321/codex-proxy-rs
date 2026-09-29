@@ -1,3 +1,9 @@
+mod facts;
+mod http;
+mod mounts;
+mod service;
+mod websocket;
+
 use std::{
     collections::{BTreeMap, BTreeSet, VecDeque},
     num::{NonZeroU32, NonZeroUsize},
@@ -15,7 +21,6 @@ use gateway_admin::{
         Revision,
         plugins::instances::{
             PluginCapabilityBinding, PluginFailurePolicy, PluginInstance, PluginInstanceSnapshot,
-            PluginPermissionGrant,
         },
     },
     ports::plugins::PluginPackageInspector,
@@ -48,18 +53,15 @@ use gateway_core::{
 use gateway_plugin_runtime::{
     PackageInspector, PackageLimits, PluginRuntime, PluginRuntimeConfig, RpcLimits,
 };
-use gateway_plugin_sdk::{Capability, Contributions, Permission, Stage};
+use gateway_plugin_sdk::{Capability, Contributions, Stage};
 use wiremock::{Mock, MockServer, ResponseTemplate, matchers::any};
 
-use crate::support::{
-    environment::{Environment, account_grant},
-    store::Store,
-};
+use crate::support::{environment::Environment, store::Store};
 
 struct InstanceFixture {
     id: &'static str,
     configuration: serde_json::Value,
-    grants: Vec<PluginPermissionGrant>,
+
     bindings: Vec<PluginCapabilityBinding>,
 }
 
@@ -82,20 +84,12 @@ fn binding(
         account_group_ids: vec![],
         provider_ids: vec![],
         models: vec![],
+        event: None,
         identity_bindings: vec![],
     }
 }
 
-fn grant(permission: Permission) -> PluginPermissionGrant {
-    PluginPermissionGrant {
-        permission: permission.as_str().to_owned(),
-    }
-}
-
-async fn setup(
-    instances: Vec<InstanceFixture>,
-    manifest_permissions: Vec<Permission>,
-) -> (tempfile::TempDir, PluginRuntime) {
+async fn setup(instances: Vec<InstanceFixture>) -> (tempfile::TempDir, PluginRuntime) {
     let contributes = Contributions::from([
         crate::support::contribution(Capability::RetryPolicy, vec![Stage::Retry], vec![], vec![]),
         crate::support::contribution(
@@ -119,11 +113,7 @@ async fn setup(
     ]);
     setup_package(
         instances,
-        crate::support::package_with_contributions(
-            crate::support::worker(),
-            manifest_permissions,
-            contributes,
-        ),
+        crate::support::package_with_contributions(crate::support::worker(), contributes),
     )
     .await
 }
@@ -131,6 +121,14 @@ async fn setup(
 async fn setup_package(
     instances: Vec<InstanceFixture>,
     package: Arc<[u8]>,
+) -> (tempfile::TempDir, PluginRuntime) {
+    setup_package_with_limits(instances, package, RpcLimits::default()).await
+}
+
+async fn setup_package_with_limits(
+    instances: Vec<InstanceFixture>,
+    package: Arc<[u8]>,
+    rpc_limits: RpcLimits,
 ) -> (tempfile::TempDir, PluginRuntime) {
     let cache = tempfile::tempdir().unwrap();
     let artifact = PackageInspector::new(PackageLimits::default(), "1.0.0".parse().unwrap())
@@ -148,7 +146,7 @@ async fn setup_package(
             trusted_process: true,
             configuration: fixture.configuration,
             secrets: BTreeMap::new(),
-            grants: fixture.grants,
+
             bindings: fixture.bindings,
             revision: Revision::new(1).unwrap(),
         })
@@ -167,17 +165,13 @@ async fn setup_package(
             cache_directory: cache.path().to_owned(),
             host_version: "1.0.0".parse().unwrap(),
             package_limits: PackageLimits::default(),
-            rpc_limits: RpcLimits::default(),
+            rpc_limits,
             restart_circuit: Default::default(),
         },
         Arc::new(gateway_host::outbound::HttpClient::new().unwrap()),
         Arc::new(gateway_host::process::ProcessSupervisor::new(
             NonZeroUsize::new(32).unwrap(),
         )),
-    )
-    .with_network_policy(
-        gateway_host::outbound::NetworkPolicy::new(&["127.0.0.0/8".into(), "::1/128".into()])
-            .unwrap(),
     );
     (cache, runtime)
 }
@@ -260,11 +254,28 @@ async fn retry_policy_uses_ordered_delegation_and_rejects_disallowed_actions() {
         let records = tempfile::tempdir().unwrap();
         let marker = records.path().join("retry.jsonl");
         let (_cache, runtime) = setup(vec![
-            InstanceFixture { id: "retry-first", configuration: serde_json::json!({"retry_decision":reply,"retry_marker":marker}), grants: vec![],
-                bindings: vec![binding("test.example.retryPolicy", "retry", 0, PluginFailurePolicy::Delegate)] },
-            InstanceFixture { id: "retry-second", configuration: serde_json::json!({"retry_decision":{"decision":"stop"}}), grants: vec![],
-                bindings: vec![binding("test.example.retryPolicy", "retry", 1, PluginFailurePolicy::Delegate)] },
-        ], vec![]).await;
+            InstanceFixture {
+                id: "retry-first",
+                configuration: serde_json::json!({"retry_decision":reply,"retry_marker":marker}),
+                bindings: vec![binding(
+                    "test.example.retryPolicy",
+                    "retry",
+                    0,
+                    PluginFailurePolicy::Delegate,
+                )],
+            },
+            InstanceFixture {
+                id: "retry-second",
+                configuration: serde_json::json!({"retry_decision":{"decision":"stop"}}),
+                bindings: vec![binding(
+                    "test.example.retryPolicy",
+                    "retry",
+                    1,
+                    PluginFailurePolicy::Delegate,
+                )],
+            },
+        ])
+        .await;
         let context = policy_context(&runtime, prepare(&runtime).await, "req_retry");
         let decision = context
             .retry_decision(RetryFacts {
@@ -309,17 +320,17 @@ async fn retry_policy_timeout_exhausts_the_chain_budget_and_delegates() {
             InstanceFixture {
                 id: "retry-delayed",
                 configuration: serde_json::json!({"retry_delay_ms":500,"retry_decision":{"decision":"stop"}}),
-                grants: vec![],
+
                 bindings: vec![binding("test.example.retryPolicy", "retry", 0, PluginFailurePolicy::Delegate)],
             },
             InstanceFixture {
                 id: "retry-next",
                 configuration: serde_json::json!({"retry_marker":second_marker,"retry_decision":{"decision":"stop"}}),
-                grants: vec![],
+
                 bindings: vec![binding("test.example.retryPolicy", "retry", 1, PluginFailurePolicy::Delegate)],
             },
         ],
-        vec![],
+
     ).await;
     let context = policy_context(&runtime, prepare(&runtime).await, "req_retry_timeout");
     let decision = tokio::time::timeout(
@@ -365,42 +376,39 @@ async fn marker_lines(path: &std::path::Path, count: usize) -> Vec<serde_json::V
 }
 
 #[tokio::test]
-async fn model_router_preserves_order_and_only_projects_authorized_request_data() {
+async fn model_router_preserves_order_and_exposes_complete_request_data() {
     let markers = tempfile::tempdir().unwrap();
     let marker = markers.path().join("routes.jsonl");
-    let (cache, runtime) = setup(
-        vec![
-            InstanceFixture {
-                id: "unhandled",
-                configuration: serde_json::json!({
-                    "route_marker":marker,
-                    "route_decision":{"decision":"unhandled"},
-                }),
-                grants: vec![],
-                bindings: vec![binding(
-                    MODEL_ROUTER_CONTRIBUTION,
-                    "routing",
-                    1,
-                    PluginFailurePolicy::Reject,
-                )],
-            },
-            InstanceFixture {
-                id: "handled",
-                configuration: serde_json::json!({
-                    "route_marker":marker,
-                    "route_decision":{"decision":"route","provider":"openai","model":"public-b"},
-                }),
-                grants: vec![grant(Permission::Requests)],
-                bindings: vec![binding(
-                    MODEL_ROUTER_CONTRIBUTION,
-                    "routing",
-                    2,
-                    PluginFailurePolicy::Reject,
-                )],
-            },
-        ],
-        vec![Permission::Requests],
-    )
+    let (cache, runtime) = setup(vec![
+        InstanceFixture {
+            id: "unhandled",
+            configuration: serde_json::json!({
+                "route_marker":marker,
+                "route_decision":{"decision":"unhandled"},
+            }),
+
+            bindings: vec![binding(
+                MODEL_ROUTER_CONTRIBUTION,
+                "routing",
+                1,
+                PluginFailurePolicy::Reject,
+            )],
+        },
+        InstanceFixture {
+            id: "handled",
+            configuration: serde_json::json!({
+                "route_marker":marker,
+                "route_decision":{"decision":"route","provider":"openai","model":"public-b"},
+            }),
+
+            bindings: vec![binding(
+                MODEL_ROUTER_CONTRIBUTION,
+                "routing",
+                2,
+                PluginFailurePolicy::Reject,
+            )],
+        },
+    ])
     .await;
     let generation = prepare(&runtime).await;
     let context = policy_context(&runtime, generation.clone(), "req_route");
@@ -423,8 +431,11 @@ async fn model_router_preserves_order_and_only_projects_authorized_request_data(
         }
     );
     let lines = marker_lines(&marker, 2).await;
-    assert_eq!(lines[0]["body"], "");
-    assert_eq!(lines[0]["request"]["headers"], serde_json::json!([]));
+    assert_eq!(lines[0]["body"], lines[1]["body"]);
+    assert_eq!(
+        lines[0]["request"]["headers"],
+        lines[1]["request"]["headers"]
+    );
     assert_eq!(
         serde_json::from_str::<serde_json::Value>(lines[1]["body"].as_str().unwrap()).unwrap(),
         serde_json::json!({"model":"public-a","input":"synthetic"})
@@ -433,6 +444,9 @@ async fn model_router_preserves_order_and_only_projects_authorized_request_data(
         lines[1]["request"]["headers"],
         serde_json::json!([
             {"name":"x-feature","value_base64":"b24="},
+            {"name":"authorization","value_base64":"c2VjcmV0"},
+            {"name":"session_id","value_base64":"c2VjcmV0"},
+            {"name":"thread_id","value_base64":"c2VjcmV0"},
             {"name":"x_extension!#$%&'*+-.^_`|~","value_base64":"b24="}
         ])
     );
@@ -450,38 +464,35 @@ async fn model_router_can_delegate_after_a_managed_http_side_effect() {
         .expect(1)
         .mount(&server)
         .await;
-    let (cache, runtime) = setup(
-        vec![
-            InstanceFixture {
-                id: "http-then-fault",
-                configuration: serde_json::json!({
-                    "route_http_url":server.uri(),
-                    "route_fault":true,
-                }),
-                grants: vec![grant(Permission::Network)],
-                bindings: vec![binding(
-                    MODEL_ROUTER_CONTRIBUTION,
-                    "routing",
-                    1,
-                    PluginFailurePolicy::Delegate,
-                )],
-            },
-            InstanceFixture {
-                id: "fallback",
-                configuration: serde_json::json!({
-                    "route_decision":{"decision":"unhandled"},
-                }),
-                grants: vec![],
-                bindings: vec![binding(
-                    MODEL_ROUTER_CONTRIBUTION,
-                    "routing",
-                    2,
-                    PluginFailurePolicy::Reject,
-                )],
-            },
-        ],
-        vec![Permission::Network],
-    )
+    let (cache, runtime) = setup(vec![
+        InstanceFixture {
+            id: "http-then-fault",
+            configuration: serde_json::json!({
+                "route_http_url":server.uri(),
+                "route_fault":true,
+            }),
+
+            bindings: vec![binding(
+                MODEL_ROUTER_CONTRIBUTION,
+                "routing",
+                1,
+                PluginFailurePolicy::Delegate,
+            )],
+        },
+        InstanceFixture {
+            id: "fallback",
+            configuration: serde_json::json!({
+                "route_decision":{"decision":"unhandled"},
+            }),
+
+            bindings: vec![binding(
+                MODEL_ROUTER_CONTRIBUTION,
+                "routing",
+                2,
+                PluginFailurePolicy::Reject,
+            )],
+        },
+    ])
     .await;
     let generation = prepare(&runtime).await;
     let context = policy_context(&runtime, generation.clone(), "req_route_http");
@@ -551,20 +562,17 @@ fn selection_context() -> AccountSelectionContext {
 
 #[tokio::test]
 async fn scheduler_cannot_pick_outside_the_host_projected_priority_tier() {
-    let (cache, runtime) = setup(
-        vec![InstanceFixture {
-            id: "scheduler",
-            configuration: serde_json::json!({"schedule_pick_index":0}),
-            grants: vec![],
-            bindings: vec![binding(
-                SCHEDULER_CONTRIBUTION,
-                "scheduling",
-                0,
-                PluginFailurePolicy::Reject,
-            )],
-        }],
-        vec![],
-    )
+    let (cache, runtime) = setup(vec![InstanceFixture {
+        id: "scheduler",
+        configuration: serde_json::json!({"schedule_pick_index":0}),
+
+        bindings: vec![binding(
+            SCHEDULER_CONTRIBUTION,
+            "scheduling",
+            0,
+            PluginFailurePolicy::Reject,
+        )],
+    }])
     .await;
     let generation = prepare(&runtime).await;
     let context = policy_context(&runtime, generation.clone(), "req_schedule");
@@ -615,50 +623,53 @@ struct Downstream {
     error: bool,
 }
 
-impl MiddlewareNext for Downstream {
-    fn run(
-        self: Box<Self>,
-        request: MiddlewareRequest,
-    ) -> BoxFuture<'static, Result<MiddlewareResponse, MiddlewareError>> {
-        Box::pin(async move {
-            self.calls.fetch_add(1, Ordering::Relaxed);
-            assert_eq!(request.protocol(), "openai");
-            assert_eq!(request.body(), &Bytes::from_static(br#"{"input":"hello"}"#));
-            assert!(request.headers().iter().any(|header| {
-                header.name() == "authorization" && header.value().as_ref() == b"Bearer private"
-            }));
-            assert!(
-                request
-                    .headers()
-                    .iter()
-                    .any(|header| header.name() == "x_team" && header.value().as_ref() == b"team")
-            );
-            let (status, framing, body) = if self.error {
-                (502, MiddlewareFraming::RawBytes, b"\0upstream".as_slice())
-            } else {
-                (
-                    200,
-                    MiddlewareFraming::JsonDocument,
-                    br#"{"downstream":true}"#.as_slice(),
-                )
-            };
-            Ok(MiddlewareResponse::new(
-                "openai".into(),
-                status,
-                vec![
-                    MiddlewareHeader::new("content-type", Bytes::from_static(b"application/json")),
-                    MiddlewareHeader::new("x-upstream-marker", Bytes::from_static(b"kept")),
-                ],
-                Box::new(OneFrameBody {
-                    reads: Arc::clone(&self.reads),
-                    frame: Some(MiddlewareFrame::new(
-                        Bytes::copy_from_slice(body),
-                        framing,
-                        true,
-                    )),
-                    closes: Arc::clone(&self.closes),
-                }),
-            ))
+impl Downstream {
+    fn into_next(self) -> MiddlewareNext {
+        gateway_core::middleware::compose(Vec::new(), move |request| {
+            Box::pin(async move {
+                self.calls.fetch_add(1, Ordering::Relaxed);
+                assert_eq!(request.protocol(), "openai");
+                assert_eq!(request.body(), &Bytes::from_static(br#"{"input":"hello"}"#));
+                assert!(request.headers().iter().any(|header| {
+                    header.name() == "authorization" && header.value().as_ref() == b"Bearer private"
+                }));
+                assert!(
+                    request
+                        .headers()
+                        .iter()
+                        .any(|header| header.name() == "x_team"
+                            && header.value().as_ref() == b"team")
+                );
+                let (status, framing, body) = if self.error {
+                    (502, MiddlewareFraming::RawBytes, b"\0upstream".as_slice())
+                } else {
+                    (
+                        200,
+                        MiddlewareFraming::JsonDocument,
+                        br#"{"downstream":true}"#.as_slice(),
+                    )
+                };
+                Ok(MiddlewareResponse::new(
+                    "openai".into(),
+                    status,
+                    vec![
+                        MiddlewareHeader::new(
+                            "content-type",
+                            Bytes::from_static(b"application/json"),
+                        ),
+                        MiddlewareHeader::new("x-upstream-marker", Bytes::from_static(b"kept")),
+                    ],
+                    Box::new(OneFrameBody {
+                        reads: Arc::clone(&self.reads),
+                        frame: Some(MiddlewareFrame::new(
+                            Bytes::copy_from_slice(body),
+                            framing,
+                            true,
+                        )),
+                        closes: Arc::clone(&self.closes),
+                    }),
+                ))
+            })
         })
     }
 }
@@ -733,23 +744,20 @@ async fn attempt_middleware_can_delegate_after_a_managed_http_side_effect() {
         .expect(1)
         .mount(&server)
         .await;
-    let (cache, runtime) = setup(
-        vec![InstanceFixture {
-            id: "attempt-http",
-            configuration: serde_json::json!({
-                "middleware_http_url":server.uri(),
-                "middleware_fault_before_next":true,
-            }),
-            grants: vec![grant(Permission::Network)],
-            bindings: vec![binding(
-                MIDDLEWARE_CONTRIBUTION,
-                "attempt",
-                0,
-                PluginFailurePolicy::Delegate,
-            )],
-        }],
-        vec![Permission::Network],
-    )
+    let (cache, runtime) = setup(vec![InstanceFixture {
+        id: "attempt-http",
+        configuration: serde_json::json!({
+            "middleware_http_url":server.uri(),
+            "middleware_fault_before_next":true,
+        }),
+
+        bindings: vec![binding(
+            MIDDLEWARE_CONTRIBUTION,
+            "attempt",
+            0,
+            PluginFailurePolicy::Delegate,
+        )],
+    }])
     .await;
     let generation = prepare(&runtime).await;
     let plan = runtime
@@ -767,12 +775,13 @@ async fn attempt_middleware_can_delegate_after_a_managed_http_side_effect() {
                 middleware_headers(),
                 Bytes::from_static(br#"{"input":"hello"}"#),
             ),
-            Box::new(Downstream {
+            (Downstream {
                 calls: Arc::clone(&calls),
                 closes: Arc::clone(&closes),
                 reads: Arc::default(),
                 error: false,
-            }),
+            })
+            .into_next(),
         )
         .await
         .unwrap();
@@ -789,24 +798,21 @@ async fn attempt_middleware_can_delegate_after_a_managed_http_side_effect() {
 async fn middleware_next_and_lazy_body_mapping_use_one_real_rpc_call() {
     let markers = tempfile::tempdir().unwrap();
     let marker = markers.path().join("middleware.jsonl");
-    let permissions = vec![Permission::Requests];
-    let (cache, runtime) = setup(
-        vec![InstanceFixture {
-            id: "middleware",
-            configuration: serde_json::json!({
-                "middleware_marker":marker,
-                "middleware_map_body":true,
-            }),
-            grants: permissions.iter().copied().map(grant).collect(),
-            bindings: vec![binding(
-                MIDDLEWARE_CONTRIBUTION,
-                "request",
-                0,
-                PluginFailurePolicy::Reject,
-            )],
-        }],
-        permissions,
-    )
+
+    let (cache, runtime) = setup(vec![InstanceFixture {
+        id: "middleware",
+        configuration: serde_json::json!({
+            "middleware_marker":marker,
+            "middleware_map_body":true,
+        }),
+
+        bindings: vec![binding(
+            MIDDLEWARE_CONTRIBUTION,
+            "request",
+            0,
+            PluginFailurePolicy::Reject,
+        )],
+    }])
     .await;
     let generation = prepare(&runtime).await;
     let plan = runtime
@@ -824,12 +830,13 @@ async fn middleware_next_and_lazy_body_mapping_use_one_real_rpc_call() {
                 middleware_headers(),
                 Bytes::from_static(br#"{"input":"hello"}"#),
             ),
-            Box::new(Downstream {
+            (Downstream {
                 calls: Arc::clone(&calls),
                 closes: Arc::clone(&closes),
                 reads: Arc::default(),
                 error: false,
-            }),
+            })
+            .into_next(),
         )
         .await
         .unwrap();
@@ -854,10 +861,14 @@ async fn middleware_next_and_lazy_body_mapping_use_one_real_rpc_call() {
     assert_eq!(first_marker["body"], "{\"input\":\"hello\"}");
     assert_eq!(
         first_marker["headers"],
-        serde_json::json!([{
-            "name":"x_team",
-            "value":[116,101,97,109],
-        }])
+        serde_json::Value::Array(
+            middleware_headers()
+                .iter()
+                .map(|header| serde_json::json!({
+                    "name":header.name(), "value":header.value().to_vec(),
+                }))
+                .collect()
+        )
     );
     body.close().await;
     tokio::time::timeout(Duration::from_secs(1), async {
@@ -876,12 +887,13 @@ async fn middleware_next_and_lazy_body_mapping_use_one_real_rpc_call() {
                 middleware_headers(),
                 Bytes::from_static(br#"{"input":"hello"}"#),
             ),
-            Box::new(Downstream {
+            (Downstream {
                 calls: Arc::clone(&calls),
                 closes: Arc::clone(&closes),
                 reads: Arc::default(),
                 error: false,
-            }),
+            })
+            .into_next(),
         )
         .await
         .unwrap();
@@ -904,12 +916,13 @@ async fn middleware_next_and_lazy_body_mapping_use_one_real_rpc_call() {
                 middleware_headers(),
                 Bytes::from_static(br#"{"input":"hello"}"#),
             ),
-            Box::new(Downstream {
+            (Downstream {
                 calls: Arc::clone(&calls),
                 closes: Arc::clone(&closes),
                 reads: Arc::default(),
                 error: true,
-            }),
+            })
+            .into_next(),
         )
         .await
         .unwrap();
@@ -939,25 +952,21 @@ async fn middleware_classifies_real_rpc_output_after_a_terminal_frame() {
         ("middleware-terminal-chunk", true, false),
         ("middleware-terminal-error", false, true),
     ] {
-        let permissions = vec![Permission::Requests];
-        let (cache, runtime) = setup(
-            vec![InstanceFixture {
-                id,
-                configuration: serde_json::json!({
-                    "middleware_map_body": true,
-                    "middleware_chunk_after_terminal": extra_chunk,
-                    "middleware_error_after_terminal": terminal_error,
-                }),
-                grants: permissions.iter().copied().map(grant).collect(),
-                bindings: vec![binding(
-                    MIDDLEWARE_CONTRIBUTION,
-                    "request",
-                    0,
-                    PluginFailurePolicy::Reject,
-                )],
-            }],
-            permissions,
-        )
+        let (cache, runtime) = setup(vec![InstanceFixture {
+            id,
+            configuration: serde_json::json!({
+                "middleware_map_body": true,
+                "middleware_chunk_after_terminal": extra_chunk,
+                "middleware_error_after_terminal": terminal_error,
+            }),
+
+            bindings: vec![binding(
+                MIDDLEWARE_CONTRIBUTION,
+                "request",
+                0,
+                PluginFailurePolicy::Reject,
+            )],
+        }])
         .await;
         let generation = prepare(&runtime).await;
         let plan = runtime.middleware_registry().resolve(&generation).unwrap();
@@ -971,12 +980,13 @@ async fn middleware_classifies_real_rpc_output_after_a_terminal_frame() {
                     middleware_headers(),
                     Bytes::from_static(br#"{"input":"hello"}"#),
                 ),
-                Box::new(Downstream {
+                (Downstream {
                     calls: Arc::clone(&calls),
                     closes: Arc::clone(&closes),
                     reads: Arc::default(),
                     error: false,
-                }),
+                })
+                .into_next(),
             )
             .await
             .unwrap();
@@ -986,7 +996,7 @@ async fn middleware_classifies_real_rpc_output_after_a_terminal_frame() {
             .await
             .expect_err("output after the terminal frame must fail");
         let expected = if terminal_error {
-            matches!(&error, MiddlewareError::Fault)
+            matches!(&error, MiddlewareError::Remote { .. })
         } else {
             matches!(&error, MiddlewareError::InvalidState)
         };
@@ -1003,12 +1013,274 @@ async fn middleware_classifies_real_rpc_output_after_a_terminal_frame() {
 }
 
 #[tokio::test]
-async fn sdk_middleware_entry_registers_and_maps_a_real_process_response() {
+async fn outer_plugin_receives_inner_rejection_details_and_preserves_rejection_status() {
     let worker = std::fs::read(env!("CARGO_BIN_EXE_gateway-plugin-test-middleware")).unwrap();
-    let permissions = vec![Permission::Requests];
     let package = crate::support::package_with_contributions(
         &worker,
-        permissions.clone(),
+        Contributions::from([crate::support::contribution(
+            Capability::Middleware,
+            vec![Stage::Request],
+            vec!["openai".into()],
+            vec!["openai".into()],
+        )]),
+    );
+    let details = serde_json::json!({"reason":"fixture","disabled":false});
+    let (cache,runtime) = setup_package(vec![
+        InstanceFixture {id:"outer-error", configuration:serde_json::json!({"mode":"downstream_error","remote_error":true,"expected_message":"plugin rejection details","expected_details":details}), bindings:vec![binding(MIDDLEWARE_CONTRIBUTION,"request",0,PluginFailurePolicy::Reject)]},
+        InstanceFixture {id:"inner-error", configuration:serde_json::json!({"mode":"rejected"}), bindings:vec![binding(MIDDLEWARE_CONTRIBUTION,"request",1,PluginFailurePolicy::Reject)]},
+    ],package).await;
+    let generation = prepare(&runtime).await;
+    let plan = runtime.middleware_registry().resolve(&generation).unwrap();
+    let result = plan
+        .handle(
+            middleware_context(ClientTransport::HttpJson),
+            MiddlewareRequest::new("openai", middleware_headers(), Bytes::new()),
+            gateway_core::middleware::compose(Vec::new(), |_| {
+                Box::pin(async { panic!("rejection must not invoke terminal") })
+            }),
+        )
+        .await;
+    let Err(error) = result else {
+        panic!("expected rejection")
+    };
+    assert!(error.is_rejected());
+    let MiddlewareError::Remote { source, .. } = error else {
+        panic!("expected remote details")
+    };
+    let Some(gateway_plugin_runtime::RpcError::Remote(fault)) =
+        source.downcast_ref::<gateway_plugin_runtime::RpcError>()
+    else {
+        panic!("expected plugin error")
+    };
+    assert_eq!(fault.details.as_ref(), Some(&details));
+    drop(plan);
+    drop(generation);
+    super::wait_until_empty(cache.path()).await;
+}
+
+#[tokio::test]
+async fn real_request_plugin_receives_downstream_error_details_without_consuming_native_error() {
+    use gateway_core::{
+        error::{
+            ClientVisibleUpstreamError, ClientVisibleUpstreamResponse, ProviderError,
+            ProviderErrorKind,
+        },
+        upstream::UpstreamSendState,
+    };
+    let worker = std::fs::read(env!("CARGO_BIN_EXE_gateway-plugin-test-middleware")).unwrap();
+    let package = crate::support::package_with_contributions(
+        &worker,
+        Contributions::from([crate::support::contribution(
+            Capability::Middleware,
+            vec![Stage::Request],
+            vec!["openai".into()],
+            vec!["openai".into()],
+        )]),
+    );
+    let message = "upstream fixture details: request exceeds quota";
+    let bytes = b"\0opaque upstream error\xff";
+    let (cache,runtime) = setup_package(vec![InstanceFixture {
+        id:"error-details",configuration:serde_json::json!({"mode":"downstream_error","expected_message":message,"expected_body":bytes.as_slice()}),
+        bindings:vec![binding(MIDDLEWARE_CONTRIBUTION,"request",0,PluginFailurePolicy::Reject)],
+    }],package).await;
+    let generation = prepare(&runtime).await;
+    let plan = runtime.middleware_registry().resolve(&generation).unwrap();
+    let result = plan
+        .handle(
+            middleware_context(ClientTransport::HttpJson),
+            MiddlewareRequest::new("openai", middleware_headers(), Bytes::new()),
+            gateway_core::middleware::compose(Vec::new(), move |_| {
+                Box::pin(async move {
+                    Err(MiddlewareError::Provider(
+                        ProviderError::new(ProviderErrorKind::RateLimited, UpstreamSendState::Sent)
+                            .with_status(429)
+                            .with_client_visible_upstream_error(ClientVisibleUpstreamError::new(
+                                message,
+                                Some("quota_fixture".into()),
+                                Some("capacity".into()),
+                            ))
+                            .with_client_visible_upstream_response(
+                                ClientVisibleUpstreamResponse::new(
+                                    429,
+                                    Some(b"application/octet-stream".to_vec()),
+                                    Bytes::from_static(bytes),
+                                ),
+                            ),
+                    ))
+                })
+            }),
+        )
+        .await;
+    let Err(MiddlewareError::Provider(error)) = result else {
+        panic!("native Provider failure must survive the plugin boundary");
+    };
+    assert_eq!(error.send_state(), UpstreamSendState::Sent);
+    assert_eq!(
+        error
+            .client_visible_upstream_response()
+            .unwrap()
+            .body()
+            .as_ref(),
+        bytes
+    );
+    assert_eq!(
+        error.client_visible_upstream_error().unwrap().message(),
+        message
+    );
+    drop(plan);
+    drop(generation);
+    super::wait_until_empty(cache.path()).await;
+}
+
+#[tokio::test]
+async fn real_request_plugins_rewrite_settings_in_onion_order() {
+    use gateway_core::{policy::RateLimits, settings::ExecutionSettings, settings::SettingsValues};
+    let profiles = |identity| {
+        BTreeMap::from([(
+            gateway_core::identity::ProviderKind::new("openai").unwrap(),
+            gateway_core::account::OpaqueProviderData::new(
+                serde_json::json!({"identity":identity})
+                    .as_object()
+                    .unwrap()
+                    .clone(),
+            ),
+        )])
+    };
+    let baseline = ExecutionSettings {
+        runtime: SettingsValues::new(3, 50, "smart", BTreeMap::new(), None, None)
+            .with_request_profiles(profiles("key-default")),
+        disable_fast: true,
+        client_limits: RateLimits {
+            max_concurrency: 2,
+            requests_per_minute: 10,
+        },
+        timeout_ms: 60_000,
+    };
+    let baseline_json = serde_json::to_value(&baseline).unwrap();
+    let host_snapshot = gateway_core::routing::RuntimeSnapshot::new(
+        ConfigRevision::new(1).unwrap(),
+        gateway_core::settings::SettingsValues::new(1, 0, "smart", Default::default(), None, None),
+        vec![],
+        vec![],
+        vec![],
+    )
+    .unwrap()
+    .with_settings(
+        &baseline
+            .runtime
+            .clone()
+            .with_request_profiles(profiles("host")),
+    )
+    .unwrap();
+    let configuration = gateway_core::settings::RequestSettings::new(Arc::new(host_snapshot))
+        .with_execution(
+            &gateway_core::policy::ClientPolicy::new(
+                middleware_context(ClientTransport::HttpJson)
+                    .client_key_id()
+                    .clone(),
+                gateway_core::policy::PlaintextClientApiKey::new("fixture-key").unwrap(),
+                Arc::new(
+                    gateway_core::routing::FrozenAccountScope::new(
+                        Arc::default(),
+                        gateway_core::routing::ClientRoutingScope::all_accounts(),
+                    )
+                    .with_request_profiles(profiles("key-default"))
+                    .with_disable_fast(baseline.disable_fast),
+                ),
+                true,
+                baseline.client_limits,
+            ),
+            baseline.timeout_ms,
+        );
+    let mut first = baseline_json.clone();
+    first["disable_fast"] = serde_json::json!(false);
+    first["runtime"]["request_interval_ms"] = serde_json::json!(0);
+    first["runtime"]["model_mappings"] = serde_json::json!({"alias":"model-one"});
+    let mut last = first.clone();
+    last["runtime"]["model_mappings"] = serde_json::json!({"alias":"model-two"});
+    last["timeout_ms"] = serde_json::json!(90_000);
+    // 显式写回宿主值也要记录覆盖，否则 Key 默认值会再次生效。
+    last["runtime"]["request_profiles"] = serde_json::json!({"openai":{"identity":"host"}});
+    let worker = std::fs::read(env!("CARGO_BIN_EXE_gateway-plugin-test-middleware")).unwrap();
+    let package = crate::support::package_with_contributions(
+        &worker,
+        Contributions::from([crate::support::contribution(
+            Capability::Middleware,
+            vec![Stage::Request],
+            vec!["openai".into()],
+            vec!["openai".into()],
+        )]),
+    );
+    let (cache, runtime) = setup_package(vec![
+        InstanceFixture { id: "settings-first", configuration: serde_json::json!({"mode":"settings","expected_settings":baseline_json,"settings":first}), bindings: vec![binding(MIDDLEWARE_CONTRIBUTION,"request",0,PluginFailurePolicy::Reject)] },
+        InstanceFixture { id: "settings-second", configuration: serde_json::json!({"mode":"settings","expected_settings":first,"settings":last}), bindings: vec![binding(MIDDLEWARE_CONTRIBUTION,"request",1,PluginFailurePolicy::Reject)] },
+        InstanceFixture { id: "settings-pass", configuration: serde_json::json!({"mode":"settings","expected_settings":last}), bindings: vec![binding(MIDDLEWARE_CONTRIBUTION,"request",2,PluginFailurePolicy::Reject)] },
+    ], package).await;
+    let generation = prepare(&runtime).await;
+    let plan = runtime.middleware_registry().resolve(&generation).unwrap();
+    // 连续调用使用同一宿主基线，前一次插件改写不能泄漏到后一次。
+    for _ in 0..2 {
+        let expected: ExecutionSettings = serde_json::from_value(last.clone()).unwrap();
+        let next = (Downstream {
+            calls: Arc::default(),
+            closes: Arc::default(),
+            reads: Arc::default(),
+            error: false,
+        })
+        .into_next();
+        let response = plan
+            .handle(
+                middleware_context(ClientTransport::HttpJson),
+                MiddlewareRequest::new(
+                    "openai",
+                    middleware_headers(),
+                    Bytes::from_static(br#"{"input":"hello"}"#),
+                )
+                .with_settings(configuration.clone()),
+                gateway_core::middleware::compose(Vec::new(), move |request: MiddlewareRequest| {
+                    Box::pin(async move {
+                        let settings = request.settings().unwrap();
+                        assert_eq!(settings.execution_values(), Some(expected));
+                        let sources = settings.inspect();
+                        assert_eq!(
+                            sources["overrides"]["request_profiles"]["instance_id"],
+                            "settings-second"
+                        );
+                        assert_eq!(
+                            sources["overrides"]["model_mappings"]["instance_id"],
+                            "settings-second"
+                        );
+                        assert_eq!(
+                            sources["execution"]["disable_fast"]["instance_id"],
+                            "settings-first"
+                        );
+                        assert_eq!(sources["execution"]["disable_fast"]["value"], false);
+                        assert_eq!(
+                            sources["execution"]["timeout_ms"]["instance_id"],
+                            "settings-second"
+                        );
+                        next.run(request).await
+                    })
+                }),
+            )
+            .await
+            .unwrap();
+        let (_, _, _, mut body, _) = response.into_parts();
+        assert!(body.next_frame().await.unwrap().is_some());
+        assert!(body.next_frame().await.unwrap().is_none());
+        body.close().await;
+    }
+    drop(plan);
+    drop(generation);
+    super::wait_until_empty(cache.path()).await;
+}
+
+#[tokio::test]
+async fn sdk_middleware_entry_registers_and_maps_a_real_process_response() {
+    let worker = std::fs::read(env!("CARGO_BIN_EXE_gateway-plugin-test-middleware")).unwrap();
+
+    let package = crate::support::package_with_contributions(
+        &worker,
         Contributions::from([crate::support::contribution(
             Capability::Middleware,
             vec![Stage::Request],
@@ -1020,7 +1292,7 @@ async fn sdk_middleware_entry_registers_and_maps_a_real_process_response() {
         vec![InstanceFixture {
             id: "sdk-middleware",
             configuration: serde_json::json!({}),
-            grants: permissions.into_iter().map(grant).collect(),
+
             bindings: vec![binding(
                 MIDDLEWARE_CONTRIBUTION,
                 "request",
@@ -1044,12 +1316,13 @@ async fn sdk_middleware_entry_registers_and_maps_a_real_process_response() {
                 middleware_headers(),
                 Bytes::from_static(br#"{"input":"hello"}"#),
             ),
-            Box::new(Downstream {
+            (Downstream {
                 calls: Arc::clone(&calls),
                 closes: Arc::clone(&closes),
                 reads: Arc::clone(&reads),
                 error: false,
-            }),
+            })
+            .into_next(),
         )
         .await
         .unwrap();
@@ -1098,12 +1371,13 @@ async fn sdk_middleware_entry_registers_and_maps_a_real_process_response() {
                 middleware_headers(),
                 Bytes::from_static(br#"{"input":"hello"}"#),
             ),
-            Box::new(Downstream {
+            (Downstream {
                 calls: Arc::clone(&calls),
                 reads: Arc::clone(&reads),
                 closes: Arc::clone(&closes),
                 error: false,
-            }),
+            })
+            .into_next(),
         )
         .await
         .unwrap();
@@ -1138,10 +1412,7 @@ async fn core_execution_resolves_the_plugin_runtime_middleware_plan() {
     };
     let marker = environment.directory.path().join("core-middleware.jsonl");
     environment
-        .install_plugin(
-            serde_json::json!({"middleware_marker": marker}),
-            vec![account_grant("accounts")],
-        )
+        .install_plugin(serde_json::json!({"middleware_marker": marker}))
         .await;
     let key_secret = "sk-core-middleware-fixture";
     environment
@@ -1162,15 +1433,12 @@ async fn core_execution_resolves_the_plugin_runtime_middleware_plan() {
 
 #[tokio::test]
 async fn instances_without_data_plane_bindings_publish_neither_plan() {
-    let (cache, runtime) = setup(
-        vec![InstanceFixture {
-            id: "unbound",
-            configuration: serde_json::json!({}),
-            grants: vec![],
-            bindings: vec![],
-        }],
-        vec![],
-    )
+    let (cache, runtime) = setup(vec![InstanceFixture {
+        id: "unbound",
+        configuration: serde_json::json!({}),
+
+        bindings: vec![],
+    }])
     .await;
     let generation = prepare(&runtime).await;
     assert!(runtime.policy_registry().resolve(&generation).is_none());
@@ -1180,6 +1448,7 @@ async fn instances_without_data_plane_bindings_publish_neither_plan() {
 }
 
 struct TransparencyNext {
+    status: u16,
     expected: MiddlewareRequest,
     headers: Vec<MiddlewareHeader>,
     frames: VecDeque<MiddlewareFrame>,
@@ -1187,52 +1456,46 @@ struct TransparencyNext {
 
 struct CapabilitiesNext(Arc<AtomicUsize>);
 
-impl MiddlewareNext for CapabilitiesNext {
-    fn run(
-        self: Box<Self>,
-        request: MiddlewareRequest,
-    ) -> BoxFuture<'static, Result<MiddlewareResponse, MiddlewareError>> {
-        Box::pin(async move {
-            self.0.fetch_add(1, Ordering::SeqCst);
-            let body = serde_json::from_slice(request.body()).unwrap();
-            let operation = Operation::Generate(GenerateRequest::from_protocol_payload(
-                ProtocolPayload::json_object("openai", body).unwrap(),
-            ));
-            let operation = request.apply_capabilities(operation)?;
-            assert!(
-                operation
-                    .original_capability_requirements()
-                    .features()
-                    .contains(&gateway_core::operation::Feature::JsonSchema)
-            );
-            assert!(
-                !operation
-                    .capability_requirements()
-                    .features()
-                    .contains(&gateway_core::operation::Feature::JsonSchema)
-            );
-            Ok(MiddlewareResponse::new(
-                "openai".into(),
-                200,
-                vec![],
-                Box::new(TransparencyBody(VecDeque::from([MiddlewareFrame::new(
-                    Bytes::from_static(br#"{"output":[]}"#),
-                    MiddlewareFraming::JsonDocument,
-                    true,
-                )]))),
-            ))
+impl CapabilitiesNext {
+    fn into_next(self) -> MiddlewareNext {
+        gateway_core::middleware::compose(Vec::new(), move |request| {
+            Box::pin(async move {
+                self.0.fetch_add(1, Ordering::SeqCst);
+                let body = serde_json::from_slice(request.body()).unwrap();
+                let operation = Operation::Generate(GenerateRequest::from_protocol_payload(
+                    ProtocolPayload::json_object("openai", body).unwrap(),
+                ));
+                let operation = request.apply_capabilities(operation)?;
+                assert!(
+                    operation
+                        .original_capability_requirements()
+                        .features()
+                        .contains(&gateway_core::operation::Feature::JsonSchema)
+                );
+                assert!(
+                    !operation
+                        .capability_requirements()
+                        .features()
+                        .contains(&gateway_core::operation::Feature::JsonSchema)
+                );
+                Ok(MiddlewareResponse::new(
+                    "openai".into(),
+                    200,
+                    vec![],
+                    Box::new(TransparencyBody(VecDeque::from([MiddlewareFrame::new(
+                        Bytes::from_static(br#"{"output":[]}"#),
+                        MiddlewareFraming::JsonDocument,
+                        true,
+                    )]))),
+                ))
+            })
         })
     }
 }
 
 #[tokio::test]
-async fn sdk_capability_declarations_require_v2_authorization_and_request_stage() {
-    for (version, authorized, attempt) in [
-        (2, true, false),
-        (1, true, false),
-        (2, false, false),
-        (2, true, true),
-    ] {
+async fn sdk_capability_declarations_require_request_stage() {
+    for (version, attempt) in [(3, false), (3, true)] {
         let stage = if attempt {
             Stage::Attempt
         } else {
@@ -1245,14 +1508,9 @@ async fn sdk_capability_declarations_require_v2_authorization_and_request_stage(
             vec!["openai".into()],
         );
         contribution.version = version;
-        let permissions = if authorized {
-            vec![Permission::Requests]
-        } else {
-            vec![]
-        };
+
         let package = crate::support::package_with_contributions(
             &std::fs::read(env!("CARGO_BIN_EXE_gateway-plugin-test-middleware")).unwrap(),
-            permissions.clone(),
             Contributions::from([(capability, contribution)]),
         );
         let (_cache, runtime) = setup_package(vec![InstanceFixture {
@@ -1260,7 +1518,7 @@ async fn sdk_capability_declarations_require_v2_authorization_and_request_stage(
             configuration: serde_json::json!({"mode":"declare","middleware_version":version,"attempt":attempt,
                 "body":{"model":"gpt-test","input":"return JSON matching the original schema"},
                 "capabilities":{"handled":["json_schema"],"required":[]}}),
-            grants: permissions.into_iter().map(grant).collect(),
+
             bindings: vec![binding(MIDDLEWARE_CONTRIBUTION, if attempt { "attempt" } else { "request" }, 0, PluginFailurePolicy::Reject)],
         }], package).await;
         let generation = prepare(&runtime).await;
@@ -1273,8 +1531,8 @@ async fn sdk_capability_declarations_require_v2_authorization_and_request_stage(
         };
         let result = plan.handle(context, MiddlewareRequest::new("openai", vec![], Bytes::from_static(
             br#"{"model":"gpt-test","input":"answer","text":{"format":{"type":"json_schema","schema":{"type":"object"}}}}"#,
-        )), Box::new(CapabilitiesNext(calls.clone()))).await;
-        if version == 2 && authorized && !attempt {
+        )), (CapabilitiesNext(calls.clone())).into_next()).await;
+        if !attempt {
             let mut body = result.unwrap().into_parts().3;
             assert!(body.next_frame().await.unwrap().unwrap().terminal());
             assert!(body.next_frame().await.unwrap().is_none());
@@ -1288,21 +1546,20 @@ async fn sdk_capability_declarations_require_v2_authorization_and_request_stage(
     }
 }
 
-impl MiddlewareNext for TransparencyNext {
-    fn run(
-        self: Box<Self>,
-        request: MiddlewareRequest,
-    ) -> BoxFuture<'static, Result<MiddlewareResponse, MiddlewareError>> {
-        Box::pin(async move {
-            assert_eq!(request.protocol(), self.expected.protocol());
-            assert_eq!(request.body(), self.expected.body());
-            assert_eq!(request.headers(), self.expected.headers());
-            Ok(MiddlewareResponse::new(
-                "openai".into(),
-                200,
-                self.headers,
-                Box::new(TransparencyBody(self.frames)),
-            ))
+impl TransparencyNext {
+    fn into_next(self) -> MiddlewareNext {
+        gateway_core::middleware::compose(Vec::new(), move |request| {
+            Box::pin(async move {
+                assert_eq!(request.protocol(), self.expected.protocol());
+                assert_eq!(request.body(), self.expected.body());
+                assert_eq!(request.headers(), self.expected.headers());
+                Ok(MiddlewareResponse::new(
+                    "openai".into(),
+                    self.status,
+                    self.headers,
+                    Box::new(TransparencyBody(self.frames)),
+                ))
+            })
         })
     }
 }
@@ -1319,16 +1576,11 @@ impl MiddlewareBody for TransparencyBody {
     }
 }
 
-async fn assert_sdk_transparency(mode: &'static str, authorized: bool) {
+async fn assert_sdk_transparency(mode: &'static str) {
     let worker = std::fs::read(env!("CARGO_BIN_EXE_gateway-plugin-test-middleware")).unwrap();
-    let permissions = if authorized {
-        vec![Permission::Requests]
-    } else {
-        vec![]
-    };
+
     let package = crate::support::package_with_contributions(
         &worker,
-        permissions.clone(),
         Contributions::from([crate::support::contribution(
             Capability::Middleware,
             vec![Stage::Request],
@@ -1340,7 +1592,7 @@ async fn assert_sdk_transparency(mode: &'static str, authorized: bool) {
         vec![InstanceFixture {
             id: "transparency",
             configuration: serde_json::json!({"mode": mode}),
-            grants: permissions.into_iter().map(grant).collect(),
+
             bindings: vec![binding(
                 MIDDLEWARE_CONTRIBUTION,
                 "request",
@@ -1369,13 +1621,19 @@ async fn assert_sdk_transparency(mode: &'static str, authorized: bool) {
         br#" { "z": 18446744073709551615, "unknown": { "x": 1e2 }, "a": "\u0061" } "#,
     );
     let cases = [
-        (ClientTransport::HttpJson, MiddlewareFraming::JsonDocument, vec![json.clone()]),
-        (ClientTransport::HttpSse, MiddlewareFraming::SseEvent, vec![
+        (ClientTransport::HttpJson, 200, MiddlewareFraming::JsonDocument, vec![json.clone()]),
+        (ClientTransport::WebSocket, 200, MiddlewareFraming::JsonDocument, vec![json.clone(), json.clone()]),
+        (ClientTransport::WebSocket, 503, MiddlewareFraming::JsonDocument, vec![json.clone()]),
+        (ClientTransport::InternalProbe, 200, MiddlewareFraming::JsonDocument, vec![json.clone()]),
+        (ClientTransport::InternalPlugin, 200, MiddlewareFraming::JsonDocument, vec![json.clone()]),
+        (ClientTransport::HttpJson, 503, MiddlewareFraming::RawBytes, vec![Bytes::from_static(b"unavailable")]),
+        (ClientTransport::HttpSse, 503, MiddlewareFraming::RawBytes, vec![Bytes::from_static(b"unavailable")]),
+        (ClientTransport::HttpSse, 200, MiddlewareFraming::SseEvent, vec![
             Bytes::from_static(b": keep-alive\r\nevent: response.created\r\ndata: { \"z\": 1, \"a\": 2 }\r\n\r\n"),
             Bytes::from_static(b"event: response.completed\ndata: {\"type\":\"response.completed\",\"response\":{}}\n\n"),
         ]),
     ];
-    for (transport, framing, payloads) in cases {
+    for (transport, status, framing, payloads) in cases {
         for request_body in [json.clone(), Bytes::new()] {
             let request = MiddlewareRequest::new("openai", headers.clone(), request_body.clone());
             let mut expected_headers = headers.clone();
@@ -1390,7 +1648,20 @@ async fn assert_sdk_transparency(mode: &'static str, authorized: bool) {
                     Bytes::from_static(b"active"),
                 ));
             }
+            if mode == "credentials" {
+                expected_headers.retain(|header| header.name() != "authorization");
+                expected_headers.push(MiddlewareHeader::new(
+                    "authorization",
+                    Bytes::from_static(b"Bearer rewritten"),
+                ));
+                expected_response_headers.retain(|header| header.name() != "set-cookie");
+                expected_response_headers.push(MiddlewareHeader::new(
+                    "set-cookie",
+                    Bytes::from_static(b"rewritten=true"),
+                ));
+            }
             let next = TransparencyNext {
+                status,
                 expected: MiddlewareRequest::new("openai", expected_headers, request_body),
                 headers: response_headers.clone(),
                 frames: payloads
@@ -1402,12 +1673,12 @@ async fn assert_sdk_transparency(mode: &'static str, authorized: bool) {
                     .collect(),
             };
             let response = plan
-                .handle(middleware_context(transport), request, Box::new(next))
+                .handle(middleware_context(transport), request, next.into_next())
                 .await
                 .unwrap();
-            let (protocol, status, actual_headers, mut body, _) = response.into_parts();
+            let (protocol, actual_status, actual_headers, mut body, _) = response.into_parts();
             assert_eq!(protocol, "openai");
-            assert_eq!(status, 200);
+            assert_eq!(actual_status, status);
             assert_eq!(actual_headers, expected_response_headers);
             for (index, expected) in payloads.iter().enumerate() {
                 let frame = body.next_frame().await.unwrap().unwrap();
@@ -1428,19 +1699,20 @@ async fn assert_sdk_transparency(mode: &'static str, authorized: bool) {
 }
 
 #[tokio::test]
-async fn sdk_passthrough_preserves_original_bytes_and_hidden_headers() {
-    assert_sdk_transparency("passthrough", true).await;
-    assert_sdk_transparency("passthrough", false).await;
+async fn sdk_passthrough_preserves_original_bytes_and_all_headers() {
+    assert_sdk_transparency("passthrough").await;
+    assert_sdk_transparency("passthrough").await;
 }
 
 #[tokio::test]
 async fn sdk_read_only_inspection_preserves_original_bytes_and_event_order() {
-    assert_sdk_transparency("inspect", true).await;
+    assert_sdk_transparency("inspect").await;
 }
 
 #[tokio::test]
 async fn sdk_header_mutations_preserve_original_body_and_other_headers() {
-    assert_sdk_transparency("headers", true).await;
+    assert_sdk_transparency("headers").await;
+    assert_sdk_transparency("credentials").await;
 }
 
 #[tokio::test]
@@ -1453,15 +1725,12 @@ async fn a_failed_plugin_rejects_only_its_bound_models_and_preserves_delegate_po
             failure_policy.clone(),
         );
         mount.models = vec!["plugin-required".into()];
-        let (cache, runtime) = setup(
-            vec![InstanceFixture {
-                id: "failed-router",
-                configuration: serde_json::json!({"startup":"fail"}),
-                grants: vec![],
-                bindings: vec![mount],
-            }],
-            vec![],
-        )
+        let (cache, runtime) = setup(vec![InstanceFixture {
+            id: "failed-router",
+            configuration: serde_json::json!({"startup":"fail"}),
+
+            bindings: vec![mount],
+        }])
         .await;
         let generation = prepare(&runtime).await;
         let context = policy_context(&runtime, generation.clone(), "req_isolated_failure");
@@ -1500,15 +1769,12 @@ async fn a_failed_middleware_preserves_scope_and_the_configured_failure_policy()
     ] {
         let mut mount = binding(MIDDLEWARE_CONTRIBUTION, "request", 0, failure_policy);
         mount.models = vec![model.into()];
-        let (cache, runtime) = setup(
-            vec![InstanceFixture {
-                id: "failed-middleware",
-                configuration: serde_json::json!({"startup":"fail"}),
-                grants: vec![],
-                bindings: vec![mount],
-            }],
-            vec![],
-        )
+        let (cache, runtime) = setup(vec![InstanceFixture {
+            id: "failed-middleware",
+            configuration: serde_json::json!({"startup":"fail"}),
+
+            bindings: vec![mount],
+        }])
         .await;
         let generation = prepare(&runtime).await;
         let plan = runtime.middleware_registry().resolve(&generation).unwrap();
@@ -1521,12 +1787,13 @@ async fn a_failed_middleware_preserves_scope_and_the_configured_failure_policy()
                     middleware_headers(),
                     Bytes::from_static(br#"{"input":"hello"}"#),
                 ),
-                Box::new(Downstream {
+                (Downstream {
                     calls: calls.clone(),
                     reads: Arc::default(),
                     closes: Arc::default(),
                     error: false,
-                }),
+                })
+                .into_next(),
             )
             .await;
         assert_eq!(response.is_ok(), expected_calls == 1);
@@ -1543,51 +1810,47 @@ struct BodyCheckingNext {
     expected: Bytes,
 }
 
-impl MiddlewareNext for BodyCheckingNext {
-    fn run(
-        self: Box<Self>,
-        request: MiddlewareRequest,
-    ) -> BoxFuture<'static, Result<MiddlewareResponse, MiddlewareError>> {
-        Box::pin(async move {
-            assert!(
-                request.body() == &self.expected,
-                "request body changed unexpectedly"
-            );
-            self.calls.fetch_add(1, Ordering::Relaxed);
-            Ok(MiddlewareResponse::new(
-                "openai".to_owned(),
-                200,
-                vec![],
-                Box::new(OneFrameBody {
-                    reads: Arc::default(),
-                    closes: Arc::default(),
-                    frame: Some(MiddlewareFrame::new(
-                        Bytes::from_static(b"{}"),
-                        MiddlewareFraming::JsonDocument,
-                        true,
-                    )),
-                }),
-            ))
+impl BodyCheckingNext {
+    fn into_next(self) -> MiddlewareNext {
+        gateway_core::middleware::compose(Vec::new(), move |request| {
+            Box::pin(async move {
+                assert!(
+                    request.body() == &self.expected,
+                    "request body changed unexpectedly"
+                );
+                self.calls.fetch_add(1, Ordering::Relaxed);
+                Ok(MiddlewareResponse::new(
+                    "openai".to_owned(),
+                    200,
+                    vec![],
+                    Box::new(OneFrameBody {
+                        reads: Arc::default(),
+                        closes: Arc::default(),
+                        frame: Some(MiddlewareFrame::new(
+                            Bytes::from_static(b"{}"),
+                            MiddlewareFraming::JsonDocument,
+                            true,
+                        )),
+                    }),
+                ))
+            })
         })
     }
 }
 
 #[tokio::test]
 async fn middleware_preserves_large_body_and_following_requests() {
-    let (cache, runtime) = setup(
-        vec![InstanceFixture {
-            id: "large-body",
-            configuration: serde_json::json!({}),
-            grants: vec![grant(Permission::Requests)],
-            bindings: vec![binding(
-                MIDDLEWARE_CONTRIBUTION,
-                "request",
-                0,
-                PluginFailurePolicy::Reject,
-            )],
-        }],
-        vec![Permission::Requests],
-    )
+    let (cache, runtime) = setup(vec![InstanceFixture {
+        id: "large-body",
+        configuration: serde_json::json!({}),
+
+        bindings: vec![binding(
+            MIDDLEWARE_CONTRIBUTION,
+            "request",
+            0,
+            PluginFailurePolicy::Reject,
+        )],
+    }])
     .await;
     let generation = prepare(&runtime).await;
     let plan = runtime.middleware_registry().resolve(&generation).unwrap();
@@ -1602,10 +1865,11 @@ async fn middleware_preserves_large_body_and_following_requests() {
             .handle(
                 middleware_context(ClientTransport::HttpSse),
                 MiddlewareRequest::new("openai", vec![], payload.clone()),
-                Box::new(BodyCheckingNext {
+                (BodyCheckingNext {
                     calls: Arc::clone(&calls),
                     expected: payload,
-                }),
+                })
+                .into_next(),
             )
             .await
             .unwrap();

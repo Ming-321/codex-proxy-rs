@@ -468,29 +468,22 @@ const MAX_ATTEMPT_HEADER_NAME_BYTES: usize = 128;
 const MAX_ATTEMPT_HEADER_VALUE_BYTES: usize = 16 * 1024;
 const MAX_ATTEMPT_HEADER_TOTAL_BYTES: usize = 64 * 1024;
 
-struct ProviderMiddlewareNext {
+fn provider_middleware_next(
     operation: Operation,
     transport: ClientTransport,
-    terminal: Option<ProviderMiddlewareTerminal>,
-}
-
-impl MiddlewareNext for ProviderMiddlewareNext {
-    fn run(
-        mut self: Box<Self>,
-        request: MiddlewareRequest,
-    ) -> BoxFuture<'static, Result<MiddlewareResponse, MiddlewareError>> {
+    terminal: ProviderMiddlewareTerminal,
+) -> MiddlewareNext {
+    crate::middleware::compose(Vec::new(), move |request| {
         Box::pin(async move {
-            let fallback_protocol = self.operation.protocol().to_owned();
+            let fallback_protocol = operation.protocol().to_owned();
             if request.has_capability_declaration() {
                 return Err(MiddlewareError::InvalidState);
             }
             let (protocol, headers, body) = request.into_parts();
             validate_attempt_headers(&headers)?;
-            let operation = self
-                .operation
+            let operation = operation
                 .replace_middleware_wire(protocol, body)
                 .map_err(|_| MiddlewareError::InvalidState)?;
-            let terminal = self.terminal.take().ok_or(MiddlewareError::InvalidState)?;
             let stream = terminal(operation, headers)
                 .await
                 .map_err(MiddlewareError::Provider)?;
@@ -499,14 +492,14 @@ impl MiddlewareNext for ProviderMiddlewareNext {
             let body = ProviderMiddlewareBody {
                 stream,
                 pending: VecDeque::new(),
-                transport: self.transport,
+                transport,
             };
             Ok(
                 MiddlewareResponse::new(protocol, 200, Vec::new(), Box::new(body))
                     .with_provider_metadata(metadata),
             )
         })
-    }
+    })
 }
 
 fn validate_attempt_headers(headers: &[MiddlewareHeader]) -> Result<(), MiddlewareError> {
@@ -516,7 +509,6 @@ fn validate_attempt_headers(headers: &[MiddlewareHeader]) -> Result<(), Middlewa
     let mut total = 0_usize;
     for header in headers {
         let name = header.name();
-        let normalized = name.to_ascii_lowercase();
         if name.is_empty()
             || name.len() > MAX_ATTEMPT_HEADER_NAME_BYTES
             || !name
@@ -527,7 +519,6 @@ fn validate_attempt_headers(headers: &[MiddlewareHeader]) -> Result<(), Middlewa
                 .value()
                 .iter()
                 .any(|byte| *byte != b'\t' && (*byte < b' ' || *byte == 0x7f))
-            || attempt_header_is_protected(&normalized)
         {
             return Err(MiddlewareError::InvalidState);
         }
@@ -540,48 +531,6 @@ fn validate_attempt_headers(headers: &[MiddlewareHeader]) -> Result<(), Middlewa
         }
     }
     Ok(())
-}
-
-fn attempt_header_is_protected(name: &str) -> bool {
-    name.contains("auth")
-        || name.contains("credential")
-        || name.contains("secret")
-        || name.contains("token")
-        || name.contains("cookie")
-        || name.contains("session")
-        || name.contains("conversation")
-        || name.contains("thread")
-        || name.contains("account")
-        || name.contains("organization")
-        || name.contains("project")
-        || name.contains("tenant")
-        || name.contains("principal")
-        || name.contains("identity")
-        || name.contains("user-id")
-        || name.ends_with("-key")
-        || name.ends_with("_key")
-        || name.starts_with("sec-websocket-")
-        || matches!(
-            name,
-            "connection"
-                | "keep-alive"
-                | "proxy-connection"
-                | "proxy-authenticate"
-                | "proxy-authorization"
-                | "te"
-                | "trailer"
-                | "transfer-encoding"
-                | "upgrade"
-                | "host"
-                | "content-length"
-                | "content-type"
-                | "content-encoding"
-                | "accept"
-                | "accept-encoding"
-                | "user-agent"
-                | "x-request-id"
-                | "x-gateway-request-id"
-        )
 }
 
 struct ProviderMiddlewareBody {
@@ -713,11 +662,7 @@ pub async fn execute_attempt_middleware(
         .handle(
             context,
             request,
-            Box::new(ProviderMiddlewareNext {
-                operation,
-                transport,
-                terminal: Some(terminal),
-            }),
+            provider_middleware_next(operation, transport, terminal),
         )
         .await
         .map_err(middleware_prepare_error)?;
@@ -806,11 +751,14 @@ fn middleware_frame_to_provider_event(
 fn middleware_prepare_error(error: MiddlewareError) -> ProviderError {
     match error {
         MiddlewareError::Provider(error) => error,
-        MiddlewareError::Rejected => ProviderError::new(
-            ProviderErrorKind::RequestPolicyDenied,
-            UpstreamSendState::NotSent,
-        ),
+        MiddlewareError::Rejected | MiddlewareError::Remote { rejected: true, .. } => {
+            ProviderError::new(
+                ProviderErrorKind::RequestPolicyDenied,
+                UpstreamSendState::NotSent,
+            )
+        }
         MiddlewareError::Fault
+        | MiddlewareError::Remote { .. }
         | MiddlewareError::InvalidState
         | MiddlewareError::Gateway(_)
         | MiddlewareError::Engine(_) => middleware_protocol_error(UpstreamSendState::NotSent),
@@ -820,11 +768,14 @@ fn middleware_prepare_error(error: MiddlewareError) -> ProviderError {
 fn middleware_body_error(error: MiddlewareError) -> ProviderError {
     match error {
         MiddlewareError::Provider(error) => error,
-        MiddlewareError::Rejected => ProviderError::new(
-            ProviderErrorKind::RequestPolicyDenied,
-            UpstreamSendState::Ambiguous,
-        ),
+        MiddlewareError::Rejected | MiddlewareError::Remote { rejected: true, .. } => {
+            ProviderError::new(
+                ProviderErrorKind::RequestPolicyDenied,
+                UpstreamSendState::Ambiguous,
+            )
+        }
         MiddlewareError::Fault
+        | MiddlewareError::Remote { .. }
         | MiddlewareError::InvalidState
         | MiddlewareError::Gateway(_)
         | MiddlewareError::Engine(_) => middleware_protocol_error(UpstreamSendState::Ambiguous),

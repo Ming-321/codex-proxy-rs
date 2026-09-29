@@ -67,7 +67,7 @@ impl gateway_core::engine::upstream_adapter::UpstreamAdapter for AdapterProbe {
             };
             assert_eq!(
                 generate.protocol_payload().body()["service_tier"],
-                "default"
+                "priority"
             );
             assert!(
                 invocation

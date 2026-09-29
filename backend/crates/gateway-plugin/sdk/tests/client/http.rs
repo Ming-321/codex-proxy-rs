@@ -15,7 +15,7 @@ struct NetworkHandler;
 impl PluginHandler for NetworkHandler {
     fn call(&self, call: PluginCall) -> CallFuture<'_> {
         Box::pin(async move {
-            if call.method == "websocket" {
+            if call.method.starts_with("websocket") {
                 let upgrade = call
                     .host
                     .upstream_websocket(UpstreamWebSocketRequest {
@@ -24,12 +24,49 @@ impl PluginHandler for NetworkHandler {
                         headers: vec![],
                     })
                     .await?;
-                let UpstreamWebSocketUpgrade::Connected { mut connection, .. } = upgrade else {
+                let UpstreamWebSocketUpgrade::Connected { connection, .. } = upgrade else {
                     let UpstreamWebSocketUpgrade::Rejected { status, body, .. } = upgrade else {
                         unreachable!()
                     };
                     return Ok(CallReply::unary(json!({"status":status}), body));
                 };
+                if call.method == "websocket_cancel_close" {
+                    {
+                        let close = connection.close();
+                        tokio::pin!(close);
+                        let first = std::future::poll_fn(|context| {
+                            std::task::Poll::Ready(close.as_mut().poll(context))
+                        })
+                        .await;
+                        assert!(first.is_pending());
+                    }
+                    connection.close().await?;
+                    return Ok(CallReply::unary(json!({}), vec![]));
+                }
+                if call.method == "websocket_close_during_read" {
+                    let read = connection.read();
+                    tokio::pin!(read);
+                    let first = std::future::poll_fn(|context| {
+                        std::task::Poll::Ready(read.as_mut().poll(context))
+                    })
+                    .await;
+                    assert!(first.is_pending());
+                    assert_eq!(
+                        connection.read().await.unwrap_err().code,
+                        ErrorCode::Capacity
+                    );
+                    connection.close().await?;
+                    assert!(read.await?.is_none());
+                    return Ok(CallReply::unary(json!({}), vec![]));
+                }
+                if call.method == "websocket_duplex" {
+                    let (message, ()) = tokio::try_join!(
+                        connection.read(),
+                        connection.send(WebSocketMessageKind::Text, b"control".to_vec())
+                    )?;
+                    tokio::try_join!(connection.close(), connection.close())?;
+                    return Ok(CallReply::unary(json!({}), message.unwrap().1));
+                }
                 connection
                     .send(WebSocketMessageKind::Text, b"request".to_vec())
                     .await?;
@@ -219,5 +256,137 @@ async fn websocket_session_handles_messages_eof_and_http_rejection() {
         matches!(response.message, Message::Result { id: 3, result } if result == json!({"status":401}))
     );
     assert_eq!(response.payload, b"unauthorized");
+    shutdown(&mut host, task).await;
+}
+
+#[tokio::test]
+async fn websocket_send_and_read_callbacks_can_be_in_flight_together() {
+    let (mut host, task) = start_session(NetworkHandler).await;
+    send_call(&mut host, 1, "websocket_duplex", json!({}), vec![]).await;
+    reply_callback(
+        &mut host,
+        "host.upstream.websocket.open",
+        json!({"status":101,"headers":[],"stream":null}),
+        vec![],
+    )
+    .await;
+    let mut read_id = None;
+    for _ in 0..2 {
+        let frame = receive(&mut host).await;
+        let Message::Callback { id, method, .. } = frame.message else {
+            panic!("expected callback");
+        };
+        if method == "host.upstream.websocket.read" {
+            read_id = Some(id);
+        } else {
+            assert_eq!(method, "host.upstream.websocket.send");
+            assert_eq!(frame.payload, b"control");
+            write_frame(
+                &mut host.writer,
+                &Frame {
+                    message: Message::Result {
+                        id,
+                        result: json!({}),
+                    },
+                    payload: vec![],
+                },
+            )
+            .await
+            .unwrap();
+        }
+    }
+    write_frame(
+        &mut host.writer,
+        &Frame {
+            message: Message::Result {
+                id: read_id.unwrap(),
+                result: json!({"eof":false,"kind":"text"}),
+            },
+            payload: b"acknowledged".to_vec(),
+        },
+    )
+    .await
+    .unwrap();
+    reply_callback(
+        &mut host,
+        "host.upstream.websocket.close",
+        json!({}),
+        vec![],
+    )
+    .await;
+    let response = receive(&mut host).await;
+    assert!(matches!(response.message, Message::Result { id: 1, .. }));
+    assert_eq!(response.payload, b"acknowledged");
+    shutdown(&mut host, task).await;
+}
+
+#[tokio::test]
+async fn websocket_close_can_be_retried_after_cancelling_its_future() {
+    let (mut host, task) = start_session(NetworkHandler).await;
+    send_call(&mut host, 1, "websocket_cancel_close", json!({}), vec![]).await;
+    reply_callback(
+        &mut host,
+        "host.upstream.websocket.open",
+        json!({"status":101,"headers":[],"stream":null}),
+        vec![],
+    )
+    .await;
+    // 第一条关闭已发送，但等待其结果的 future 已取消；迟到回包不应中断重试。
+    for _ in 0..2 {
+        reply_callback(
+            &mut host,
+            "host.upstream.websocket.close",
+            json!({}),
+            vec![],
+        )
+        .await;
+    }
+    let response = receive(&mut host).await;
+    assert!(matches!(response.message, Message::Result { id: 1, .. }));
+    shutdown(&mut host, task).await;
+}
+
+#[tokio::test]
+async fn websocket_close_does_not_wait_for_a_pending_reader() {
+    let (mut host, task) = start_session(NetworkHandler).await;
+    send_call(
+        &mut host,
+        1,
+        "websocket_close_during_read",
+        json!({}),
+        vec![],
+    )
+    .await;
+    reply_callback(
+        &mut host,
+        "host.upstream.websocket.open",
+        json!({"status":101,"headers":[],"stream":null}),
+        vec![],
+    )
+    .await;
+    let Message::Callback { id, method, .. } = receive(&mut host).await.message else {
+        panic!("应发出读取回调")
+    };
+    assert_eq!(method, "host.upstream.websocket.read");
+    reply_callback(
+        &mut host,
+        "host.upstream.websocket.close",
+        json!({}),
+        vec![],
+    )
+    .await;
+    write_frame(
+        &mut host.writer,
+        &Frame::control(Message::Result {
+            id,
+            result: json!({"eof":true,"kind":null}),
+        }),
+    )
+    .await
+    .unwrap();
+    assert!(matches!(
+        receive(&mut host).await.message,
+        Message::Result { id: 1, .. }
+    ));
     shutdown(&mut host, task).await;
 }

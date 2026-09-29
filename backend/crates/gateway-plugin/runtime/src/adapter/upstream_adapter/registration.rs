@@ -5,7 +5,7 @@ use gateway_admin::model::{
     plugins::instances::{PluginCapabilityBinding, PluginFailurePolicy, PluginInstance},
 };
 use gateway_plugin_sdk::{
-    Capability, Manifest, Permission, Stage,
+    Capability, Manifest, Stage,
     call::upstream_adapter::{REGISTER_METHOD, UpstreamAdapterRegistration},
 };
 
@@ -51,17 +51,6 @@ pub(crate) async fn prepare(
         return Ok(Vec::new());
     };
     validate_bindings(manifest, &instance.bindings)?;
-    for permission in [Permission::Requests, Permission::UpstreamConnections] {
-        if !instance
-            .grants
-            .iter()
-            .any(|grant| grant.permission == permission.as_str())
-        {
-            return Err(AdminError::invalid(
-                "上游适配器需要 requests 和 upstream_connections 授权",
-            ));
-        }
-    }
     let reply = session
         .call(
             REGISTER_METHOD,

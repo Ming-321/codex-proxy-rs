@@ -76,7 +76,12 @@ fn core_value_owners_do_not_depend_on_execution_or_routing() {
             "account/selection.rs" => Some(&["account", "concurrency", "identity", "validation"]),
             "concurrency.rs" => Some(&["error"]),
             "account/store.rs" => Some(&["account", "error", "identity", "validation"]),
-            path if path.starts_with("policy/") => Some(&["account", "policy", "validation"]),
+            path if path.starts_with("policy/") => {
+                Some(&["account", "identity", "policy", "validation"])
+            }
+            "settings/values.rs" | "settings/compiled.rs" => {
+                Some(&["account", "concurrency", "identity", "metering", "policy"])
+            }
             path if path.starts_with("account/") => Some(&["account", "identity", "validation"]),
             _ => None,
         };

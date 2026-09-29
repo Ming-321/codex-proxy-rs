@@ -224,8 +224,6 @@ pub enum CodexClientError {
     #[error("invalid request header value: {0}")]
     InvalidHeaderValue(#[from] reqwest::header::InvalidHeaderValue),
     /// 中间件业务头试图覆盖 Provider 已构造的受管头。
-    #[error("middleware request header conflicts with a provider-managed header")]
-    MiddlewareHeaderConflict,
     /// SSE 响应解析失败。
     #[error("invalid upstream SSE response: {0}")]
     InvalidSse(#[from] SseError),
@@ -298,9 +296,6 @@ impl fmt::Debug for CodexClientError {
             Self::InvalidHeaderValue(_) => {
                 formatter.write_str("CodexClientError::InvalidHeaderValue([REDACTED])")
             }
-            Self::MiddlewareHeaderConflict => {
-                formatter.write_str("CodexClientError::MiddlewareHeaderConflict")
-            }
             Self::InvalidSse(_) => formatter.write_str("CodexClientError::InvalidSse([REDACTED])"),
             Self::ModelCatalog(error) => formatter
                 .debug_tuple("CodexClientError::ModelCatalog")
@@ -355,7 +350,6 @@ impl CodexClientError {
             | Self::CustomCa(_)
             | Self::InvalidHeaderName(_)
             | Self::InvalidHeaderValue(_)
-            | Self::MiddlewareHeaderConflict
             | Self::WebSocketEncode(_)
             | Self::RequestBodyEncode(_)
             | Self::RequestCompression(_) => None,

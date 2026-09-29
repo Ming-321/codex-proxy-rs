@@ -6,8 +6,8 @@
 
 ## 声明与绑定
 
-清单声明 `upstream_adapter`、版本 `1`、阶段 `upstream`，以及匹配的 `input_formats` / `output_formats`；
-需要 `requests` 与 `upstream_connections`。使用 `PluginBuilder::on` 注册
+清单声明 `upstream_adapter`、版本 `1`，以及匹配的 `inputFormats` / `outputFormats`；固定阶段 `upstream` 由作者清单规范化入口生成。
+使用 `PluginBuilder::on` 注册
 `methods::UPSTREAM_ADAPTER_REGISTER` 与 `methods::UPSTREAM_ADAPTER_EXECUTE`
 
 注册返回 `UpstreamAdapterRegistration`，包含 1 至 16 个适配器：
@@ -25,18 +25,19 @@
 
 实例绑定沿用 Key、账号组、Provider、模型范围，只允许一次 `upstream` 绑定和 `reject` 故障策略。
 同一请求不能同时命中两个适配器；配置准备时拒绝重叠，执行时再次复核。适配器未命中时仍使用原生上游，
-已命中但不可用时拒绝请求。安装、授权、配置、启停和升级使用已有插件管理
+已命中但不可用时拒绝请求。安装、配置、启停和升级使用已有插件管理
 
 能力版本、清单版本、进程 RPC 版本和宿主兼容声明格式版本分别判断，见[清单](manifest.md)。
-Provider、业务协议和传输名称不能写入宿主兼容清单的 capability / permission / RPC 版本位置
+Provider、业务协议和传输名称不能写入宿主兼容清单的 capability / RPC 版本位置
 
 ## 执行与受管出站
 
 `TypedCall<UpstreamAdapterRequest>` 包含只读的 Key、账号、凭据版本、模型、协议、Header 和宿主续接投影；
 原始请求正文位于 `call.payload`，原始账号凭据不进入插件输入。宿主首次消费冷流才调用插件
 
-`disable_fast` 是宿主冻结的请求策略。OpenAI 请求正文在进入适配器前复用原生 Fast 策略处理；
-适配器转换为其他上游协议时也须遵守该字段，不能重新启用 Fast / priority 档位
+`disable_fast` 是本次模型执行的有效设置。OpenAI 在 attempt 中间件之前将 Fast 设置应用到正文基线，
+适配器收到经过中间件处理的正文；插件显式改写档位后，宿主不会在发送前再次恢复默认值。
+其他请求设置与 Key 作用域的覆盖规则见[模型请求与 attempt](capabilities.md#模型请求与-attempt)
 
 HTTP 请求使用 `call.host.upstream_http(request, body).await?`，返回 `HostHttpResponse`：
 
@@ -59,11 +60,20 @@ JSON 可有界收集，SSE 应增量解析，不能把读取块当成完整事�
 WebSocket 使用 `call.host.upstream_websocket(request).await?`，返回
 `UpstreamWebSocketUpgrade::Connected { headers, connection }` 或 `Rejected { status, headers, body }`。
 连接提供 `send(kind, body)`、`read()`、`close()`，支持完整文本与二进制消息，Ping/Pong 由宿主处理。
-同一连接一次只执行一个操作，握手拒绝保留 HTTP 状态和正文。底层 `host.upstream.*` 是 SDK 使用的资源协议，
-不是额外的业务中间件链
+读写可同时进行，等待上游输出时可以发送控制消息；有先后依赖的消息须顺序等待 `send`。
+同一时刻只允许一个读取者；取消一次 `read()` 等待后，再次读取继续同一次接收，不跳过消息。
+`close` 会唤醒在途操作并释放连接，并发关闭等待同一次完成；读取超时或连接错误也会关闭连接。
+握手拒绝保留 HTTP 状态和正文。底层 `host.upstream.*` 是 SDK 使用的资源协议
 
-宿主只对声明的基址和精确路径注入已选账号认证，禁止覆盖 Host、认证、Cookie 与握手保护头；
-重定向不能携带凭据逃逸。出站复用该账号的代理，代理失败不能回退直连。
+```rust,ignore
+let (message, ()) = tokio::try_join!(
+    connection.read(),
+    connection.send(WebSocketMessageKind::Text, control_message),
+)?;
+```
+
+宿主先注入已选账号认证，插件显式提供的同名头覆盖默认值。路径支持相对基址或完整 HTTP(S) URL；
+声明路径用于标记发送用途，不是访问白名单。出站复用账号代理，代理失败不能回退直连，重定向不自动跟随。
 `auxiliary` 路径的出站计入请求副作用水位，防止附件上传等操作在失败后被透明重复执行
 
 ## 事件、结算和续接

@@ -1,18 +1,18 @@
 use std::sync::Arc;
 
 use gateway_core::upstream::UpstreamSendState;
-use gateway_host::outbound::{HttpClient, HttpError, HttpErrorKind, HttpRequest};
+use gateway_host::outbound::{HttpClient, HttpError, HttpErrorKind, HttpRequest, NetworkPolicy};
 use gateway_plugin_sdk::{ErrorCode, PluginFault, SendState, call::host as wire};
 use serde::de::DeserializeOwned;
 
-use super::{CallResources, HttpAuthorization, HttpStream, NetworkScope, denied, invalid};
+use super::{CallResources, CallbackScope, HttpStream, denied, invalid};
 use crate::RpcReply;
 
 /// 回调的公共网络外层；账号鉴权只装饰请求，发送、读流和回收共用同一终端。
 pub(super) struct HttpCallbacks<'a> {
     pub(super) client: &'a HttpClient,
-    pub(super) authorization: &'a HttpAuthorization,
-    pub(super) scope: &'a Arc<NetworkScope>,
+    pub(super) network: &'a NetworkPolicy,
+    pub(super) scope: &'a Arc<CallbackScope>,
     pub(super) call: &'a CallResources,
     pub(super) maximum_payload: usize,
 }
@@ -26,23 +26,15 @@ impl HttpCallbacks<'_> {
     ) -> Result<RpcReply, PluginFault> {
         let Self {
             client,
-            authorization,
+            network,
             scope,
             call,
             maximum_payload,
         } = *self;
-        let timeout = call
-            .deadline
-            .checked_duration_since(tokio::time::Instant::now())
-            .ok_or_else(|| PluginFault::new(ErrorCode::Timeout, "callback deadline elapsed"))?;
+        let timeout = call.timeout()?;
         let attempt = scope.start_upstream(upstream_purpose);
         let response = client
-            .open(
-                request,
-                scope.proxy.as_ref(),
-                &authorization.network,
-                timeout,
-            )
+            .open(request, scope.proxy.as_ref(), network, timeout)
             .await;
         attempt.finish(
             response

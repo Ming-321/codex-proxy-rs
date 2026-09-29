@@ -51,7 +51,11 @@ impl UpstreamTarget {
         path: &str,
         query: &[(String, String)],
     ) -> Result<(Url, UpstreamPathPurpose), PluginFault> {
-        let purpose = *self.paths.get(path).ok_or_else(invalid)?;
+        let purpose = self
+            .paths
+            .get(path)
+            .copied()
+            .unwrap_or(UpstreamPathPurpose::Inference);
         if query.len() > 64
             || query
                 .iter()
@@ -60,7 +64,7 @@ impl UpstreamTarget {
             return Err(invalid());
         }
         let mut target = self.base.join(path).map_err(|_| invalid())?;
-        if target.origin() != self.base.origin() || !target.path().starts_with(self.base.path()) {
+        if !matches!(target.scheme(), "http" | "https") || target.host_str().is_none() {
             return Err(invalid());
         }
         if !query.is_empty() {
@@ -85,24 +89,6 @@ fn valid_path(path: &str) -> bool {
             .all(|segment| !matches!(segment, "" | "." | ".."))
 }
 
-pub(crate) fn protected_header(name: &str) -> bool {
-    let name = name.to_ascii_lowercase();
-    matches!(
-        name.as_str(),
-        "authorization"
-            | "proxy-authorization"
-            | "cookie"
-            | "host"
-            | "connection"
-            | "upgrade"
-            | "transfer-encoding"
-            | "content-length"
-            | "proxy-connection"
-            | "te"
-            | "trailer"
-    ) || name.starts_with("sec-websocket-")
-}
-
 fn invalid() -> PluginFault {
-    PluginFault::new(ErrorCode::InvalidInput, "upstream target is not authorized")
+    PluginFault::new(ErrorCode::InvalidInput, "upstream target is invalid")
 }
