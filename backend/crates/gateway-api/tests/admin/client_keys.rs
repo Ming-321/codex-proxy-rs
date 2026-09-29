@@ -126,6 +126,62 @@ async fn reset_budget_route_requires_admin_and_maps_missing_keys() {
 }
 
 #[tokio::test]
+async fn budget_reset_of_a_shared_member_returns_the_source_message_without_changing_usage() {
+    use super::SHARED_RESET_REJECTION;
+    use axum::{
+        body::Body,
+        http::{Request, StatusCode, header},
+    };
+    use gateway_core::policy::{ClientApiKeyId, NativeLimitSource, RateLimits};
+    use tower::ServiceExt as _;
+
+    let fixture = AdminTestFixture::new().await;
+    fixture.auth.insert_session("valid-session");
+    let mut record = fixture
+        .services
+        .client_keys()
+        .reveal(&ClientApiKeyId::new("key-member").unwrap())
+        .await
+        .unwrap()
+        .record;
+    record.limit_source = Some(NativeLimitSource {
+        key_id: ClientApiKeyId::new("key-source").unwrap(),
+        binding_revision: 1,
+        enabled: true,
+        limits: RateLimits::unlimited(),
+    });
+    record.budget.daily_used_usd = "1.25".parse().unwrap();
+    record.budget.weekly_used_usd = "4.5".parse().unwrap();
+    *fixture.client_key.lock().unwrap() = Some(record);
+    for period in ["daily", "weekly", "all"] {
+        let response = client_keys::router::<AdminTestState>()
+            .with_state(fixture.state())
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/api/admin/client-keys/reset-budget")
+                    .header(header::COOKIE, "cpr_session=valid-session")
+                    .header(header::CONTENT_TYPE, "application/json")
+                    .header("x-request-id", "req_shared_reset")
+                    .body(Body::from(
+                        json!({"id":"key-member", "period":period}).to_string(),
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::CONFLICT);
+        let body = crate::support::response_json(response).await;
+        assert_eq!(body["code"], 40901);
+        assert_eq!(body["message"], SHARED_RESET_REJECTION);
+        assert!(body["data"].is_null());
+        let key = fixture.client_key.lock().unwrap().clone().unwrap();
+        assert_eq!(key.budget.daily_used_usd.canonical(), "1.25");
+        assert_eq!(key.budget.weekly_used_usd.canonical(), "4.5");
+    }
+}
+
+#[tokio::test]
 async fn budget_reset_allows_admin_but_rejects_key_sessions_without_changing_usage() {
     use crate::support::{RAW_KEY, json_request, key_fixture, response_json};
     use axum::http::{Method, StatusCode, header};

@@ -213,7 +213,7 @@ impl ClientKeyService for DefaultClientKeyService {
         self.store
             .reset_client_key_budget(command, origin, context)
             .await
-            .map_err(|error| map_store_error(error, "client API key"))?;
+            .map_err(map_client_key_reset_error)?;
         Ok(id)
     }
 
@@ -341,9 +341,21 @@ impl ClientKeyService for DefaultClientKeyService {
     }
 }
 
+/// Store 因共享限额规则拒绝成员操作时给出的说明，只含固定文案和来源名称，可直接展示。
+fn controlled_limits_message(error: &AdminStoreError) -> Option<&str> {
+    (error.resource() == "controlled client limits").then(|| error.message())
+}
+
+fn map_client_key_reset_error(error: AdminStoreError) -> AdminError {
+    match controlled_limits_message(&error) {
+        Some(message) => AdminError::conflict(message),
+        None => map_store_error(error, "client API key"),
+    }
+}
+
 fn map_client_key_write_error(error: AdminStoreError) -> AdminError {
-    if error.resource() == "controlled client limits" {
-        return AdminError::conflict(error.message());
+    if let Some(message) = controlled_limits_message(&error) {
+        return AdminError::conflict(message);
     }
     match error.kind() {
         AdminStoreErrorKind::DuplicateName => AdminError::conflict("名称已存在"),
