@@ -560,6 +560,8 @@ impl CallbackHandler for PluginCallbacks {
                     | gateway_plugin_sdk::call::key_budgets::RESET
                     | gateway_plugin_sdk::call::key_budgets::GET
                     | gateway_plugin_sdk::call::key_budgets::UPDATE_LIMITS
+                    | gateway_plugin_sdk::call::key_budgets::WEEKLY_CONTROL_GET
+                    | gateway_plugin_sdk::call::key_budgets::WEEKLY_CONTROL_CHANGE
             ) {
                 return keys.call(&context, &method, params, &payload).await;
             }

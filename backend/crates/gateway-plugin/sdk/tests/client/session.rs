@@ -172,6 +172,39 @@ impl PluginHandler for TestHandler {
                         vec![],
                     ))
                 }
+                "weekly_control" => {
+                    let result = call
+                        .host
+                        .weekly_window_control(
+                            gateway_plugin_sdk::call::key_budgets::WeeklyWindowQuery {
+                                client_key_id: "key_1".into(),
+                            },
+                        )
+                        .await?;
+                    Ok(CallReply::unary(
+                        serde_json::to_value(result).unwrap(),
+                        vec![],
+                    ))
+                }
+                "change_weekly_window" => {
+                    use gateway_plugin_sdk::call::key_budgets::{
+                        ChangeWeeklyWindowRequest, WeeklyWindowAction,
+                    };
+                    let result = call
+                        .host
+                        .change_weekly_window(ChangeWeeklyWindowRequest {
+                            client_key_id: "key_1".into(),
+                            expected_revision: 3,
+                            operation: WeeklyWindowAction::Sync {
+                                expires_at_ms: 1_800_000_000_000,
+                            },
+                        })
+                        .await?;
+                    Ok(CallReply::unary(
+                        serde_json::to_value(result).unwrap(),
+                        vec![],
+                    ))
+                }
                 "refresh_quota" => {
                     let result = call
                         .host
@@ -1621,6 +1654,27 @@ async fn typed_key_and_quota_calls_keep_payloads_and_do_not_retry_failures() {
             "host.keys.update_budget_limits",
             json!({"client_key_id":"key_1","weekly_limit_usd":"12.5"}),
             json!({"client_key_id":"key_1"}),
+        ),
+        (
+            "weekly_control",
+            "host.keys.weekly_control.get",
+            json!({"client_key_id":"key_1"}),
+            json!({
+                "revision":3, "controller":"instance_1", "expires_at_ms":1_800_000_000_000_i64,
+                "accounting_start_at_ms":1_799_000_000_000_i64, "waiting":false,
+            }),
+        ),
+        (
+            "change_weekly_window",
+            "host.keys.weekly_control.change",
+            json!({
+                "client_key_id":"key_1", "expected_revision":3,
+                "operation":{"action":"sync","expires_at_ms":1_800_000_000_000_i64},
+            }),
+            json!({
+                "revision":4, "controller":"instance_1", "expires_at_ms":1_800_000_000_000_i64,
+                "accounting_start_at_ms":1_799_500_000_000_i64, "waiting":false,
+            }),
         ),
         (
             "refresh_quota",

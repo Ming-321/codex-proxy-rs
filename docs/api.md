@@ -1148,6 +1148,8 @@ SSE 在取得有效执行前不发送保活帧，因此此阶段保留 HTTP 错�
 任一已结算金额达到限额后拒绝新请求，已准入请求可完成并使金额超过阈值。
 HTTP 返回 `429`，`error.code` 为 `key_daily_budget_exceeded` 或 `key_weekly_budget_exceeded`，
 并附 `Retry-After`；WebSocket 每次 `response.create` 执行相同检查并返回协议错误事件。
+插件持续接管周窗口后，窗口到期而尚未同步期间新请求返回 `429`、`error.code` 为 `key_weekly_window_waiting`，
+不附 `Retry-After`；已用金额与在途结算保留，日限额与启用状态仍照常检查
 只累计上游上报或按用量与模型价格计算出的 USD 费用；无法取得费用的尝试按零累计，
 保留错误和用量诊断，不产生待核账记录或阻断。内部重试中已经取得的费用仍会累计。
 预算存储不可用时返回 `503`、`key_budget_unavailable`

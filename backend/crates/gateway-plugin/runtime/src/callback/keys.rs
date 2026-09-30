@@ -6,7 +6,10 @@ use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD};
 use gateway_admin::{
     model::{
         AdminError, PageSize,
-        client_keys::{ClientKeyBudgetPeriod, ResetClientKeyBudget, UpdateClientKeyBudgetLimits},
+        client_keys::{
+            ChangeClientKeyWeeklyWindow, ClientKeyBudgetPeriod, ClientKeyWeeklyControl,
+            ClientKeyWeeklyWindowAction, ResetClientKeyBudget, UpdateClientKeyBudgetLimits,
+        },
         plugin_client_keys::{PluginClientKeyCursor, PluginClientKeyListQuery},
         plugin_resources::PluginResourceOwner,
         plugins::instances::PluginInstance,
@@ -122,8 +125,65 @@ impl PluginClientKeys {
                     client_key_id: id.as_str().to_owned(),
                 })
             }
+            key_budgets::WEEKLY_CONTROL_GET => {
+                let request: key_budgets::WeeklyWindowQuery =
+                    serde_json::from_slice(payload).map_err(|_| invalid())?;
+                let id = ClientApiKeyId::new(request.client_key_id).map_err(|_| invalid())?;
+                let control = access.weekly_control(&id).await.map_err(map_admin_error)?;
+                encode(&weekly_window_control(control))
+            }
+            key_budgets::WEEKLY_CONTROL_CHANGE => {
+                let request: key_budgets::ChangeWeeklyWindowRequest =
+                    serde_json::from_slice(payload).map_err(|_| invalid())?;
+                let command = ChangeClientKeyWeeklyWindow {
+                    id: ClientApiKeyId::new(request.client_key_id).map_err(|_| invalid())?,
+                    expected_revision: request.expected_revision,
+                    action: weekly_window_action(request.operation)?,
+                };
+                let control = access
+                    .change_weekly_control(&self.owner, command, &mutation_context(context))
+                    .await
+                    .map_err(map_admin_error)?;
+                encode(&weekly_window_control(control))
+            }
             _ => Err(denied()),
         }
+    }
+}
+
+fn weekly_window_action(
+    action: key_budgets::WeeklyWindowAction,
+) -> Result<ClientKeyWeeklyWindowAction, PluginFault> {
+    let time = |millis| chrono::DateTime::from_timestamp_millis(millis).ok_or_else(invalid);
+    Ok(match action {
+        key_budgets::WeeklyWindowAction::Claim {
+            expires_at_ms,
+            clear_used,
+        } => ClientKeyWeeklyWindowAction::Claim {
+            expires_at: time(expires_at_ms)?,
+            clear_used,
+        },
+        key_budgets::WeeklyWindowAction::Sync { expires_at_ms } => {
+            ClientKeyWeeklyWindowAction::Sync {
+                expires_at: time(expires_at_ms)?,
+            }
+        }
+        key_budgets::WeeklyWindowAction::Align { expires_at_ms } => {
+            ClientKeyWeeklyWindowAction::Align {
+                expires_at: time(expires_at_ms)?,
+            }
+        }
+        key_budgets::WeeklyWindowAction::Release => ClientKeyWeeklyWindowAction::Release,
+    })
+}
+
+fn weekly_window_control(control: ClientKeyWeeklyControl) -> key_budgets::WeeklyWindowControl {
+    key_budgets::WeeklyWindowControl {
+        revision: control.revision,
+        controller: control.controller,
+        expires_at_ms: control.expires_at.map(|time| time.timestamp_millis()),
+        accounting_start_at_ms: control.accounting_start.map(|time| time.timestamp_millis()),
+        waiting: control.waiting,
     }
 }
 

@@ -63,4 +63,26 @@ impl HostClient {
     ) -> Result<key_budgets::ResetKeyBudgetResult, PluginFault> {
         payload_call(self, key_budgets::RESET, request).await
     }
+
+    /// 查询周窗口接管版本与状态；不开启窗口，也不改变账本。
+    ///
+    /// # Errors
+    /// Key 不存在或宿主读取失败时返回错误。
+    pub async fn weekly_window_control(
+        &self,
+        query: key_budgets::WeeklyWindowQuery,
+    ) -> Result<key_budgets::WeeklyWindowControl, PluginFault> {
+        payload_call(self, key_budgets::WEEKLY_CONTROL_GET, query).await
+    }
+
+    /// 按预期版本接管、同步、对齐或解除周窗口；重试必须保留原请求。
+    ///
+    /// # Errors
+    /// 实例过期、版本过期、接管者冲突、到期时间无效或宿主写入失败时返回错误。
+    pub async fn change_weekly_window(
+        &self,
+        request: key_budgets::ChangeWeeklyWindowRequest,
+    ) -> Result<key_budgets::WeeklyWindowControl, PluginFault> {
+        payload_call(self, key_budgets::WEEKLY_CONTROL_CHANGE, request).await
+    }
 }

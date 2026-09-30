@@ -186,6 +186,41 @@ SDK 不自动重试。超时或断连不能证明写入未提交；重试上限�
 不存在的 Key 返回 `rejected`；写入事务复验发现实例停用或版本变化时返回 `conflict`，
 非法输入返回 `invalid_input`。账号关联、预算分配和重置触发由插件决定，宿主不自动串联上述接口
 
+#### 持续接管周窗口
+
+插件可持续接管 Key 的原生周窗口，何时进入新周期由插件判断，宿主只执行窗口变更并保证并发与结算语义。
+类型位于 `call::key_budgets`，控制参数 `{}`，输入输出为二进制 JSON。旧宿主不支持这些方法，
+插件须在 `engines.codex-proxy-rs` 声明包含它们的最低宿主版本
+
+| SDK 方法 / 回调 | 输入与结果 |
+| --- | --- |
+| `weekly_window_control` / `host.keys.weekly_control.get` | `{client_key_id}`；返回 `revision`、接管实例 ID `controller`、`expires_at_ms`、`accounting_start_at_ms`、`waiting` |
+| `change_weekly_window` / `host.keys.weekly_control.change` | `{client_key_id, expected_revision, operation}`；返回变更后的同一结构 |
+
+`operation` 是带 `action` 的对象，到期时间必须晚于宿主执行时刻：
+
+- `claim`：附 `expires_at_ms`，`clear_used` 默认 `false`。要求当前无接管者，默认保留已用金额
+- `sync`：附 `expires_at_ms`。清零周用量，以取得 Key 锁后的宿主执行时刻为新计费起点，不回算历史费用
+- `align`：附 `expires_at_ms`。只修正到期时间，保留已用金额、计费起点与接管者；延长到未来会解除等待
+- `release`：无附加字段。解除接管，窗口保持原状，由原生规则在到期后滚动
+
+`sync`、`align` 和 `release` 要求当前实例是接管者，`claim` 要求当前无接管者，否则返回 `conflict`。
+`controller`、`expires_at_ms`、`accounting_start_at_ms` 仅在接管期间有值，未接管时为 `null`，原生窗口用 `get_key_budget` 读取；
+`accounting_start_at_ms` 是宿主实际计费起点，插件展示计费区间时不以自己的调用时间代替
+
+写入携带 `expected_revision`，成功后版本加一。宿主持久化最近一次操作的指纹，同一实例、原版本与完整参数的原样重试返回已提交结果，
+不再次清零；早于最新变更的请求返回 `conflict`，不能改成当前版本后盲目重放。`release` 与实例生命周期造成的释放同样推进版本。
+建议先读取版本，把完整请求持久化在插件私有状态后再调用；多个 Key 各自独立提交，部分成功时只重试未确认项
+
+接管期间宿主不自动推进七天窗口。到期而未同步时 `waiting=true`，新请求返回 `429` / `key_weekly_window_waiting`；
+已用金额保留，结算按完成时间归属：同步前完成但迟到落盘的费用不计入新窗口，到期后仍在计费起点之后完成的费用继续计入。
+日限额、周金额上限和 Key 启用状态保持原语义。`reset_key_budget` 在接管期间仍只清零所选用量并推进计费起点，
+不修改到期时间，也不解除等待
+
+接管跟随实例生命周期：用户停用、实例被同一插件的其他实例替换或删除时，宿主在同一事务内解除该实例接管的全部窗口；
+进程崩溃、重启与状态迁移前的技术暂停不解除，迁移失败回滚也保留。管理员不使用单 Key 解除接口，
+通过现有插件停用操作释放该实例的全部接管，不改变 Key 的启用状态，也不清零已用金额
+
 ### Key、模型与模型调用
 
 模型调用方法：

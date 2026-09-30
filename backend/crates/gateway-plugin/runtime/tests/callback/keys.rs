@@ -158,6 +158,137 @@ async fn plugin_process_manages_native_budget_through_client_key_service() {
     }
 }
 
+#[tokio::test]
+async fn plugin_process_controls_weekly_window_through_native_key_service() {
+    let Some(environment) = Environment::create().await else {
+        eprintln!("SKIP: plugin integration environment absent");
+        return;
+    };
+    let key = seed_budget(&environment).await;
+    let now = chrono::Utc::now().timestamp_millis();
+    let hour = 3_600_000;
+    let (claim_until, sync_until, align_until, reclaim_until) = (
+        now + 2 * hour,
+        now + 3 * hour,
+        now + 4 * hour,
+        now + 5 * hour,
+    );
+    let claim = json!({
+        "client_key_id":"key_budget", "expected_revision":0,
+        "operation":{"action":"claim","expires_at_ms":claim_until}
+    });
+    environment
+        .install_plugin(json!({
+            "management_registration":{"routes":[{"method":"POST","path":"weekly","request_content_types":[],"response_content_types":["application/json"]}]},
+            "data_queries":[
+                {"method":"host.keys.weekly_control.get","query":{"client_key_id":"key_budget"}},
+                {"method":"host.keys.weekly_control.change","query":claim},
+                // 回包丢失后的原样重试必须返回同一已提交结果。
+                {"method":"host.keys.weekly_control.change","query":claim},
+                {"method":"host.keys.weekly_control.get","query":{"client_key_id":"key_budget"}},
+                {"method":"host.keys.weekly_control.change","query":{"client_key_id":"key_budget","expected_revision":0,"operation":{"action":"sync","expires_at_ms":sync_until}}},
+                {"method":"host.keys.weekly_control.change","query":{"client_key_id":"key_budget","expected_revision":1,"operation":{"action":"sync","expires_at_ms":sync_until}}},
+                {"method":"host.keys.weekly_control.change","query":{"client_key_id":"key_budget","expected_revision":2,"operation":{"action":"align","expires_at_ms":align_until}}},
+                {"method":"host.keys.weekly_control.change","query":{"client_key_id":"key_budget","expected_revision":3,"operation":{"action":"release"}}},
+                {"method":"host.keys.weekly_control.change","query":{"client_key_id":"key_budget","expected_revision":4,"operation":{"action":"claim","expires_at_ms":reclaim_until}}},
+                {"method":"host.keys.weekly_control.change","query":{"client_key_id":"key_budget","expected_revision":5,"operation":{"action":"align","expires_at_ms":now - hour}}},
+                {"method":"host.keys.weekly_control.change","query":{"client_key_id":"key_budget","expected_revision":5}},
+                {"method":"host.keys.weekly_control.change","query":{"client_key_id":"key_budget","expected_revision":5,"operation":{"action":"release"},"instance_id":"forged"}},
+                {"method":"host.keys.weekly_control.get","query":{"client_key_id":"missing"}},
+                {"method":"host.keys.weekly_control.change","query":{"client_key_id":"missing","expected_revision":0,"operation":{"action":"release"}}}
+            ]
+        }))
+        .await;
+    let (runtime, core) = environment.runtime().await;
+    let store = environment.store.admin_ports().client_keys();
+    let before = store.get_client_key(&key).await.unwrap().unwrap();
+    let access = gateway_admin::initialize_plugin_client_keys(
+        native::admin_registry(),
+        store.clone(),
+        core.snapshot_control(),
+    );
+    runtime.bind_client_key_ports(&access).unwrap();
+    let service = PluginManagementService::new(
+        runtime.clone(),
+        environment.store.admin_ports().plugins(),
+        core.snapshots(),
+    );
+    let view = service.views().await.unwrap().remove(0);
+    let reply = service
+        .handle(
+            &view.target,
+            PluginManagementRequest {
+                headers: Vec::new(),
+                method: "POST".into(),
+                path: "weekly".into(),
+                query: String::new(),
+                content_type: None,
+                body: vec![],
+                request_id: "weekly-fixture".into(),
+            },
+        )
+        .await
+        .unwrap();
+    let results: Vec<Value> = serde_json::from_slice(&reply.body).unwrap();
+    let instance = view.target.instance_id.as_str();
+    let field = |value: &Value, name: &str| value[name].clone();
+
+    assert_eq!(
+        results[0],
+        json!({"revision":0,"controller":null,"expires_at_ms":null,"accounting_start_at_ms":null,"waiting":false})
+    );
+    for claimed in [&results[1], &results[2], &results[3]] {
+        assert_eq!(field(claimed, "revision"), json!(1));
+        assert_eq!(field(claimed, "controller"), json!(instance));
+        assert_eq!(field(claimed, "expires_at_ms"), json!(claim_until));
+        assert_eq!(field(claimed, "waiting"), json!(false));
+    }
+    assert_eq!(results[1], results[2]);
+    assert_eq!(results[4], json!({"error":"conflict"}));
+    assert_eq!(field(&results[5], "revision"), json!(2));
+    assert_eq!(field(&results[5], "expires_at_ms"), json!(sync_until));
+    assert_eq!(field(&results[6], "revision"), json!(3));
+    assert_eq!(field(&results[6], "expires_at_ms"), json!(align_until));
+    // align 保留 sync 设定的计费起点。
+    assert_eq!(
+        field(&results[6], "accounting_start_at_ms"),
+        field(&results[5], "accounting_start_at_ms")
+    );
+    assert_eq!(field(&results[7], "revision"), json!(4));
+    assert_eq!(field(&results[7], "controller"), Value::Null);
+    assert_eq!(field(&results[8], "revision"), json!(5));
+    assert_eq!(field(&results[8], "expires_at_ms"), json!(reclaim_until));
+    assert_eq!(results[9], json!({"error":"invalid_input"}));
+    assert_eq!(results[10], json!({"error":"invalid_input"}));
+    assert_eq!(results[11], json!({"error":"invalid_input"}));
+    assert_eq!(results[12], json!({"error":"rejected"}));
+    assert_eq!(results[13], json!({"error":"rejected"}));
+
+    // 最终由接管者持有窗口：原生预算读取反映同一份账本和到期时间。
+    let after = store.get_client_key(&key).await.unwrap().unwrap();
+    assert_eq!(
+        after
+            .budget
+            .weekly_resets_at
+            .map(|time| chrono::DateTime::<chrono::Utc>::from(time).timestamp_millis()),
+        Some(reclaim_until)
+    );
+    assert_eq!(after.budget.weekly_used_usd.canonical(), "0");
+    assert_eq!(after.budget.daily_used_usd, before.budget.daily_used_usd);
+    assert_eq!(after.budget.limits, before.budget.limits);
+    // claim、sync、align、release、claim 各一次审计；重试和被拒绝的调用不产生审计。
+    assert_eq!(environment.audit_requests("weekly_control").await.len(), 5);
+
+    drop(service);
+    drop(access);
+    environment.release_plugin_accounts(&runtime);
+    runtime.shutdown().await;
+    drop(core);
+    drop(runtime);
+    drop(store);
+    environment.close().await;
+}
+
 async fn seed_budget(environment: &Environment) -> ClientApiKeyId {
     let key = ClientApiKeyId::new("key_budget").unwrap();
     environment
@@ -337,6 +468,24 @@ impl PluginClientKeyAccess for HoldCommittedReply {
     ) -> Result<ClientApiKeyId, AdminError> {
         self.inner
             .update_budget_limits(owner, command, context)
+            .await
+    }
+
+    async fn weekly_control(
+        &self,
+        id: &ClientApiKeyId,
+    ) -> Result<gateway_admin::model::client_keys::ClientKeyWeeklyControl, AdminError> {
+        self.inner.weekly_control(id).await
+    }
+
+    async fn change_weekly_control(
+        &self,
+        owner: &PluginResourceOwner,
+        command: gateway_admin::model::client_keys::ChangeClientKeyWeeklyWindow,
+        context: &MutationContext,
+    ) -> Result<gateway_admin::model::client_keys::ClientKeyWeeklyControl, AdminError> {
+        self.inner
+            .change_weekly_control(owner, command, context)
             .await
     }
 
