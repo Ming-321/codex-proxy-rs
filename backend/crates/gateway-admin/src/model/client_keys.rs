@@ -230,6 +230,42 @@ pub struct UpdateClientKeyBudgetLimits {
     pub weekly_limit_usd: Option<gateway_core::metering::Decimal>,
 }
 
+/// 插件对周窗口的持续接管操作；宿主只执行窗口变更，不解释触发原因。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
+#[serde(tag = "action", rename_all = "snake_case")]
+pub enum ClientKeyWeeklyWindowAction {
+    /// 首次接管；默认保留已用金额，`clear_used` 时从当前时刻重新计费。
+    Claim {
+        expires_at: DateTime<Utc>,
+        clear_used: bool,
+    },
+    /// 插件确认进入新周期：清零并以执行时刻作为新的计费起点。
+    Sync { expires_at: DateTime<Utc> },
+    /// 只修正到期时间，保留已用金额与计费起点。
+    Align { expires_at: DateTime<Utc> },
+    /// 解除接管，窗口由原生规则继续。
+    Release,
+}
+
+/// 按预期版本变更周窗口接管；版本同时用于拒绝过期写入和识别重试。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ChangeClientKeyWeeklyWindow {
+    pub id: ClientApiKeyId,
+    pub expected_revision: u64,
+    pub action: ClientKeyWeeklyWindowAction,
+}
+
+/// 周窗口接管的当前事实。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ClientKeyWeeklyControl {
+    pub revision: u64,
+    pub controller: Option<String>,
+    pub expires_at: Option<DateTime<Utc>>,
+    pub accounting_start: Option<DateTime<Utc>>,
+    /// 接管期内窗口已到期但尚未同步，新请求会被拒绝。
+    pub waiting: bool,
+}
+
 /// 预算变更的调用来源；插件身份由 Runtime 给出，不能从插件请求反序列化。
 #[derive(Debug, Clone)]
 pub enum ClientKeyBudgetMutationOrigin {

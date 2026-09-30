@@ -884,6 +884,30 @@ impl ClientKeyStore for MemoryClientKeyStore {
         ))
     }
 
+    async fn client_key_weekly_control(
+        &self,
+        _: &gateway_core::policy::ClientApiKeyId,
+    ) -> AdminStoreResult<gateway_admin::model::client_keys::ClientKeyWeeklyControl> {
+        Err(AdminStoreError::new(
+            AdminStoreErrorKind::Unavailable,
+            "client key",
+            "unused weekly control",
+        ))
+    }
+
+    async fn change_client_key_weekly_control(
+        &self,
+        _: &gateway_admin::model::plugin_resources::PluginResourceOwner,
+        _: gateway_admin::model::client_keys::ChangeClientKeyWeeklyWindow,
+        _: &MutationContext,
+    ) -> AdminStoreResult<gateway_admin::model::client_keys::ClientKeyWeeklyControl> {
+        Err(AdminStoreError::new(
+            AdminStoreErrorKind::Unavailable,
+            "client key",
+            "unused weekly control",
+        ))
+    }
+
     async fn reset_client_key_budget(
         &self,
         command: gateway_admin::model::client_keys::ResetClientKeyBudget,

@@ -9,9 +9,10 @@ use crate::{
     model::{
         AdminError, MutationContext,
         client_keys::{
-            ClientKeyBudgetMutationOrigin, ClientKeyCursor, ClientKeyCursorValue,
-            ClientKeyListQuery, ClientKeyPageSize, ClientKeySort, ClientKeySortField,
-            ResetClientKeyBudget, SortDirection, UpdateClientKeyBudgetLimits,
+            ChangeClientKeyWeeklyWindow, ClientKeyBudgetMutationOrigin, ClientKeyCursor,
+            ClientKeyCursorValue, ClientKeyListQuery, ClientKeyPageSize, ClientKeySort,
+            ClientKeySortField, ClientKeyWeeklyControl, ResetClientKeyBudget, SortDirection,
+            UpdateClientKeyBudgetLimits,
         },
         plugin_client_keys::{
             PluginClientKey, PluginClientKeyCursor, PluginClientKeyFacts, PluginClientKeyListQuery,
@@ -75,6 +76,24 @@ impl PluginClientKeyAccess for DefaultPluginClientKeyAccess {
                 command,
                 ClientKeyBudgetMutationOrigin::Plugin(owner.clone()),
             )
+            .await
+    }
+
+    async fn weekly_control(
+        &self,
+        id: &ClientApiKeyId,
+    ) -> Result<ClientKeyWeeklyControl, AdminError> {
+        self.service.weekly_control(id).await
+    }
+
+    async fn change_weekly_control(
+        &self,
+        owner: &PluginResourceOwner,
+        command: ChangeClientKeyWeeklyWindow,
+        context: &MutationContext,
+    ) -> Result<ClientKeyWeeklyControl, AdminError> {
+        self.service
+            .change_weekly_control(context, owner, command)
             .await
     }
 

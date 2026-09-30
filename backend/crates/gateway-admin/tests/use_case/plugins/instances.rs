@@ -85,6 +85,8 @@ struct SavedInstance {
     artifact_sha256: String,
     enabled: bool,
     transition_id: Option<String>,
+    /// 经状态迁移的技术暂停入口保存，宿主资源应保留而非释放。
+    paused: bool,
 }
 
 struct FixtureData {
@@ -169,6 +171,7 @@ impl LifecycleFixture {
         mut instance: PluginInstance,
         expected: Revision,
         transition_id: Option<String>,
+        paused: bool,
         replacements: &[PluginInstanceReplacement],
     ) -> AdminStoreResult<PluginInstanceMutation> {
         let mut data = self.data.lock().unwrap();
@@ -208,6 +211,7 @@ impl LifecycleFixture {
             artifact_sha256: instance.artifact_sha256.clone(),
             enabled: instance.enabled,
             transition_id,
+            paused,
         });
         Ok(PluginInstanceMutation {
             config_revision: next,
@@ -452,7 +456,7 @@ impl PluginStore for LifecycleFixture {
         expected_revision: Revision,
         _: &MutationContext,
     ) -> AdminStoreResult<PluginInstanceMutation> {
-        self.save(instance, expected_revision, None, &[])
+        self.save(instance, expected_revision, None, false, &[])
     }
 
     async fn save_instance_with_state(
@@ -462,7 +466,17 @@ impl PluginStore for LifecycleFixture {
         state: PluginStateCommit,
         _: &MutationContext,
     ) -> AdminStoreResult<PluginInstanceMutation> {
-        self.save(instance, expected_revision, state.transition_id, &[])
+        self.save(instance, expected_revision, state.transition_id, false, &[])
+    }
+
+    async fn pause_instance_for_state_transition(
+        &self,
+        instance: PluginInstance,
+        expected_revision: Revision,
+        state: PluginStateCommit,
+        _: &MutationContext,
+    ) -> AdminStoreResult<PluginInstanceMutation> {
+        self.save(instance, expected_revision, state.transition_id, true, &[])
     }
 
     async fn save_instance_replacing(
@@ -477,6 +491,7 @@ impl PluginStore for LifecycleFixture {
             instance,
             expected_revision,
             state.transition_id,
+            false,
             replacements,
         )
     }
@@ -982,6 +997,9 @@ async fn incompatible_state_upgrade_quiesces_migrates_and_promotes_the_target() 
     assert_eq!(data.saves[0].artifact_sha256, OLD_ARTIFACT);
     assert!(!data.saves[0].enabled);
     assert!(data.saves[0].transition_id.is_none());
+    // 迁移前的暂停必须走技术暂停入口，存储才能保留实例拥有的资源。
+    assert!(data.saves[0].paused);
+    assert!(!data.saves[1].paused);
     assert_eq!(data.saves[1].artifact_sha256, NEW_ARTIFACT);
     assert!(data.saves[1].enabled);
     assert!(data.saves[1].transition_id.is_some());
@@ -1011,7 +1029,10 @@ async fn failed_state_migration_restores_the_previous_enabled_version_with_cas()
     assert_eq!(data.aborted, 1);
     assert_eq!(data.saves.len(), 2);
     assert!(!data.saves[0].enabled);
+    assert!(data.saves[0].paused);
     assert!(data.saves[1].enabled);
+    // 迁移失败后的恢复只把实例重新启用，不经过技术暂停入口。
+    assert!(!data.saves[1].paused);
     assert_eq!(published.revisions.lock().unwrap().as_slice(), [11, 12]);
 }
 

@@ -5,11 +5,16 @@ use gateway_admin::{
     model::{
         MutationActor, MutationContext, Revision,
         client_keys::{
-            ClientKeyBudgetMutationOrigin, ClientKeyBudgetPeriod, ResetClientKeyBudget,
+            ChangeClientKeyWeeklyWindow, ClientKeyBudgetMutationOrigin, ClientKeyBudgetPeriod,
+            ClientKeyWeeklyControl, ClientKeyWeeklyWindowAction, ResetClientKeyBudget,
             UpdateClientKey, UpdateClientKeyBudgetLimits,
         },
         plugin_resources::PluginResourceOwner,
-        plugins::{PluginSource, instances::PluginInstance},
+        plugins::{
+            PluginSource,
+            instances::{PluginInstance, PluginInstanceReplacement},
+            state::{PluginStateCommit, PluginStateConfiguration},
+        },
     },
     ports::{
         plugins::PluginStore as _,
@@ -1019,5 +1024,793 @@ async fn plugin_budget_limits_revalidate_authority_and_rollback_with_audit() {
     assert_eq!(after.limits.daily_usd.canonical(), "2");
     assert_eq!(after.daily_resets_at, None);
     assert_eq!(after.weekly_resets_at, None);
+    database.close().await;
+}
+
+fn micros(time: DateTime<Utc>) -> DateTime<Utc> {
+    DateTime::from_timestamp_micros(time.timestamp_micros()).unwrap()
+}
+
+fn in_hours(hours: i64) -> DateTime<Utc> {
+    micros(Utc::now() + chrono::Duration::hours(hours))
+}
+
+fn weekly_change(
+    key: &str,
+    expected_revision: u64,
+    action: ClientKeyWeeklyWindowAction,
+) -> ChangeClientKeyWeeklyWindow {
+    ChangeClientKeyWeeklyWindow {
+        id: key_id(key),
+        expected_revision,
+        action,
+    }
+}
+
+async fn weekly_audits(database: &TestDatabase) -> i64 {
+    sqlx::query_scalar(
+        "select count(*) from admin_audit_events where action = 'weekly_control' and config_revision is null",
+    )
+    .fetch_one(&database.pool)
+    .await
+    .unwrap()
+}
+
+async fn window(database: &TestDatabase, key: &str) -> (Option<String>, i64, DateTime<Utc>) {
+    sqlx::query_as(
+        "select weekly_controller, weekly_control_revision, weekly_end
+        from client_key_budget_windows where client_api_key_id = $1",
+    )
+    .bind(key)
+    .fetch_one(&database.pool)
+    .await
+    .unwrap()
+}
+
+async fn apply_weekly(
+    store: &PgAdminClientKeyStore,
+    owner: &PluginResourceOwner,
+    command: ChangeClientKeyWeeklyWindow,
+) -> gateway_admin::ports::store::AdminStoreResult<ClientKeyWeeklyControl> {
+    store
+        .change_client_key_weekly_control(owner, command, &context())
+        .await
+}
+
+fn assert_control(
+    control: &ClientKeyWeeklyControl,
+    revision: u64,
+    owner: Option<&PluginResourceOwner>,
+    expires_at: Option<DateTime<Utc>>,
+) {
+    assert_eq!(control.revision, revision);
+    assert_eq!(
+        control.controller.as_deref(),
+        owner.map(|owner| owner.instance_id.as_str())
+    );
+    assert_eq!(control.expires_at, expires_at);
+    assert_eq!(control.accounting_start.is_some(), owner.is_some());
+    assert!(!control.waiting);
+}
+
+#[tokio::test]
+async fn weekly_control_actions_follow_owner_revision_and_lost_reply_retry() {
+    let Some(database) = TestDatabase::create("weekly_control_actions").await else {
+        return;
+    };
+    let owner = plugin_reset_owner(&database).await;
+    seed(&database, "key", "10", "20").await;
+    let budgets = PgClientBudgetStore::new(database.pool.clone());
+    budgets.settle(charge("key", "before", "3")).await.unwrap();
+    let store = PgAdminClientKeyStore::new(database.pool.clone());
+    let initial = store
+        .client_key_weekly_control(&key_id("key"))
+        .await
+        .unwrap();
+    assert_control(&initial, 0, None, None);
+    let config_revision: i64 =
+        sqlx::query_scalar("select config_revision from runtime_settings where id=1")
+            .fetch_one(&database.pool)
+            .await
+            .unwrap();
+    let change = |command| apply_weekly(&store, &owner, command);
+
+    // claim 默认保留已用金额，并把原生窗口过期时间交给接管者。
+    let claim_until = in_hours(2);
+    let claim = weekly_change(
+        "key",
+        0,
+        ClientKeyWeeklyWindowAction::Claim {
+            expires_at: claim_until,
+            clear_used: false,
+        },
+    );
+    let claimed = change(claim.clone()).await.unwrap();
+    assert_control(&claimed, 1, Some(&owner), Some(claim_until));
+    let after_claim = status(&database, "key").await;
+    assert_eq!(after_claim.weekly_used_usd.canonical(), "3");
+    assert_eq!(after_claim.weekly_resets_at, Some(claim_until.into()));
+    assert_eq!(
+        store
+            .client_key_weekly_control(&key_id("key"))
+            .await
+            .unwrap()
+            .expires_at,
+        Some(claim_until)
+    );
+
+    // 提交后回包丢失的原样重试返回同一结果，不再追加审计或改动窗口。
+    let retried = change(claim).await.unwrap();
+    assert_eq!(retried.revision, 1);
+    assert_eq!(retried.expires_at, Some(claim_until));
+    assert_eq!(retried.accounting_start, claimed.accounting_start);
+    assert_eq!(weekly_audits(&database).await, 1);
+
+    // 相同版本上的不同操作、未来版本和重复 claim 都不能生效。
+    for command in [
+        weekly_change(
+            "key",
+            0,
+            ClientKeyWeeklyWindowAction::Claim {
+                expires_at: in_hours(5),
+                clear_used: false,
+            },
+        ),
+        weekly_change(
+            "key",
+            9,
+            ClientKeyWeeklyWindowAction::Align {
+                expires_at: in_hours(5),
+            },
+        ),
+    ] {
+        assert_eq!(
+            change(command).await.unwrap_err().kind(),
+            AdminStoreErrorKind::StaleRevision
+        );
+    }
+    assert_eq!(
+        change(weekly_change(
+            "key",
+            1,
+            ClientKeyWeeklyWindowAction::Claim {
+                expires_at: in_hours(5),
+                clear_used: true,
+            },
+        ))
+        .await
+        .unwrap_err()
+        .kind(),
+        AdminStoreErrorKind::Conflict
+    );
+    assert_eq!(
+        change(weekly_change(
+            "key",
+            1,
+            ClientKeyWeeklyWindowAction::Align {
+                expires_at: Utc::now() - chrono::Duration::seconds(1),
+            },
+        ))
+        .await
+        .unwrap_err()
+        .kind(),
+        AdminStoreErrorKind::Invalid
+    );
+    assert_eq!(
+        status(&database, "key").await.weekly_used_usd.canonical(),
+        "3"
+    );
+
+    // align 只改到期时间，保留已用金额与计费起点。
+    let align_until = in_hours(3);
+    let aligned = change(weekly_change(
+        "key",
+        1,
+        ClientKeyWeeklyWindowAction::Align {
+            expires_at: align_until,
+        },
+    ))
+    .await
+    .unwrap();
+    assert_control(&aligned, 2, Some(&owner), Some(align_until));
+    assert_eq!(aligned.accounting_start, claimed.accounting_start);
+    assert_eq!(
+        status(&database, "key").await.weekly_used_usd.canonical(),
+        "3"
+    );
+
+    // sync 在执行时清零并重新开始计费，同时对齐到期时间。
+    let sync_until = in_hours(4);
+    let synced = change(weekly_change(
+        "key",
+        2,
+        ClientKeyWeeklyWindowAction::Sync {
+            expires_at: sync_until,
+        },
+    ))
+    .await
+    .unwrap();
+    assert_control(&synced, 3, Some(&owner), Some(sync_until));
+    assert!(synced.accounting_start >= aligned.accounting_start);
+    assert_eq!(
+        status(&database, "key").await.weekly_used_usd.canonical(),
+        "0"
+    );
+    budgets
+        .settle(charge("key", "after-sync", "2"))
+        .await
+        .unwrap();
+    assert_eq!(
+        status(&database, "key").await.weekly_used_usd.canonical(),
+        "2"
+    );
+
+    // 管理员的周重置在受控窗口上清零并以当下为计费起点，保留接管者与到期时间。
+    store
+        .reset_client_key_budget(
+            ResetClientKeyBudget {
+                id: key_id("key"),
+                period: ClientKeyBudgetPeriod::Weekly,
+            },
+            ClientKeyBudgetMutationOrigin::Admin,
+            &context(),
+        )
+        .await
+        .unwrap();
+    let reset = store
+        .client_key_weekly_control(&key_id("key"))
+        .await
+        .unwrap();
+    assert_eq!(
+        status(&database, "key").await.weekly_used_usd.canonical(),
+        "0"
+    );
+    assert_eq!(
+        reset.controller.as_deref(),
+        Some(owner.instance_id.as_str())
+    );
+    assert_eq!(reset.expires_at, Some(sync_until));
+    assert!(reset.accounting_start > synced.accounting_start);
+    assert_eq!(reset.revision, 3);
+    budgets
+        .settle(charge("key", "after-reset", "2"))
+        .await
+        .unwrap();
+
+    // 非接管者不能同步、对齐或释放。
+    sqlx::query("update client_key_budget_windows set weekly_controller = 'other-instance'")
+        .execute(&database.pool)
+        .await
+        .unwrap();
+    for action in [
+        ClientKeyWeeklyWindowAction::Sync {
+            expires_at: in_hours(6),
+        },
+        ClientKeyWeeklyWindowAction::Align {
+            expires_at: in_hours(6),
+        },
+        ClientKeyWeeklyWindowAction::Release,
+    ] {
+        assert_eq!(
+            change(weekly_change("key", 3, action))
+                .await
+                .unwrap_err()
+                .kind(),
+            AdminStoreErrorKind::Conflict
+        );
+    }
+    sqlx::query("update client_key_budget_windows set weekly_controller = $1")
+        .bind(&owner.instance_id)
+        .execute(&database.pool)
+        .await
+        .unwrap();
+
+    // release 只撤销接管者，窗口和已用金额保持原状，由原生规则到期后滚动。
+    let released = change(weekly_change(
+        "key",
+        3,
+        ClientKeyWeeklyWindowAction::Release,
+    ))
+    .await
+    .unwrap();
+    assert_control(&released, 4, None, None);
+    let after_release = status(&database, "key").await;
+    assert_eq!(after_release.weekly_used_usd.canonical(), "2");
+    assert_eq!(after_release.weekly_resets_at, Some(sync_until.into()));
+    // 释放的原样重试同样只返回已提交结果。
+    let released_again = change(weekly_change(
+        "key",
+        3,
+        ClientKeyWeeklyWindowAction::Release,
+    ))
+    .await
+    .unwrap();
+    assert_eq!(released_again.revision, 4);
+    assert_eq!(weekly_audits(&database).await, 4);
+
+    // 再次接管时可显式清零已用金额。
+    let reclaimed = change(weekly_change(
+        "key",
+        4,
+        ClientKeyWeeklyWindowAction::Claim {
+            expires_at: in_hours(8),
+            clear_used: true,
+        },
+    ))
+    .await
+    .unwrap();
+    assert_eq!(reclaimed.revision, 5);
+    assert_eq!(
+        status(&database, "key").await.weekly_used_usd.canonical(),
+        "0"
+    );
+
+    assert_eq!(
+        change(weekly_change(
+            "missing",
+            0,
+            ClientKeyWeeklyWindowAction::Release
+        ))
+        .await
+        .unwrap_err()
+        .kind(),
+        AdminStoreErrorKind::NotFound
+    );
+    // 周窗口操作只写审计，不推进配置版本。
+    let current_revision: i64 =
+        sqlx::query_scalar("select config_revision from runtime_settings where id=1")
+            .fetch_one(&database.pool)
+            .await
+            .unwrap();
+    assert_eq!(current_revision, config_revision);
+    assert_eq!(weekly_audits(&database).await, 5);
+    database.close().await;
+}
+
+#[tokio::test]
+async fn controlled_expired_window_waits_and_settles_by_completion_time() {
+    let Some(database) = TestDatabase::create("weekly_control_waiting").await else {
+        return;
+    };
+    let owner = plugin_reset_owner(&database).await;
+    seed(&database, "key", "0", "5").await;
+    let budgets = PgClientBudgetStore::new(database.pool.clone());
+    let store = PgAdminClientKeyStore::new(database.pool.clone());
+    budgets.settle(charge("key", "first", "1")).await.unwrap();
+    let claimed = store
+        .change_client_key_weekly_control(
+            &owner,
+            weekly_change(
+                "key",
+                0,
+                ClientKeyWeeklyWindowAction::Claim {
+                    expires_at: in_hours(1),
+                    clear_used: false,
+                },
+            ),
+            &context(),
+        )
+        .await
+        .unwrap();
+    budgets.admit(key_id("key")).await.unwrap();
+
+    sqlx::query("update client_key_budget_windows set weekly_end = now() - interval '1 second'")
+        .execute(&database.pool)
+        .await
+        .unwrap();
+    let expired = window(&database, "key").await.2;
+    let control = store
+        .client_key_weekly_control(&key_id("key"))
+        .await
+        .unwrap();
+    assert!(control.waiting);
+    assert_eq!(
+        control.controller.as_deref(),
+        Some(owner.instance_id.as_str())
+    );
+
+    // 等待接管者期间不自动滚动，也不放行；普通额度即使未用尽也一样。
+    let error = budgets.admit(key_id("key")).await.unwrap_err();
+    assert_eq!(error.kind(), GatewayErrorKind::RateLimited);
+    assert_eq!(error.client_error_code(), Some("key_weekly_window_waiting"));
+    assert_eq!(window(&database, "key").await.2, expired);
+    assert_eq!(
+        status(&database, "key").await.weekly_used_usd.canonical(),
+        "1"
+    );
+
+    // 迟到结算按完成时间归属：接管窗口起点之后的费用仍计入，之前的费用被排除。
+    budgets.settle(charge("key", "late", "0.5")).await.unwrap();
+    assert_eq!(
+        status(&database, "key").await.weekly_used_usd.canonical(),
+        "1.5"
+    );
+    let before_start = ClientBudgetCharge {
+        completed_at: (claimed.accounting_start.unwrap() - chrono::Duration::seconds(1)).into(),
+        ..charge("key", "too-old", "4")
+    };
+    budgets.settle(before_start).await.unwrap();
+    assert_eq!(
+        status(&database, "key").await.weekly_used_usd.canonical(),
+        "1.5"
+    );
+
+    // 接管者同步后恢复放行，并从执行时重新计费。
+    let synced = store
+        .change_client_key_weekly_control(
+            &owner,
+            weekly_change(
+                "key",
+                1,
+                ClientKeyWeeklyWindowAction::Sync {
+                    expires_at: in_hours(2),
+                },
+            ),
+            &context(),
+        )
+        .await
+        .unwrap();
+    assert!(!synced.waiting);
+    budgets.admit(key_id("key")).await.unwrap();
+    assert_eq!(
+        status(&database, "key").await.weekly_used_usd.canonical(),
+        "0"
+    );
+
+    // 释放后回到原生规则：过期窗口在下一次准入滚动。
+    sqlx::query("update client_key_budget_windows set weekly_end = now() - interval '1 second'")
+        .execute(&database.pool)
+        .await
+        .unwrap();
+    store
+        .change_client_key_weekly_control(
+            &owner,
+            weekly_change("key", 2, ClientKeyWeeklyWindowAction::Release),
+            &context(),
+        )
+        .await
+        .unwrap();
+    budgets.admit(key_id("key")).await.unwrap();
+    assert!(window(&database, "key").await.2 > Utc::now());
+    database.close().await;
+}
+
+#[tokio::test]
+async fn weekly_control_change_rolls_back_with_audit_and_revalidates_authority() {
+    let Some(database) = TestDatabase::create("weekly_control_rollback").await else {
+        return;
+    };
+    let owner = plugin_reset_owner(&database).await;
+    seed(&database, "key", "10", "20").await;
+    let store = PgAdminClientKeyStore::new(database.pool.clone());
+    let claim = weekly_change(
+        "key",
+        0,
+        ClientKeyWeeklyWindowAction::Claim {
+            expires_at: in_hours(2),
+            clear_used: true,
+        },
+    );
+    let mut stale_owner = owner.clone();
+    stale_owner.revision = Revision::new(owner.revision.get() + 1).unwrap();
+    assert_eq!(
+        store
+            .change_client_key_weekly_control(&stale_owner, claim.clone(), &context())
+            .await
+            .unwrap_err()
+            .kind(),
+        AdminStoreErrorKind::Conflict
+    );
+    sqlx::raw_sql("create function reject_weekly_audit() returns trigger language plpgsql as $$ begin raise exception 'test rollback'; end $$; create trigger reject_weekly_audit before insert on admin_audit_events for each row execute function reject_weekly_audit()")
+        .execute(&database.pool)
+        .await
+        .unwrap();
+    assert!(
+        store
+            .change_client_key_weekly_control(&owner, claim.clone(), &context())
+            .await
+            .is_err()
+    );
+    let (controller, revision): (Option<String>, i64) = sqlx::query_as(
+        "select weekly_controller, weekly_control_revision from client_key_budget_windows where client_api_key_id = 'key'",
+    )
+    .fetch_optional(&database.pool)
+    .await
+    .unwrap()
+    .unwrap_or((None, 0));
+    assert_eq!((controller, revision), (None, 0));
+    assert_eq!(weekly_audits(&database).await, 0);
+    sqlx::query("drop trigger reject_weekly_audit on admin_audit_events")
+        .execute(&database.pool)
+        .await
+        .unwrap();
+    store
+        .change_client_key_weekly_control(&owner, claim, &context())
+        .await
+        .unwrap();
+    assert_eq!(weekly_audits(&database).await, 1);
+    // 实例被停用后，同一 owner 的写入不再通过当前授权校验。
+    sqlx::query("update plugin_instances set enabled = false")
+        .execute(&database.pool)
+        .await
+        .unwrap();
+    assert_eq!(
+        store
+            .change_client_key_weekly_control(
+                &owner,
+                weekly_change("key", 1, ClientKeyWeeklyWindowAction::Release),
+                &context()
+            )
+            .await
+            .unwrap_err()
+            .kind(),
+        AdminStoreErrorKind::Conflict
+    );
+    database.close().await;
+}
+
+fn owned_instance(artifact_sha256: &str, enabled: bool) -> PluginInstance {
+    PluginInstance {
+        id: uuid::Uuid::now_v7().to_string(),
+        name: "weekly owner".into(),
+        artifact_sha256: artifact_sha256.to_owned(),
+        enabled,
+        trusted_process: true,
+        configuration: serde_json::json!({}),
+        secrets: BTreeMap::new(),
+        bindings: vec![],
+        revision: Revision::new(1).unwrap(),
+    }
+}
+
+fn owner_of(instance: &PluginInstance) -> PluginResourceOwner {
+    PluginResourceOwner {
+        instance_id: instance.id.clone(),
+        artifact_sha256: instance.artifact_sha256.clone(),
+        revision: instance.revision,
+    }
+}
+
+fn no_state() -> PluginStateCommit {
+    PluginStateCommit {
+        configuration: PluginStateConfiguration { namespaces: vec![] },
+        transition_id: None,
+    }
+}
+
+/// 安装并接受制品，返回制品摘要和当前配置版本。
+async fn accepted_artifact(
+    database: &TestDatabase,
+    marker: char,
+) -> (PgPluginStore, String, Revision) {
+    super::plugins::artifacts::initialize_revision(database).await;
+    let store = PgPluginStore::new(database.pool.clone());
+    let installed = store
+        .install_artifact(
+            super::plugins::artifacts::artifact(marker, &["linux-x86_64"]),
+            PluginSource::Upload,
+            &context(),
+        )
+        .await
+        .unwrap();
+    let sha = installed.artifact.metadata.sha256;
+    let accepted = store.accept_artifact(&sha, &context()).await.unwrap();
+    (store, sha, accepted.config_revision)
+}
+
+async fn claim(database: &TestDatabase, owner: &PluginResourceOwner, key: &str) {
+    let store = PgAdminClientKeyStore::new(database.pool.clone());
+    let expected = store
+        .client_key_weekly_control(&key_id(key))
+        .await
+        .unwrap()
+        .revision;
+    let claimed = store
+        .change_client_key_weekly_control(
+            owner,
+            weekly_change(
+                key,
+                expected,
+                ClientKeyWeeklyWindowAction::Claim {
+                    expires_at: in_hours(6),
+                    clear_used: false,
+                },
+            ),
+            &context(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(
+        claimed.controller.as_deref(),
+        Some(owner.instance_id.as_str())
+    );
+}
+
+async fn assert_released(database: &TestDatabase, keys: &[&str], kept_used: &str) {
+    let store = PgAdminClientKeyStore::new(database.pool.clone());
+    for key in keys {
+        let control = store.client_key_weekly_control(&key_id(key)).await.unwrap();
+        assert_eq!(control.controller, None, "{key} should be released");
+        assert!(control.expires_at.is_none());
+        // 释放不改窗口内容。
+        assert_eq!(
+            status(database, key).await.weekly_used_usd.canonical(),
+            kept_used
+        );
+    }
+}
+
+#[tokio::test]
+async fn disabling_replacing_or_deleting_an_instance_releases_its_weekly_windows_atomically() {
+    let Some(database) = TestDatabase::create("weekly_control_release").await else {
+        return;
+    };
+    let (plugins, sha, config_revision) = accepted_artifact(&database, 'c').await;
+    seed(&database, "one", "10", "20").await;
+    seed(&database, "two", "10", "20").await;
+    let budgets = PgClientBudgetStore::new(database.pool.clone());
+    for key in ["one", "two"] {
+        budgets.settle(charge(key, key, "1")).await.unwrap();
+    }
+
+    // 多实例停用入口。
+    let saved = plugins
+        .save_instance(owned_instance(&sha, true), config_revision, &context())
+        .await
+        .unwrap();
+    let instance = saved.instance.clone();
+    claim(&database, &owner_of(&instance), "one").await;
+    claim(&database, &owner_of(&instance), "two").await;
+    let audits = weekly_audits(&database).await;
+    let disabled = plugins
+        .disable_instances(
+            std::slice::from_ref(&instance.id),
+            saved.config_revision,
+            &context(),
+        )
+        .await
+        .unwrap();
+    assert_released(&database, &["one", "two"], "1").await;
+    assert_eq!(weekly_audits(&database).await, audits + 2);
+
+    // 普通保存为停用同样释放。
+    let mut enabled = plugins.load_instances().await.unwrap().instances.remove(0);
+    enabled.enabled = true;
+    let saved = plugins
+        .save_instance(enabled, disabled, &context())
+        .await
+        .unwrap();
+    claim(&database, &owner_of(&saved.instance), "one").await;
+    let mut off = saved.instance.clone();
+    off.enabled = false;
+    let saved = plugins
+        .save_instance(off, saved.config_revision, &context())
+        .await
+        .unwrap();
+    assert_released(&database, &["one"], "1").await;
+
+    // 删除只允许已停用实例；被技术暂停保留了接管的实例被删除时，先释放再删除行。
+    let mut enabled = saved.instance.clone();
+    enabled.enabled = true;
+    let saved = plugins
+        .save_instance(enabled, saved.config_revision, &context())
+        .await
+        .unwrap();
+    claim(&database, &owner_of(&saved.instance), "two").await;
+    let mut paused = saved.instance.clone();
+    paused.enabled = false;
+    let paused = plugins
+        .pause_instance_for_state_transition(paused, saved.config_revision, no_state(), &context())
+        .await
+        .unwrap();
+    assert!(
+        PgAdminClientKeyStore::new(database.pool.clone())
+            .client_key_weekly_control(&key_id("two"))
+            .await
+            .unwrap()
+            .controller
+            .is_some()
+    );
+    plugins
+        .delete_instance(&paused.instance.id, paused.config_revision, &context())
+        .await
+        .unwrap();
+    assert_released(&database, &["two"], "1").await;
+
+    // 被同一事务替换的实例也释放。
+    let old = plugins
+        .save_instance(
+            owned_instance(&sha, true),
+            plugins.load_instances().await.unwrap().config_revision,
+            &context(),
+        )
+        .await
+        .unwrap();
+    claim(&database, &owner_of(&old.instance), "one").await;
+    let target = owned_instance(&sha, true);
+    plugins
+        .save_instance_replacing(
+            target,
+            old.config_revision,
+            no_state(),
+            &[PluginInstanceReplacement {
+                id: old.instance.id.clone(),
+                expected_revision: old.instance.revision.get(),
+            }],
+            &context(),
+        )
+        .await
+        .unwrap();
+    assert_released(&database, &["one"], "1").await;
+    database.close().await;
+}
+
+#[tokio::test]
+async fn state_transition_pause_retains_weekly_windows_and_is_not_a_user_disable() {
+    let Some(database) = TestDatabase::create("weekly_control_pause").await else {
+        return;
+    };
+    let (plugins, sha, config_revision) = accepted_artifact(&database, 'd').await;
+    seed(&database, "key", "10", "20").await;
+    let saved = plugins
+        .save_instance(owned_instance(&sha, true), config_revision, &context())
+        .await
+        .unwrap();
+    let owner = owner_of(&saved.instance);
+    claim(&database, &owner, "key").await;
+    let held = window(&database, "key").await;
+    assert_eq!(held.0.as_deref(), Some(owner.instance_id.as_str()));
+
+    // 已停用的实例不能再走技术暂停入口。
+    let mut off = saved.instance.clone();
+    off.enabled = false;
+    let mut other_artifact = saved.instance.clone();
+    other_artifact.artifact_sha256 = "0".repeat(64);
+    other_artifact.enabled = false;
+    assert!(
+        plugins
+            .pause_instance_for_state_transition(
+                other_artifact,
+                saved.config_revision,
+                no_state(),
+                &context(),
+            )
+            .await
+            .is_err()
+    );
+    let mut still_enabled = saved.instance.clone();
+    still_enabled.enabled = true;
+    assert_eq!(
+        plugins
+            .pause_instance_for_state_transition(
+                still_enabled,
+                saved.config_revision,
+                no_state(),
+                &context()
+            )
+            .await
+            .map(|_| ())
+            .unwrap_err()
+            .kind(),
+        AdminStoreErrorKind::Conflict
+    );
+    assert_eq!(window(&database, "key").await, held);
+
+    let paused = plugins
+        .pause_instance_for_state_transition(off, saved.config_revision, no_state(), &context())
+        .await
+        .unwrap();
+    assert!(!paused.instance.enabled);
+    assert_eq!(window(&database, "key").await, held);
+
+    // 迁移失败后恢复原版本重新启用，接管者仍是同一实例。
+    let mut restored = paused.instance.clone();
+    restored.enabled = true;
+    plugins
+        .save_instance_with_state(restored, paused.config_revision, no_state(), &context())
+        .await
+        .unwrap();
+    assert_eq!(window(&database, "key").await, held);
+
     database.close().await;
 }

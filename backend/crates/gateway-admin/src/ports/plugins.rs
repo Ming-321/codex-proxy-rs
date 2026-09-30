@@ -255,6 +255,21 @@ pub trait PluginStore: Send + Sync {
         self.save_instance(instance, expected_revision, context)
             .await
     }
+    /// 状态迁移前的技术暂停：只允许同一实例、同一制品由启用转为停用，并保留实例拥有的资源。
+    /// 用户停用、替换与删除必须走其他入口，由存储在同一事务内释放实例拥有的资源。
+    async fn pause_instance_for_state_transition(
+        &self,
+        _instance: PluginInstance,
+        _expected_revision: Revision,
+        _state: PluginStateCommit,
+        _context: &MutationContext,
+    ) -> AdminStoreResult<PluginInstanceMutation> {
+        Err(super::store::AdminStoreError::new(
+            super::store::AdminStoreErrorKind::Unavailable,
+            "plugin state",
+            "plugin state transition pause is unavailable",
+        ))
+    }
     /// 保存目标并停用明确确认的配置，必须共享事务和配置版本检查。
     async fn save_instance_replacing(
         &self,

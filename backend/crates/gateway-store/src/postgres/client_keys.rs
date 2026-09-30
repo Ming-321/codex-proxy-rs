@@ -808,6 +808,22 @@ impl ClientKeyStore for PgAdminClientKeyStore {
             .await
     }
 
+    async fn client_key_weekly_control(
+        &self,
+        id: &ClientApiKeyId,
+    ) -> AdminStoreResult<gateway_admin::model::client_keys::ClientKeyWeeklyControl> {
+        super::client_budgets::weekly_control(&self.keys.pool, id).await
+    }
+
+    async fn change_client_key_weekly_control(
+        &self,
+        owner: &gateway_admin::model::plugin_resources::PluginResourceOwner,
+        command: gateway_admin::model::client_keys::ChangeClientKeyWeeklyWindow,
+        context: &MutationContext,
+    ) -> AdminStoreResult<gateway_admin::model::client_keys::ClientKeyWeeklyControl> {
+        super::client_budgets::change_weekly_control(&self.keys.pool, owner, command, context).await
+    }
+
     async fn get_client_key(
         &self,
         id: &ClientApiKeyId,

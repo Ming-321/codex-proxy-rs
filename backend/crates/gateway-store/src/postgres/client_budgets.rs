@@ -7,9 +7,13 @@ use chrono::{DateTime, Utc};
 use futures::future::BoxFuture;
 use gateway_admin::model::{
     MutationContext,
-    client_keys::{ClientKeyBudgetMutationOrigin, ClientKeyBudgetPeriod, ResetClientKeyBudget},
+    client_keys::{
+        ChangeClientKeyWeeklyWindow, ClientKeyBudgetMutationOrigin, ClientKeyBudgetPeriod,
+        ClientKeyWeeklyControl, ClientKeyWeeklyWindowAction, ResetClientKeyBudget,
+    },
+    plugin_resources::PluginResourceOwner,
 };
-use gateway_admin::ports::store::AdminStoreResult;
+use gateway_admin::ports::store::{AdminStoreError, AdminStoreErrorKind, AdminStoreResult};
 use gateway_core::{
     engine::budget::{
         ClientBudgetCharge, ClientBudgetError, ClientBudgetLimits, ClientBudgetPort,
@@ -84,7 +88,7 @@ async fn reset_client_key_budget_in_transaction(
         daily_used_usd = case when $2 then 0 else daily_used_usd end,
         daily_start = case when $2 and daily_end > $4 then $4 else daily_start end,
         weekly_used_usd = case when $3 then 0 else weekly_used_usd end,
-        weekly_start = case when $3 and weekly_end > $4 then $4 else weekly_start end
+        weekly_start = case when $3 and (weekly_end > $4 or weekly_controller is not null) then $4 else weekly_start end
         where client_api_key_id = $1",
     )
     .bind(command.id.as_str())
@@ -112,6 +116,265 @@ async fn reset_client_key_budget_in_transaction(
         None,
     )
     .await?;
+    Ok(())
+}
+
+fn control_error(kind: AdminStoreErrorKind) -> AdminStoreError {
+    AdminStoreError::new(
+        kind,
+        "client API key weekly window",
+        "weekly window control operation failed",
+    )
+}
+
+fn control_unavailable(_: sqlx::Error) -> AdminStoreError {
+    control_error(AdminStoreErrorKind::Unavailable)
+}
+
+/// 接管期间才报告窗口事实；未接管时原生窗口由 `get_budget` 读取。
+fn control_from_row(
+    row: &sqlx::postgres::PgRow,
+    now: DateTime<Utc>,
+) -> AdminStoreResult<ClientKeyWeeklyControl> {
+    let controller: Option<String> = row.get("weekly_controller");
+    let revision = u64::try_from(row.get::<i64, _>("revision"))
+        .map_err(|_| control_error(AdminStoreErrorKind::Unavailable))?;
+    if controller.is_none() {
+        return Ok(ClientKeyWeeklyControl {
+            revision,
+            controller,
+            expires_at: None,
+            accounting_start: None,
+            waiting: false,
+        });
+    }
+    let expires_at: DateTime<Utc> = row.get("weekly_end");
+    Ok(ClientKeyWeeklyControl {
+        revision,
+        controller,
+        expires_at: Some(expires_at),
+        accounting_start: Some(row.get("weekly_start")),
+        waiting: expires_at <= now,
+    })
+}
+
+pub(super) async fn weekly_control(
+    pool: &PgPool,
+    id: &ClientApiKeyId,
+) -> AdminStoreResult<ClientKeyWeeklyControl> {
+    let row = sqlx::query(
+        "select coalesce(w.weekly_control_revision, 0) as revision, w.weekly_controller,
+        w.weekly_start, w.weekly_end
+        from client_api_keys k left join client_key_budget_windows w on w.client_api_key_id = k.id
+        where k.id = $1",
+    )
+    .bind(id.as_str())
+    .fetch_optional(pool)
+    .await
+    .map_err(control_unavailable)?
+    .ok_or_else(|| control_error(AdminStoreErrorKind::NotFound))?;
+    control_from_row(&row, Utc::now())
+}
+
+/// 接管变更与准入、结算共用 Key 行锁；版本、重试指纹和窗口在同一事务提交。
+pub(super) async fn change_weekly_control(
+    pool: &PgPool,
+    owner: &PluginResourceOwner,
+    command: ChangeClientKeyWeeklyWindow,
+    context: &MutationContext,
+) -> AdminStoreResult<ClientKeyWeeklyControl> {
+    let mut tx = super::plugins::begin_plugin_mutation(pool, owner).await?;
+    let exists =
+        sqlx::query_scalar::<_, String>("select id from client_api_keys where id = $1 for update")
+            .bind(command.id.as_str())
+            .fetch_optional(&mut *tx)
+            .await
+            .map_err(control_unavailable)?;
+    if exists.is_none() {
+        return Err(control_error(AdminStoreErrorKind::NotFound));
+    }
+    let now = Utc::now();
+    advance_windows(&mut tx, command.id.as_str(), now)
+        .await
+        .map_err(control_unavailable)?;
+    let row = sqlx::query(
+        "select weekly_control_revision as revision, weekly_controller, weekly_last_operation,
+        weekly_start, weekly_end from client_key_budget_windows where client_api_key_id = $1",
+    )
+    .bind(command.id.as_str())
+    .fetch_one(&mut *tx)
+    .await
+    .map_err(control_unavailable)?;
+    let revision: i64 = row.get("revision");
+    let controller: Option<String> = row.get("weekly_controller");
+    let expected = i64::try_from(command.expected_revision)
+        .map_err(|_| control_error(AdminStoreErrorKind::Invalid))?;
+    let next = expected
+        .checked_add(1)
+        .ok_or_else(|| control_error(AdminStoreErrorKind::Invalid))?;
+    let operation = serde_json::json!({
+        "owner": owner.instance_id,
+        "expected_revision": expected,
+        "operation": command.action,
+    });
+    let previous: Option<serde_json::Value> = row.get("weekly_last_operation");
+    if revision == next && previous.as_ref() == Some(&operation) {
+        // 返回已提交的版本；原样重试不触碰计费起点或已用金额。
+        return control_from_row(&row, now);
+    }
+    if revision != expected {
+        return Err(control_error(AdminStoreErrorKind::StaleRevision));
+    }
+    let owns = controller.as_deref() == Some(owner.instance_id.as_str());
+    match command.action {
+        ClientKeyWeeklyWindowAction::Claim {
+            expires_at,
+            clear_used,
+        } => {
+            require_future(expires_at, now)?;
+            if controller.is_some() {
+                return Err(control_error(AdminStoreErrorKind::Conflict));
+            }
+            sqlx::query(
+                "update client_key_budget_windows set weekly_controller = $2, weekly_end = $3,
+                weekly_used_usd = case when $4 then 0 else weekly_used_usd end,
+                weekly_start = case when $4 then $5 else weekly_start end
+                where client_api_key_id = $1",
+            )
+            .bind(command.id.as_str())
+            .bind(&owner.instance_id)
+            .bind(expires_at)
+            .bind(clear_used)
+            .bind(now)
+            .execute(&mut *tx)
+            .await
+            .map_err(control_unavailable)?;
+        }
+        ClientKeyWeeklyWindowAction::Sync { expires_at } => {
+            require_future(expires_at, now)?;
+            if !owns {
+                return Err(control_error(AdminStoreErrorKind::Conflict));
+            }
+            sqlx::query(
+                "update client_key_budget_windows set weekly_start = $2, weekly_end = $3,
+                weekly_used_usd = 0 where client_api_key_id = $1",
+            )
+            .bind(command.id.as_str())
+            .bind(now)
+            .bind(expires_at)
+            .execute(&mut *tx)
+            .await
+            .map_err(control_unavailable)?;
+        }
+        ClientKeyWeeklyWindowAction::Align { expires_at } => {
+            require_future(expires_at, now)?;
+            if !owns {
+                return Err(control_error(AdminStoreErrorKind::Conflict));
+            }
+            sqlx::query(
+                "update client_key_budget_windows set weekly_end = $2
+                where client_api_key_id = $1",
+            )
+            .bind(command.id.as_str())
+            .bind(expires_at)
+            .execute(&mut *tx)
+            .await
+            .map_err(control_unavailable)?;
+        }
+        ClientKeyWeeklyWindowAction::Release => {
+            if !owns {
+                return Err(control_error(AdminStoreErrorKind::Conflict));
+            }
+            release_key(&mut tx, command.id.as_str()).await?;
+        }
+    }
+    sqlx::query(
+        "update client_key_budget_windows set weekly_control_revision = $2,
+        weekly_last_operation = $3 where client_api_key_id = $1",
+    )
+    .bind(command.id.as_str())
+    .bind(next)
+    .bind(operation)
+    .execute(&mut *tx)
+    .await
+    .map_err(control_unavailable)?;
+    super::append_admin_audit_event_in_transaction(
+        &mut tx,
+        mutation_audit(
+            context,
+            MutationAuditOperation::ClientApiKeyWeeklyControl,
+            command.id.as_str(),
+            vec!["weekly_window".to_owned()],
+        ),
+        None,
+    )
+    .await
+    .map_err(|error| crate::admin_store_error("client API key weekly window", error))?;
+    let row = sqlx::query(
+        "select weekly_control_revision as revision, weekly_controller, weekly_start, weekly_end
+        from client_key_budget_windows where client_api_key_id = $1",
+    )
+    .bind(command.id.as_str())
+    .fetch_one(&mut *tx)
+    .await
+    .map_err(control_unavailable)?;
+    let result = control_from_row(&row, now)?;
+    tx.commit().await.map_err(control_unavailable)?;
+    Ok(result)
+}
+
+fn require_future(expires_at: DateTime<Utc>, now: DateTime<Utc>) -> AdminStoreResult<()> {
+    if expires_at <= now {
+        return Err(control_error(AdminStoreErrorKind::Invalid));
+    }
+    Ok(())
+}
+
+/// 只撤销接管者并推进版本；窗口保持原状，由原生规则在到期后滚动。
+async fn release_key(tx: &mut Transaction<'_, Postgres>, key: &str) -> AdminStoreResult<()> {
+    sqlx::query(
+        "update client_key_budget_windows set weekly_controller = null,
+        weekly_control_revision = weekly_control_revision + 1, weekly_last_operation = null
+        where client_api_key_id = $1",
+    )
+    .bind(key)
+    .execute(&mut **tx)
+    .await
+    .map_err(control_unavailable)?;
+    Ok(())
+}
+
+/// 实例真正停用、被替换或删除时，在同一配置事务内释放它接管的全部窗口。
+pub(super) async fn release_controlled_windows(
+    tx: &mut Transaction<'_, Postgres>,
+    controller: &str,
+    context: &MutationContext,
+) -> AdminStoreResult<()> {
+    // 配置事务已持有配置行锁；再按稳定顺序锁 Key，与插件写入的锁顺序一致。
+    let keys = sqlx::query_scalar::<_, String>(
+        "select k.id from client_api_keys k
+        join client_key_budget_windows w on w.client_api_key_id = k.id
+        where w.weekly_controller = $1 order by k.id for update of k",
+    )
+    .bind(controller)
+    .fetch_all(&mut **tx)
+    .await
+    .map_err(control_unavailable)?;
+    for key in keys {
+        release_key(tx, &key).await?;
+        super::append_admin_audit_event_in_transaction(
+            tx,
+            mutation_audit(
+                context,
+                MutationAuditOperation::ClientApiKeyWeeklyControl,
+                &key,
+                vec!["weekly_window".to_owned()],
+            ),
+            None,
+        )
+        .await
+        .map_err(|error| crate::admin_store_error("client API key weekly window", error))?;
+    }
     Ok(())
 }
 
@@ -177,6 +440,23 @@ impl PgClientBudgetStore {
         advance_windows(&mut tx, key_id.as_str(), now)
             .await
             .map_err(|_| unavailable())?;
+        // 受控窗口到期后不自动滚动，须等待接管者同步；与是否设置金额上限无关。
+        let waiting: bool = sqlx::query_scalar(
+            "select weekly_controller is not null and weekly_end <= $2
+            from client_key_budget_windows where client_api_key_id = $1",
+        )
+        .bind(key_id.as_str())
+        .bind(now)
+        .fetch_one(&mut *tx)
+        .await
+        .map_err(|_| unavailable())?;
+        if waiting {
+            return Err(GatewayError::new(
+                GatewayErrorKind::RateLimited,
+                "client API key weekly window is waiting for its controller",
+            )
+            .with_client_code("key_weekly_window_waiting"));
+        }
         if limits.is_limited() {
             let window = sqlx::query(
                 "select daily_used_usd::text, weekly_used_usd::text, daily_end, weekly_end
@@ -260,7 +540,7 @@ async fn settle_in_transaction(
     if changed == 1 {
         sqlx::query("update client_key_budget_windows set
                 daily_used_usd = daily_used_usd + case when $3 >= daily_start and $3 < daily_end then $2::text::numeric else 0 end,
-                weekly_used_usd = weekly_used_usd + case when $3 >= weekly_start and $3 < weekly_end then $2::text::numeric else 0 end
+                weekly_used_usd = weekly_used_usd + case when $3 >= weekly_start and ($3 < weekly_end or weekly_controller is not null) then $2::text::numeric else 0 end
                 where client_api_key_id = $1")
                 .bind(key).bind(charge.amount_usd.canonical()).bind(DateTime::<Utc>::from(charge.completed_at))
                 .execute(&mut **tx).await?;
@@ -300,9 +580,9 @@ async fn advance_windows(
             daily_start = case when client_key_budget_windows.daily_end <= $2 then excluded.daily_start else client_key_budget_windows.daily_start end,
             daily_end = case when client_key_budget_windows.daily_end <= $2 then excluded.daily_end else client_key_budget_windows.daily_end end,
             daily_used_usd = case when client_key_budget_windows.daily_end <= $2 then 0 else client_key_budget_windows.daily_used_usd end,
-            weekly_start = case when client_key_budget_windows.weekly_end <= $2 then excluded.weekly_start else client_key_budget_windows.weekly_start end,
-            weekly_end = case when client_key_budget_windows.weekly_end <= $2 then excluded.weekly_end else client_key_budget_windows.weekly_end end,
-            weekly_used_usd = case when client_key_budget_windows.weekly_end <= $2 then 0 else client_key_budget_windows.weekly_used_usd end")
+            weekly_start = case when client_key_budget_windows.weekly_controller is null and client_key_budget_windows.weekly_end <= $2 then excluded.weekly_start else client_key_budget_windows.weekly_start end,
+            weekly_end = case when client_key_budget_windows.weekly_controller is null and client_key_budget_windows.weekly_end <= $2 then excluded.weekly_end else client_key_budget_windows.weekly_end end,
+            weekly_used_usd = case when client_key_budget_windows.weekly_controller is null and client_key_budget_windows.weekly_end <= $2 then 0 else client_key_budget_windows.weekly_used_usd end")
         .bind(key).bind(now).execute(&mut **tx).await?;
     Ok(())
 }
@@ -321,9 +601,9 @@ pub(super) async fn load_client_key_budgets(
     let rows = sqlx::query(
         "select k.id, k.daily_limit_usd::text, k.weekly_limit_usd::text,
         (case when w.daily_end > now() then w.daily_used_usd else 0 end)::text as daily_used,
-        (case when w.weekly_end > now() then w.weekly_used_usd else 0 end)::text as weekly_used,
+        (case when w.weekly_controller is not null or w.weekly_end > now() then w.weekly_used_usd else 0 end)::text as weekly_used,
         case when w.daily_end > now() then w.daily_end end as daily_end,
-        case when w.weekly_end > now() then w.weekly_end end as weekly_end
+        case when w.weekly_controller is not null or w.weekly_end > now() then w.weekly_end end as weekly_end
         from client_api_keys k left join client_key_budget_windows w on w.client_api_key_id = k.id
         where k.id = any($1)",
     )

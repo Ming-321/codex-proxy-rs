@@ -670,6 +670,22 @@ impl ClientKeyStore for UnavailableStore {
         Err(unavailable("client key budget reset"))
     }
 
+    async fn client_key_weekly_control(
+        &self,
+        _: &ClientApiKeyId,
+    ) -> AdminStoreResult<gateway_admin::model::client_keys::ClientKeyWeeklyControl> {
+        Err(unavailable("client key weekly control"))
+    }
+
+    async fn change_client_key_weekly_control(
+        &self,
+        _: &gateway_admin::model::plugin_resources::PluginResourceOwner,
+        _: gateway_admin::model::client_keys::ChangeClientKeyWeeklyWindow,
+        _: &MutationContext,
+    ) -> AdminStoreResult<gateway_admin::model::client_keys::ClientKeyWeeklyControl> {
+        Err(unavailable("client key weekly control"))
+    }
+
     async fn get_client_key(
         &self,
         _: &ClientApiKeyId,

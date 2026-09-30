@@ -22,15 +22,17 @@ use crate::model::{
     },
     auth::{AdminAuditEvent, AuthSession},
     client_keys::{
-        ClientKeyBudgetMutationOrigin, ClientKeyListQuery, ClientKeyPage, ClientKeyRecord,
-        ClientKeySecret, DeleteClientKey, NewClientKey, ResetClientKeyBudget, SetClientKeyEnabled,
-        UpdateClientKey, UpdateClientKeyBudgetLimits,
+        ChangeClientKeyWeeklyWindow, ClientKeyBudgetMutationOrigin, ClientKeyListQuery,
+        ClientKeyPage, ClientKeyRecord, ClientKeySecret, ClientKeyWeeklyControl, DeleteClientKey,
+        NewClientKey, ResetClientKeyBudget, SetClientKeyEnabled, UpdateClientKey,
+        UpdateClientKeyBudgetLimits,
     },
     observability::{
         DashboardObservation, DashboardRuntimeSlots, DiagnosticDimension, DiagnosticsObservation,
         OpsErrorPage, OpsErrorQuery, RequestMetricPoint, TimeRange, UsageCalculatedBillingFact,
         UsageDetail, UsageFilter, UsageOverview, UsagePage, UsageQuery,
     },
+    plugin_resources::PluginResourceOwner,
     provider_credentials::{
         AuthorizationCommit, CredentialDetails, CredentialImportCommit, CredentialImportResult,
         CredentialMutationResult, CredentialRotationCommit, PluginAccountListQuery,
@@ -348,6 +350,20 @@ pub trait ClientKeyStore: Send + Sync {
         origin: ClientKeyBudgetMutationOrigin,
         context: &MutationContext,
     ) -> AdminStoreResult<()>;
+
+    /// 读取周窗口接管状态；不开启窗口，也不改变账本。
+    async fn client_key_weekly_control(
+        &self,
+        id: &gateway_core::policy::ClientApiKeyId,
+    ) -> AdminStoreResult<ClientKeyWeeklyControl>;
+
+    /// 插件按预期版本变更周窗口接管；实例复验、账本、版本与审计同事务提交，不推进配置版本。
+    async fn change_client_key_weekly_control(
+        &self,
+        owner: &PluginResourceOwner,
+        command: ChangeClientKeyWeeklyWindow,
+        context: &MutationContext,
+    ) -> AdminStoreResult<ClientKeyWeeklyControl>;
 }
 
 /// Provider-neutral account group management transactions.

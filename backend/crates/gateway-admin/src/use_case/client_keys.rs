@@ -14,11 +14,13 @@ use crate::{
     model::{
         AdminError, MutationContext,
         client_keys::{
-            ClientKeyBudgetMutationOrigin, ClientKeyCursorValue, ClientKeyListQuery,
-            ClientKeyMutation, ClientKeyPage, ClientKeyRecord, ClientKeySecret, ClientKeySortField,
-            CreateClientKey, CreatedClientKey, DeleteClientKey, NewClientKey, ResetClientKeyBudget,
-            SetClientKeyEnabled, UpdateClientKey, UpdateClientKeyBudgetLimits,
+            ChangeClientKeyWeeklyWindow, ClientKeyBudgetMutationOrigin, ClientKeyCursorValue,
+            ClientKeyListQuery, ClientKeyMutation, ClientKeyPage, ClientKeyRecord, ClientKeySecret,
+            ClientKeySortField, ClientKeyWeeklyControl, CreateClientKey, CreatedClientKey,
+            DeleteClientKey, NewClientKey, ResetClientKeyBudget, SetClientKeyEnabled,
+            UpdateClientKey, UpdateClientKeyBudgetLimits,
         },
+        plugin_resources::PluginResourceOwner,
     },
     ports::store::{AdminStoreError, AdminStoreErrorKind, ClientKeyStore},
 };
@@ -64,6 +66,16 @@ pub trait ClientKeyService: Send + Sync {
         command: ResetClientKeyBudget,
         origin: ClientKeyBudgetMutationOrigin,
     ) -> Result<ClientApiKeyId, AdminError>;
+    async fn weekly_control(
+        &self,
+        id: &ClientApiKeyId,
+    ) -> Result<ClientKeyWeeklyControl, AdminError>;
+    async fn change_weekly_control(
+        &self,
+        context: &MutationContext,
+        owner: &PluginResourceOwner,
+        command: ChangeClientKeyWeeklyWindow,
+    ) -> Result<ClientKeyWeeklyControl, AdminError>;
 }
 
 pub(crate) struct DefaultClientKeyService {
@@ -134,6 +146,28 @@ impl ClientKeyService for DefaultClientKeyService {
             .await
             .map_err(|error| map_store_error(error, "client API key"))?;
         Ok(id)
+    }
+
+    async fn weekly_control(
+        &self,
+        id: &ClientApiKeyId,
+    ) -> Result<ClientKeyWeeklyControl, AdminError> {
+        self.store
+            .client_key_weekly_control(id)
+            .await
+            .map_err(|error| map_store_error(error, "client API key"))
+    }
+
+    async fn change_weekly_control(
+        &self,
+        context: &MutationContext,
+        owner: &PluginResourceOwner,
+        command: ChangeClientKeyWeeklyWindow,
+    ) -> Result<ClientKeyWeeklyControl, AdminError> {
+        self.store
+            .change_client_key_weekly_control(owner, command, context)
+            .await
+            .map_err(|error| map_store_error(error, "client API key"))
     }
 
     async fn list(&self, query: ClientKeyListQuery) -> Result<ClientKeyPage, AdminError> {
