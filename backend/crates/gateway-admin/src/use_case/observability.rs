@@ -382,10 +382,19 @@ impl ObservabilityService for DefaultObservabilityService {
     }
 
     async fn ops_errors(&self, query: OpsErrorQuery) -> Result<OpsErrorPage, AdminError> {
-        self.store
+        let mut page = self
+            .store
             .list_ops_errors(query)
             .await
-            .map_err(|error| map_store_error(error, "operations errors"))
+            .map_err(|error| map_store_error(error, "operations errors"))?;
+        for error in &mut page.items {
+            error.provider_account_plan_type_display =
+                error.provider_kind.as_deref().and_then(|provider| {
+                    self.providers
+                        .plan_type_display(provider, error.provider_account_plan_type.as_deref())
+                });
+        }
+        Ok(page)
     }
 }
 

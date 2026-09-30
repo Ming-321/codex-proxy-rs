@@ -344,13 +344,11 @@ const {
                 <AccountQuotaPanel
                   :account="row"
                   :refreshing="refreshingQuotaAccountIds.has(row.id)"
+                  @account-updated="void replaceAccount($event)"
                   @quota-reset="handleQuotaReset"
                   @refresh-quota="handleRefreshQuota"
                 />
-                <AccountUsagePanel
-                  :account="row"
-                  @account-updated="void replaceAccount($event)"
-                />
+                <AccountUsagePanel :account="row" />
               </div>
             </template>
           </BaseTable>

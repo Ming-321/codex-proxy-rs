@@ -654,6 +654,114 @@ async fn ops_search_should_treat_sql_wildcards_as_literals() {
 }
 
 #[tokio::test]
+async fn ops_errors_should_use_each_event_accounts_current_subscription() {
+    let Some(database) = TestDatabase::create("ops_account_subscription").await else {
+        return;
+    };
+    let now = Utc::now();
+    seed_observability_facts(&database.pool, now)
+        .await
+        .expect("seed observability facts");
+    sqlx::query(
+        "insert into provider_accounts (
+           id, provider_kind, name, email, upstream_user_id, upstream_account_id,
+           plan_type, authentication_kind, provider_credentials_json,
+           credential_revision, credential_observed_at, has_refresh_token,
+           created_at, updated_at
+         ) select 'acct_retry', provider_kind, name, email, upstream_user_id,
+                  'retry-workspace', 'team', authentication_kind,
+                  provider_credentials_json, credential_revision, credential_observed_at,
+                  has_refresh_token, created_at, updated_at
+           from provider_accounts where id = 'acct_observe'",
+    )
+    .execute(&database.pool)
+    .await
+    .expect("seed same-email retry account");
+    sqlx::query(
+        "update ops_events set provider_account_id = 'acct_retry',
+                               provider_account_ref = 'acct_retry'
+         where id = 'ops_observe_retry'",
+    )
+    .execute(&database.pool)
+    .await
+    .expect("assign retry event to its own account");
+    let query = admin_observability::OpsErrorQuery {
+        range: admin_observability::TimeRange::new(
+            now - TimeDelta::hours(1),
+            now + TimeDelta::hours(1),
+        )
+        .expect("ops range"),
+        filter: admin_observability::OpsErrorFilter::default(),
+        current_page: 1,
+        page_size: PageSize::new(10).expect("page size"),
+    };
+    let store = admin_observability_store(&database.pool);
+    for plan in [Some("pro"), Some("plus"), None] {
+        sqlx::query("update provider_accounts set plan_type = $1 where id = 'acct_observe'")
+            .bind(plan)
+            .execute(&database.pool)
+            .await
+            .expect("update current subscription");
+        let page = store
+            .list_ops_errors(query.clone())
+            .await
+            .expect("ops page");
+        assert_eq!(page.total, 2);
+        assert_eq!(page.items.len(), 2);
+        let request = page
+            .items
+            .iter()
+            .find(|error| error.source == "model_request")
+            .expect("request error");
+        let event = page
+            .items
+            .iter()
+            .find(|error| error.source == "ops_event")
+            .expect("retry event");
+        assert_eq!(request.provider_account_email, event.provider_account_email);
+        assert_eq!(request.provider_account_plan_type.as_deref(), plan);
+        assert_eq!(event.provider_account_plan_type.as_deref(), Some("team"));
+    }
+    sqlx::query(
+        "update ops_events set model_request_id = null, attempt_index = null
+         where id = 'ops_observe_retry'",
+    )
+    .execute(&database.pool)
+    .await
+    .expect("detach event from request");
+    let page = store
+        .list_ops_errors(query.clone())
+        .await
+        .expect("ops page");
+    assert_eq!(
+        page.items
+            .iter()
+            .find(|error| error.source == "ops_event")
+            .expect("standalone event")
+            .provider_account_plan_type
+            .as_deref(),
+        Some("team")
+    );
+    sqlx::query("delete from provider_accounts where id = 'acct_retry'")
+        .execute(&database.pool)
+        .await
+        .expect("delete retry account");
+    let page = store
+        .list_ops_errors(query)
+        .await
+        .expect("deleted account history");
+    assert_eq!(page.total, 2);
+    let event = page
+        .items
+        .iter()
+        .find(|error| error.source == "ops_event")
+        .expect("deleted account event");
+    assert_eq!(event.provider_account_ref.as_deref(), Some("acct_retry"));
+    assert_eq!(event.provider_account_plan_type, None);
+    database.close().await;
+}
+
+#[tokio::test]
 async fn ops_should_include_incomplete_upstream_errors() {
     let Some(database) = TestDatabase::create("ops_incomplete_error").await else {
         return;

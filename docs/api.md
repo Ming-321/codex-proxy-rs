@@ -1562,8 +1562,8 @@ request/response/upstream ID、outcome 与搜索文本。诊断 `dimension` 可�
 `requestShare` 的分母为该维度筛选后、截取前的全部请求数；`failureClass` 只在带错误类型的请求内计算占比
 `retryCount` 为额外执行尝试次数之和，`retryRate` 为发生过重试的请求数占该组请求数的比例，同一请求多次重试只计一次
 
-账号维度诊断项和使用记录列表的 `accountPlanType` / `accountPlanTypeDisplay` 返回账号当前套餐及展示名称，
-按内部账号 ID 关联；套餐未知或账号已删除时为 `null`，不作为请求发生时的套餐快照
+账号维度诊断项、使用记录列表和错误排查列表的 `accountPlanType` / `accountPlanTypeDisplay` 返回账号当前订阅及展示名称，
+按各记录的内部账号 ID 关联；订阅未知或账号已删除时为 `null`，不作为请求发生时的订阅快照
 
 管理端请求列表及 Dashboard 最近请求中的 `accountNotes` 为账号当前备注，按内部账号 ID 关联。
 备注不写入请求历史快照；无备注或账号已删除时返回 `null`，修改备注不改变历史请求的账号归属
