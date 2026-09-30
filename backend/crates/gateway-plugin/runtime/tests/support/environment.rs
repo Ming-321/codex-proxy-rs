@@ -52,6 +52,21 @@ impl Environment {
             .await;
     }
 
+    pub async fn client_budgets(&self) -> gateway_store::postgres::PgClientBudgetStore {
+        let options = self
+            .admin
+            .connect_options()
+            .as_ref()
+            .clone()
+            .options([("search_path", self.schema.as_str())]);
+        let pool = PgPoolOptions::new()
+            .max_connections(1)
+            .connect_with(options)
+            .await
+            .unwrap();
+        gateway_store::postgres::PgClientBudgetStore::new(pool)
+    }
+
     pub async fn seed_client_key_budget(&self, id: &str) {
         sqlx::query(sqlx::AssertSqlSafe(format!(
             "update {}.client_api_keys set daily_limit_usd=10, weekly_limit_usd=20 where id=$1",
@@ -300,7 +315,16 @@ impl Environment {
         let service_worker = (has_service || has_http)
             .then(|| std::fs::read(env!("CARGO_BIN_EXE_gateway-plugin-test-middleware")).unwrap());
         let worker = service_worker.as_deref().unwrap_or_else(|| super::worker());
-        let archive = super::package_with_contributions_for_id(worker, &plugin_id, contributes);
+        let state: Vec<gateway_plugin_sdk::StateNamespace> = serde_json::from_value(
+            configuration
+                .get("state_namespaces")
+                .cloned()
+                .unwrap_or_else(|| json!([])),
+        )
+        .unwrap();
+        let has_state = !state.is_empty();
+        let archive =
+            super::package_with_identity_and_state(worker, &plugin_id, contributes, state);
         let inspector = PackageInspector::new(PackageLimits::default(), "1.0.0".parse().unwrap());
         let artifact = inspector
             .inspect(Arc::clone(&archive), None)
@@ -415,10 +439,33 @@ impl Environment {
             .collect(),
             revision: installed.config_revision,
         };
-        store
-            .save_instance(instance, installed.config_revision, &mutation)
-            .await
-            .unwrap();
+        if has_state {
+            use gateway_admin::{
+                model::plugins::state::PluginStateCommit, ports::plugins::PluginPreparation,
+            };
+            let configuration = self
+                .plugin_runtime()
+                .validate(instance.clone())
+                .await
+                .unwrap();
+            store
+                .save_instance_with_state(
+                    instance,
+                    installed.config_revision,
+                    PluginStateCommit {
+                        configuration,
+                        transition_id: None,
+                    },
+                    &mutation,
+                )
+                .await
+                .unwrap();
+        } else {
+            store
+                .save_instance(instance, installed.config_revision, &mutation)
+                .await
+                .unwrap();
+        }
     }
 
     pub async fn runtime(&self) -> (Arc<PluginRuntime>, gateway_core::CoreBundle) {
@@ -644,8 +691,24 @@ impl Environment {
     }
 
     async fn create_with_store_mode(command_line: bool) -> Option<Self> {
-        let database = std::env::var("CPR_PLUGIN_TEST_DATABASE_URL").ok()?;
-        let redis = std::env::var("CPR_PLUGIN_TEST_REDIS_URL").expect("isolated plugin Redis URL");
+        // 插件专用服务优先；CI 的标准测试服务同样通过随机 schema 隔离数据库。
+        let (database, redis) = if let Ok(database) = std::env::var("CPR_PLUGIN_TEST_DATABASE_URL")
+        {
+            (
+                database,
+                std::env::var("CPR_PLUGIN_TEST_REDIS_URL").expect("isolated plugin Redis URL"),
+            )
+        } else {
+            let database = std::env::var("CPR_TEST_DATABASE_URL").ok();
+            assert!(
+                database.is_some() || std::env::var_os("CI").is_none(),
+                "CI requires plugin or standard test services"
+            );
+            (
+                database?,
+                std::env::var("CPR_TEST_REDIS_URL").expect("isolated test Redis URL"),
+            )
+        };
         let schema = format!("cpr_plugin_{}", uuid::Uuid::new_v4().simple());
         let admin = PgPoolOptions::new()
             .max_connections(1)

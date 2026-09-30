@@ -172,31 +172,35 @@ impl PluginHandler for TestHandler {
                         vec![],
                     ))
                 }
-                "weekly_control" => {
+                "budget_window" => {
+                    use gateway_plugin_sdk::call::key_budgets::{
+                        BudgetWindowPeriod, BudgetWindowQuery,
+                    };
                     let result = call
                         .host
-                        .weekly_window_control(
-                            gateway_plugin_sdk::call::key_budgets::WeeklyWindowQuery {
-                                client_key_id: "key_1".into(),
-                            },
-                        )
+                        .budget_window(BudgetWindowQuery {
+                            client_key_id: "key_1".into(),
+                            period: BudgetWindowPeriod::Weekly,
+                        })
                         .await?;
                     Ok(CallReply::unary(
                         serde_json::to_value(result).unwrap(),
                         vec![],
                     ))
                 }
-                "change_weekly_window" => {
+                "change_budget_window" => {
                     use gateway_plugin_sdk::call::key_budgets::{
-                        ChangeWeeklyWindowRequest, WeeklyWindowAction,
+                        BudgetWindowPeriod, BudgetWindowUpdate, ChangeBudgetWindowRequest,
                     };
                     let result = call
                         .host
-                        .change_weekly_window(ChangeWeeklyWindowRequest {
+                        .change_budget_window(ChangeBudgetWindowRequest {
                             client_key_id: "key_1".into(),
-                            expected_revision: 3,
-                            operation: WeeklyWindowAction::Sync {
-                                expires_at_ms: 1_800_000_000_000,
+                            period: BudgetWindowPeriod::Weekly,
+                            expected_revision: 7,
+                            update: BudgetWindowUpdate::Fixed {
+                                expires_at_ms: 1_900_000_000_000,
+                                clear_used: true,
                             },
                         })
                         .await?;
@@ -1656,31 +1660,22 @@ async fn typed_key_and_quota_calls_keep_payloads_and_do_not_retry_failures() {
             json!({"client_key_id":"key_1"}),
         ),
         (
-            "weekly_control",
-            "host.keys.weekly_control.get",
-            json!({"client_key_id":"key_1"}),
-            json!({
-                "revision":3, "controller":"instance_1", "expires_at_ms":1_800_000_000_000_i64,
-                "accounting_start_at_ms":1_799_000_000_000_i64, "waiting":false,
-            }),
-        ),
-        (
-            "change_weekly_window",
-            "host.keys.weekly_control.change",
-            json!({
-                "client_key_id":"key_1", "expected_revision":3,
-                "operation":{"action":"sync","expires_at_ms":1_800_000_000_000_i64},
-            }),
-            json!({
-                "revision":4, "controller":"instance_1", "expires_at_ms":1_800_000_000_000_i64,
-                "accounting_start_at_ms":1_799_500_000_000_i64, "waiting":false,
-            }),
-        ),
-        (
             "refresh_quota",
             "host.quota_observations.refresh",
             json!({"account_id":"acct_1"}),
             json!({"schema_version":1,"account_id":"acct_1","observed_at_ms":null,"windows":[]}),
+        ),
+        (
+            "budget_window",
+            "host.keys.budget_window.get",
+            json!({"client_key_id":"key_1","period":"weekly"}),
+            json!({"revision":7,"mode":"automatic","accounting_start_at_ms":null,"expires_at_ms":null}),
+        ),
+        (
+            "change_budget_window",
+            "host.keys.budget_window.change",
+            json!({"client_key_id":"key_1","period":"weekly","expected_revision":7,"update":{"mode":"fixed","expires_at_ms":1_900_000_000_000_i64,"clear_used":true}}),
+            json!({"revision":8,"mode":"fixed","accounting_start_at_ms":1_800_000_000_000_i64,"expires_at_ms":1_900_000_000_000_i64}),
         ),
     ] {
         for failed in [false, true] {

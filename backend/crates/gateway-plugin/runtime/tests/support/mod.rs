@@ -94,15 +94,6 @@ pub fn package_with_contributions(worker: &[u8], contributes: Contributions) -> 
     package_with_contributions_and_state(worker, contributes, vec![])
 }
 
-pub fn package_with_contributions_for_id(
-    worker: &[u8],
-    plugin_id: &str,
-
-    contributes: Contributions,
-) -> Arc<[u8]> {
-    package_with_identity_and_state(worker, plugin_id, contributes, vec![])
-}
-
 pub fn package_with_contributions_and_state(
     worker: &[u8],
 

@@ -792,6 +792,8 @@ pub struct OpsErrorView {
     pub account_id: Option<String>,
     pub account_name: Option<String>,
     pub account_email: Option<String>,
+    pub account_plan_type: Option<String>,
+    pub account_plan_type_display: Option<String>,
     pub route: String,
     pub model: Option<String>,
     pub requested_model: Option<String>,

@@ -16,7 +16,8 @@ use gateway_admin::{
         MutationContext,
         account_groups::AccountGroupRef as AdminAccountGroupRef,
         client_keys::{
-            ClientKeyCursor as AdminClientKeyCursor,
+            ChangeClientKeyBudgetWindow, ClientKeyBudgetMutationOrigin, ClientKeyBudgetWindow,
+            ClientKeyBudgetWindowPeriod, ClientKeyCursor as AdminClientKeyCursor,
             ClientKeyCursorValue as AdminClientKeyCursorValue,
             ClientKeyListQuery as AdminClientKeyListQuery, ClientKeyPage as AdminClientKeyPage,
             ClientKeyRecord as AdminClientKeyRecord, ClientKeySecret as AdminClientKeySecret,
@@ -808,20 +809,21 @@ impl ClientKeyStore for PgAdminClientKeyStore {
             .await
     }
 
-    async fn client_key_weekly_control(
+    async fn client_key_budget_window(
         &self,
         id: &ClientApiKeyId,
-    ) -> AdminStoreResult<gateway_admin::model::client_keys::ClientKeyWeeklyControl> {
-        super::client_budgets::weekly_control(&self.keys.pool, id).await
+        period: ClientKeyBudgetWindowPeriod,
+    ) -> AdminStoreResult<ClientKeyBudgetWindow> {
+        super::client_budgets::budget_window(&self.keys.pool, id, period).await
     }
 
-    async fn change_client_key_weekly_control(
+    async fn change_client_key_budget_window(
         &self,
-        owner: &gateway_admin::model::plugin_resources::PluginResourceOwner,
-        command: gateway_admin::model::client_keys::ChangeClientKeyWeeklyWindow,
+        command: ChangeClientKeyBudgetWindow,
+        origin: ClientKeyBudgetMutationOrigin,
         context: &MutationContext,
-    ) -> AdminStoreResult<gateway_admin::model::client_keys::ClientKeyWeeklyControl> {
-        super::client_budgets::change_weekly_control(&self.keys.pool, owner, command, context).await
+    ) -> AdminStoreResult<ClientKeyBudgetWindow> {
+        super::client_budgets::change_budget_window(&self.keys.pool, command, origin, context).await
     }
 
     async fn get_client_key(

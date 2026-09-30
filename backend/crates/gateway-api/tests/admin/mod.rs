@@ -871,6 +871,31 @@ fn mutation(
 
 #[async_trait]
 impl ClientKeyStore for MemoryClientKeyStore {
+    async fn client_key_budget_window(
+        &self,
+        _id: &ClientApiKeyId,
+        _period: gateway_admin::model::client_keys::ClientKeyBudgetWindowPeriod,
+    ) -> AdminStoreResult<gateway_admin::model::client_keys::ClientKeyBudgetWindow> {
+        Err(AdminStoreError::new(
+            AdminStoreErrorKind::Unavailable,
+            "client key",
+            "unused budget window",
+        ))
+    }
+
+    async fn change_client_key_budget_window(
+        &self,
+        _command: gateway_admin::model::client_keys::ChangeClientKeyBudgetWindow,
+        _origin: gateway_admin::model::client_keys::ClientKeyBudgetMutationOrigin,
+        _context: &MutationContext,
+    ) -> AdminStoreResult<gateway_admin::model::client_keys::ClientKeyBudgetWindow> {
+        Err(AdminStoreError::new(
+            AdminStoreErrorKind::Unavailable,
+            "client key",
+            "unused budget window",
+        ))
+    }
+
     async fn update_client_key_budget_limits(
         &self,
         _: gateway_admin::model::client_keys::UpdateClientKeyBudgetLimits,
@@ -881,30 +906,6 @@ impl ClientKeyStore for MemoryClientKeyStore {
             AdminStoreErrorKind::Unavailable,
             "client key",
             "unused budget update",
-        ))
-    }
-
-    async fn client_key_weekly_control(
-        &self,
-        _: &gateway_core::policy::ClientApiKeyId,
-    ) -> AdminStoreResult<gateway_admin::model::client_keys::ClientKeyWeeklyControl> {
-        Err(AdminStoreError::new(
-            AdminStoreErrorKind::Unavailable,
-            "client key",
-            "unused weekly control",
-        ))
-    }
-
-    async fn change_client_key_weekly_control(
-        &self,
-        _: &gateway_admin::model::plugin_resources::PluginResourceOwner,
-        _: gateway_admin::model::client_keys::ChangeClientKeyWeeklyWindow,
-        _: &MutationContext,
-    ) -> AdminStoreResult<gateway_admin::model::client_keys::ClientKeyWeeklyControl> {
-        Err(AdminStoreError::new(
-            AdminStoreErrorKind::Unavailable,
-            "client key",
-            "unused weekly control",
         ))
     }
 

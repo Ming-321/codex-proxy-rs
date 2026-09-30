@@ -33,6 +33,28 @@ impl HostClient {
         payload_call(self, key_budgets::UPDATE_LIMITS, request).await
     }
 
+    /// 读取原生窗口配置和版本，不开启窗口或触发结算。
+    ///
+    /// # Errors
+    /// Key 不存在或宿主读取失败时返回错误。
+    pub async fn budget_window(
+        &self,
+        request: key_budgets::BudgetWindowQuery,
+    ) -> Result<key_budgets::BudgetWindow, PluginFault> {
+        payload_call(self, key_budgets::WINDOW_GET, request).await
+    }
+
+    /// 原子配置固定或自动窗口；原样重试最近一次操作不会再次清零。
+    ///
+    /// # Errors
+    /// 参数无效、版本冲突、实例过期或宿主写入失败时返回错误。
+    pub async fn change_budget_window(
+        &self,
+        request: key_budgets::ChangeBudgetWindowRequest,
+    ) -> Result<key_budgets::BudgetWindow, PluginFault> {
+        payload_call(self, key_budgets::WINDOW_CHANGE, request).await
+    }
+
     /// 查询 Key 的非秘密身份；调用与父资源保持关联。
     ///
     /// # Errors
@@ -53,7 +75,7 @@ impl HostClient {
         serde_json::from_value(reply.result).map_err(|_| invalid())
     }
 
-    /// 清零指定周期，保留限额和到期时间；结果未知时不能盲目重试。
+    /// 清零并关闭指定周期，恢复自动滚动，下次使用时重新开启；结果未知时不能盲目重试。
     ///
     /// # Errors
     /// 实例过期、Key 不存在、宿主写入失败时返回错误。
@@ -62,27 +84,5 @@ impl HostClient {
         request: key_budgets::ResetKeyBudgetRequest,
     ) -> Result<key_budgets::ResetKeyBudgetResult, PluginFault> {
         payload_call(self, key_budgets::RESET, request).await
-    }
-
-    /// 查询周窗口接管版本与状态；不开启窗口，也不改变账本。
-    ///
-    /// # Errors
-    /// Key 不存在或宿主读取失败时返回错误。
-    pub async fn weekly_window_control(
-        &self,
-        query: key_budgets::WeeklyWindowQuery,
-    ) -> Result<key_budgets::WeeklyWindowControl, PluginFault> {
-        payload_call(self, key_budgets::WEEKLY_CONTROL_GET, query).await
-    }
-
-    /// 按预期版本接管、同步、对齐或解除周窗口；重试必须保留原请求。
-    ///
-    /// # Errors
-    /// 实例过期、版本过期、接管者冲突、到期时间无效或宿主写入失败时返回错误。
-    pub async fn change_weekly_window(
-        &self,
-        request: key_budgets::ChangeWeeklyWindowRequest,
-    ) -> Result<key_budgets::WeeklyWindowControl, PluginFault> {
-        payload_call(self, key_budgets::WEEKLY_CONTROL_CHANGE, request).await
     }
 }

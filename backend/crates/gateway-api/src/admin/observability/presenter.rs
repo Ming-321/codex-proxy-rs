@@ -583,6 +583,8 @@ pub(crate) fn ops_error_view(error: domain::OpsError) -> OpsErrorView {
         account_id: error.provider_account_ref,
         account_name: error.provider_account_name,
         account_email: error.provider_account_email,
+        account_plan_type: error.provider_account_plan_type,
+        account_plan_type_display: error.provider_account_plan_type_display,
         route: error.endpoint.unwrap_or_else(|| "—".to_owned()),
         model,
         requested_model: error.requested_model_id,

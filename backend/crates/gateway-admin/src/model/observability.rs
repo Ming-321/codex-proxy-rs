@@ -809,6 +809,8 @@ pub struct OpsError {
     pub provider_account_ref: Option<String>,
     pub provider_account_name: Option<String>,
     pub provider_account_email: Option<String>,
+    pub provider_account_plan_type: Option<String>,
+    pub provider_account_plan_type_display: Option<String>,
     pub provider_account_authentication_kind: Option<String>,
     pub upstream_model_id: Option<String>,
     pub upstream_transport: Option<String>,

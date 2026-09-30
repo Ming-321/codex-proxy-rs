@@ -215,7 +215,7 @@ pub enum ClientKeyBudgetPeriod {
     All,
 }
 
-/// 清零所选窗口已用金额，保留限额、到期时间与历史费用。
+/// 清零并关闭所选窗口，保留限额与历史费用，下次使用时重新开启。
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ResetClientKeyBudget {
     pub id: ClientApiKeyId,
@@ -230,40 +230,44 @@ pub struct UpdateClientKeyBudgetLimits {
     pub weekly_limit_usd: Option<gateway_core::metering::Decimal>,
 }
 
-/// 插件对周窗口的持续接管操作；宿主只执行窗口变更，不解释触发原因。
+/// 一个可独立配置的原生预算窗口。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ClientKeyBudgetWindowPeriod {
+    Daily,
+    Weekly,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ClientKeyBudgetWindowMode {
+    Automatic,
+    Fixed,
+}
+
+/// 窗口配置是 Key 的原生事实，不归属于某个调用方或插件实例。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
-#[serde(tag = "action", rename_all = "snake_case")]
-pub enum ClientKeyWeeklyWindowAction {
-    /// 首次接管；默认保留已用金额，`clear_used` 时从当前时刻重新计费。
-    Claim {
+#[serde(tag = "mode", rename_all = "snake_case")]
+pub enum ClientKeyBudgetWindowUpdate {
+    Automatic,
+    Fixed {
         expires_at: DateTime<Utc>,
         clear_used: bool,
     },
-    /// 插件确认进入新周期：清零并以执行时刻作为新的计费起点。
-    Sync { expires_at: DateTime<Utc> },
-    /// 只修正到期时间，保留已用金额与计费起点。
-    Align { expires_at: DateTime<Utc> },
-    /// 解除接管，窗口由原生规则继续。
-    Release,
 }
 
-/// 按预期版本变更周窗口接管；版本同时用于拒绝过期写入和识别重试。
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct ChangeClientKeyWeeklyWindow {
-    pub id: ClientApiKeyId,
-    pub expected_revision: u64,
-    pub action: ClientKeyWeeklyWindowAction,
-}
-
-/// 周窗口接管的当前事实。
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct ClientKeyWeeklyControl {
+pub struct ClientKeyBudgetWindow {
     pub revision: u64,
-    pub controller: Option<String>,
-    pub expires_at: Option<DateTime<Utc>>,
+    pub mode: ClientKeyBudgetWindowMode,
     pub accounting_start: Option<DateTime<Utc>>,
-    /// 接管期内窗口已到期但尚未同步，新请求会被拒绝。
-    pub waiting: bool,
+    pub expires_at: Option<DateTime<Utc>>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ChangeClientKeyBudgetWindow {
+    pub id: ClientApiKeyId,
+    pub period: ClientKeyBudgetWindowPeriod,
+    pub expected_revision: u64,
+    pub update: ClientKeyBudgetWindowUpdate,
 }
 
 /// 预算变更的调用来源；插件身份由 Runtime 给出，不能从插件请求反序列化。

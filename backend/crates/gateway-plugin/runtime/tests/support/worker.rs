@@ -86,6 +86,63 @@ struct Peer {
 }
 
 impl Peer {
+    async fn budget_cycle_fixture(&self, id: u64, payload: &[u8]) -> Result<Value, PluginFault> {
+        let input: Value = serde_json::from_slice(payload).unwrap();
+        let (state, _) = self
+            .callback(
+                id,
+                "host.state.get",
+                json!({"namespace":"cycles","key":"key_budget"}),
+            )
+            .await?;
+        let state: gateway_plugin_sdk::call::host::StateGetResult =
+            serde_json::from_value(state).unwrap();
+        let request = if let Some(record) = &state.record
+            && record.value["cycle_id"] == input["cycle_id"]
+        {
+            // 插件私有状态保存完整写入意图，崩溃后对同一外部周期只重试原请求。
+            record.value["request"].clone()
+        } else {
+            let (_, payload) = self
+                .callback_payload(
+                    id,
+                    "host.keys.budget_window.get",
+                    json!({}),
+                    serde_json::to_vec(&json!({"client_key_id":"key_budget","period":"weekly"}))
+                        .unwrap(),
+                )
+                .await?;
+            let current: Value = serde_json::from_slice(&payload).unwrap();
+            let request = json!({"client_key_id":"key_budget","period":"weekly",
+            "expected_revision":current["revision"],
+            "update":if input["stop"] == true { json!({"mode":"automatic"}) } else {
+                json!({"mode":"fixed","expires_at_ms":input["expires_at_ms"],"clear_used":state.record.is_some()})
+            }});
+            self.callback(
+                id,
+                "host.state.put",
+                json!({"namespace":"cycles","key":"key_budget",
+                "expected_version":state.record.as_ref().map(|record| record.version),
+                "value":{"cycle_id":input["cycle_id"],"request":request}}),
+            )
+            .await?;
+            request
+        };
+        let (_, payload) = self
+            .callback_payload(
+                id,
+                "host.keys.budget_window.change",
+                json!({}),
+                serde_json::to_vec(&request).unwrap(),
+            )
+            .await?;
+        if input["crash_after_commit"] == true {
+            // 已提交窗口但业务调用方没有收到回包，重启后必须沿用持久化意图。
+            std::process::exit(7);
+        }
+        Ok(serde_json::from_slice(&payload).unwrap())
+    }
+
     async fn data_queries(&self, id: u64) -> Option<Vec<Value>> {
         let queries = self.configuration["data_queries"].as_array()?;
         let mut results = Vec::new();
@@ -544,6 +601,28 @@ impl Peer {
                     "management_marker",
                     &json!({"method":request.method,"path":request.path}),
                 );
+                if self.configuration["budget_cycle_fixture"] == true {
+                    match self.budget_cycle_fixture(id, &payload).await {
+                        Ok(result) => {
+                            self.send(
+                                Message::Result {
+                                    id,
+                                    result: json!({"status":200,"content_type":"application/json"}),
+                                },
+                                serde_json::to_vec(&result).unwrap(),
+                            )
+                            .await
+                        }
+                        Err(error) => {
+                            self.append_observation_marker(
+                                "budget_cycle_error_marker",
+                                &serde_json::to_value(&error).unwrap(),
+                            );
+                            self.send(Message::Error { id, error }, vec![]).await
+                        }
+                    }
+                    return;
+                }
                 if let Some(results) = self.data_queries(id).await {
                     self.send(
                         Message::Result {

@@ -396,7 +396,7 @@ impl PluginsService {
             disabled.enabled = false;
             let mutation = self
                 .store
-                .pause_instance_for_state_transition(
+                .save_instance_with_state(
                     disabled,
                     original_revision,
                     PluginStateCommit {

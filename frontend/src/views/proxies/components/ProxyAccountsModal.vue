@@ -30,7 +30,7 @@ const { accounts, loading, error, pagination, search, setPage, setPageSize, remo
 const columns = defineTableColumns<OutboundProxyAccount>([
   { key: 'identity', label: '账号', kind: 'identity', size: '3xl' },
   { key: 'provider', label: '平台/类型', kind: 'custom', size: 'md', align: 'center' },
-  { key: 'plan', label: '套餐', kind: 'custom', size: 'sm', align: 'center' },
+  { key: 'plan', label: '订阅', kind: 'custom', size: 'sm', align: 'center' },
   { key: 'groups', label: '分组', kind: 'custom', size: 'lg', align: 'center' },
   { key: 'actions', label: '操作', kind: 'actions', size: 'xs', align: 'center' },
 ])

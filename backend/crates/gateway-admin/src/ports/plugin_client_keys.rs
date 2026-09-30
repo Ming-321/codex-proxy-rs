@@ -6,8 +6,8 @@ use gateway_core::{engine::budget::ClientBudgetStatus, policy::ClientApiKeyId};
 use crate::model::{
     AdminError, MutationContext,
     client_keys::{
-        ChangeClientKeyWeeklyWindow, ClientKeyWeeklyControl, ResetClientKeyBudget,
-        UpdateClientKeyBudgetLimits,
+        ChangeClientKeyBudgetWindow, ClientKeyBudgetWindow, ClientKeyBudgetWindowPeriod,
+        ResetClientKeyBudget, UpdateClientKeyBudgetLimits,
     },
     plugin_client_keys::{PluginClientKeyFacts, PluginClientKeyListQuery, PluginClientKeyPage},
     plugin_resources::PluginResourceOwner,
@@ -16,6 +16,19 @@ use crate::model::{
 #[async_trait]
 pub trait PluginClientKeyAccess: Send + Sync {
     async fn facts(&self, id: &ClientApiKeyId) -> Result<PluginClientKeyFacts, AdminError>;
+
+    async fn budget_window(
+        &self,
+        id: &ClientApiKeyId,
+        period: ClientKeyBudgetWindowPeriod,
+    ) -> Result<ClientKeyBudgetWindow, AdminError>;
+
+    async fn change_budget_window(
+        &self,
+        owner: &PluginResourceOwner,
+        command: ChangeClientKeyBudgetWindow,
+        context: &MutationContext,
+    ) -> Result<ClientKeyBudgetWindow, AdminError>;
 
     async fn budget(&self, id: &ClientApiKeyId) -> Result<ClientBudgetStatus, AdminError>;
 
@@ -32,18 +45,6 @@ pub trait PluginClientKeyAccess: Send + Sync {
         command: ResetClientKeyBudget,
         context: &MutationContext,
     ) -> Result<ClientApiKeyId, AdminError>;
-
-    async fn weekly_control(
-        &self,
-        id: &ClientApiKeyId,
-    ) -> Result<ClientKeyWeeklyControl, AdminError>;
-
-    async fn change_weekly_control(
-        &self,
-        owner: &PluginResourceOwner,
-        command: ChangeClientKeyWeeklyWindow,
-        context: &MutationContext,
-    ) -> Result<ClientKeyWeeklyControl, AdminError>;
 
     async fn list(
         &self,

@@ -9,10 +9,10 @@ use crate::{
     model::{
         AdminError, MutationContext,
         client_keys::{
-            ChangeClientKeyWeeklyWindow, ClientKeyBudgetMutationOrigin, ClientKeyCursor,
-            ClientKeyCursorValue, ClientKeyListQuery, ClientKeyPageSize, ClientKeySort,
-            ClientKeySortField, ClientKeyWeeklyControl, ResetClientKeyBudget, SortDirection,
-            UpdateClientKeyBudgetLimits,
+            ChangeClientKeyBudgetWindow, ClientKeyBudgetMutationOrigin, ClientKeyBudgetWindow,
+            ClientKeyBudgetWindowPeriod, ClientKeyCursor, ClientKeyCursorValue, ClientKeyListQuery,
+            ClientKeyPageSize, ClientKeySort, ClientKeySortField, ResetClientKeyBudget,
+            SortDirection, UpdateClientKeyBudgetLimits,
         },
         plugin_client_keys::{
             PluginClientKey, PluginClientKeyCursor, PluginClientKeyFacts, PluginClientKeyListQuery,
@@ -43,6 +43,29 @@ impl PluginClientKeyAccess for DefaultPluginClientKeyAccess {
             enabled: key.enabled,
             group_ids: key.groups.into_iter().map(|group| group.id).collect(),
         })
+    }
+
+    async fn budget_window(
+        &self,
+        id: &ClientApiKeyId,
+        period: ClientKeyBudgetWindowPeriod,
+    ) -> Result<ClientKeyBudgetWindow, AdminError> {
+        self.service.budget_window(id, period).await
+    }
+
+    async fn change_budget_window(
+        &self,
+        owner: &PluginResourceOwner,
+        command: ChangeClientKeyBudgetWindow,
+        context: &MutationContext,
+    ) -> Result<ClientKeyBudgetWindow, AdminError> {
+        self.service
+            .change_budget_window(
+                context,
+                command,
+                ClientKeyBudgetMutationOrigin::Plugin(owner.clone()),
+            )
+            .await
     }
 
     async fn budget(&self, id: &ClientApiKeyId) -> Result<ClientBudgetStatus, AdminError> {
@@ -76,24 +99,6 @@ impl PluginClientKeyAccess for DefaultPluginClientKeyAccess {
                 command,
                 ClientKeyBudgetMutationOrigin::Plugin(owner.clone()),
             )
-            .await
-    }
-
-    async fn weekly_control(
-        &self,
-        id: &ClientApiKeyId,
-    ) -> Result<ClientKeyWeeklyControl, AdminError> {
-        self.service.weekly_control(id).await
-    }
-
-    async fn change_weekly_control(
-        &self,
-        owner: &PluginResourceOwner,
-        command: ChangeClientKeyWeeklyWindow,
-        context: &MutationContext,
-    ) -> Result<ClientKeyWeeklyControl, AdminError> {
-        self.service
-            .change_weekly_control(context, owner, command)
             .await
     }
 

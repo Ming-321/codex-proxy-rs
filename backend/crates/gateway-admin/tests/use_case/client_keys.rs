@@ -16,7 +16,6 @@ use gateway_admin::{
         plugin_client_keys::{
             PluginClientKey, PluginClientKeyCursor, PluginClientKeyListQuery, PluginClientKeyPage,
         },
-        plugin_resources::PluginResourceOwner,
     },
     ports::provider::{ProviderAdmin, ProviderAdminRegistry},
     ports::store::{AdminStoreError, AdminStoreErrorKind, AdminStoreResult, ClientKeyStore},
@@ -30,16 +29,27 @@ struct TestClientKeyStore {
     create_error: Option<AdminStoreErrorKind>,
     update_error: Option<AdminStoreErrorKind>,
     resets: Mutex<Vec<gateway_admin::model::client_keys::ResetClientKeyBudget>>,
-    weekly_changes: Mutex<
-        Vec<(
-            PluginResourceOwner,
-            gateway_admin::model::client_keys::ChangeClientKeyWeeklyWindow,
-        )>,
-    >,
 }
 
 #[async_trait]
 impl ClientKeyStore for TestClientKeyStore {
+    async fn client_key_budget_window(
+        &self,
+        _id: &ClientApiKeyId,
+        _period: gateway_admin::model::client_keys::ClientKeyBudgetWindowPeriod,
+    ) -> AdminStoreResult<gateway_admin::model::client_keys::ClientKeyBudgetWindow> {
+        Err(unused())
+    }
+
+    async fn change_client_key_budget_window(
+        &self,
+        _command: gateway_admin::model::client_keys::ChangeClientKeyBudgetWindow,
+        _origin: gateway_admin::model::client_keys::ClientKeyBudgetMutationOrigin,
+        _context: &MutationContext,
+    ) -> AdminStoreResult<gateway_admin::model::client_keys::ClientKeyBudgetWindow> {
+        Err(unused())
+    }
+
     async fn update_client_key_budget_limits(
         &self,
         _: gateway_admin::model::client_keys::UpdateClientKeyBudgetLimits,
@@ -57,32 +67,6 @@ impl ClientKeyStore for TestClientKeyStore {
     ) -> AdminStoreResult<()> {
         self.resets.lock().unwrap().push(command);
         Ok(())
-    }
-
-    async fn client_key_weekly_control(
-        &self,
-        _: &ClientApiKeyId,
-    ) -> AdminStoreResult<gateway_admin::model::client_keys::ClientKeyWeeklyControl> {
-        Err(unused())
-    }
-
-    async fn change_client_key_weekly_control(
-        &self,
-        owner: &PluginResourceOwner,
-        command: gateway_admin::model::client_keys::ChangeClientKeyWeeklyWindow,
-        _: &MutationContext,
-    ) -> AdminStoreResult<gateway_admin::model::client_keys::ClientKeyWeeklyControl> {
-        self.weekly_changes
-            .lock()
-            .unwrap()
-            .push((owner.clone(), command));
-        Ok(gateway_admin::model::client_keys::ClientKeyWeeklyControl {
-            revision: 1,
-            controller: Some(owner.instance_id.clone()),
-            expires_at: None,
-            accounting_start: None,
-            waiting: false,
-        })
     }
 
     async fn get_client_key(
@@ -199,43 +183,6 @@ async fn reset_budget_forwards_scope_and_returns_only_key_identity() {
         .unwrap();
     assert_eq!(result, command.id);
     assert_eq!(*store.resets.lock().unwrap(), vec![command]);
-}
-
-#[tokio::test]
-async fn weekly_control_change_forwards_the_plugin_owner_and_command_unchanged() {
-    use gateway_admin::model::client_keys::{
-        ChangeClientKeyWeeklyWindow, ClientKeyWeeklyWindowAction,
-    };
-    let store = Arc::new(TestClientKeyStore::default());
-    let services = super::AdminHarness::new()
-        .client_keys(store.clone())
-        .build()
-        .await;
-    let owner = PluginResourceOwner {
-        instance_id: "00000000-0000-7000-8000-000000000001".into(),
-        artifact_sha256: "a".repeat(64),
-        revision: Revision::new(3).unwrap(),
-    };
-    let command = ChangeClientKeyWeeklyWindow {
-        id: ClientApiKeyId::new("key_weekly").unwrap(),
-        expected_revision: 4,
-        action: ClientKeyWeeklyWindowAction::Release,
-    };
-    let control = services
-        .client_keys()
-        .change_weekly_control(&mutation_context(), &owner, command.clone())
-        .await
-        .unwrap();
-    assert_eq!(
-        control.controller.as_deref(),
-        Some(owner.instance_id.as_str())
-    );
-    let changes = store.weekly_changes.lock().unwrap();
-    assert_eq!(changes.len(), 1);
-    assert_eq!(changes[0].0.instance_id, owner.instance_id);
-    assert_eq!(changes[0].0.artifact_sha256, owner.artifact_sha256);
-    assert_eq!(changes[0].0.revision, owner.revision);
-    assert_eq!(changes[0].1, command);
 }
 
 #[tokio::test]

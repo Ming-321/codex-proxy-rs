@@ -122,18 +122,6 @@ impl PluginStore for PgPluginStore {
         super::instances::save_with_state(&self.pool, instance, expected, &state, &[], context)
             .await
     }
-    async fn pause_instance_for_state_transition(
-        &self,
-        instance: gateway_admin::model::plugins::instances::PluginInstance,
-        expected: Revision,
-        state: gateway_admin::model::plugins::state::PluginStateCommit,
-        context: &MutationContext,
-    ) -> AdminStoreResult<gateway_admin::model::plugins::instances::PluginInstanceMutation> {
-        super::instances::pause_for_state_transition(
-            &self.pool, instance, expected, &state, context,
-        )
-        .await
-    }
     async fn save_instance_replacing(
         &self,
         instance: gateway_admin::model::plugins::instances::PluginInstance,

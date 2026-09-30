@@ -7,8 +7,9 @@ use gateway_admin::{
     model::{
         AdminError, PageSize,
         client_keys::{
-            ChangeClientKeyWeeklyWindow, ClientKeyBudgetPeriod, ClientKeyWeeklyControl,
-            ClientKeyWeeklyWindowAction, ResetClientKeyBudget, UpdateClientKeyBudgetLimits,
+            ChangeClientKeyBudgetWindow, ClientKeyBudgetPeriod, ClientKeyBudgetWindow,
+            ClientKeyBudgetWindowMode, ClientKeyBudgetWindowPeriod, ClientKeyBudgetWindowUpdate,
+            ResetClientKeyBudget, UpdateClientKeyBudgetLimits,
         },
         plugin_client_keys::{PluginClientKeyCursor, PluginClientKeyListQuery},
         plugin_resources::PluginResourceOwner,
@@ -125,65 +126,64 @@ impl PluginClientKeys {
                     client_key_id: id.as_str().to_owned(),
                 })
             }
-            key_budgets::WEEKLY_CONTROL_GET => {
-                let request: key_budgets::WeeklyWindowQuery =
+            key_budgets::WINDOW_GET => {
+                let request: key_budgets::BudgetWindowQuery =
                     serde_json::from_slice(payload).map_err(|_| invalid())?;
                 let id = ClientApiKeyId::new(request.client_key_id).map_err(|_| invalid())?;
-                let control = access.weekly_control(&id).await.map_err(map_admin_error)?;
-                encode(&weekly_window_control(control))
-            }
-            key_budgets::WEEKLY_CONTROL_CHANGE => {
-                let request: key_budgets::ChangeWeeklyWindowRequest =
-                    serde_json::from_slice(payload).map_err(|_| invalid())?;
-                let command = ChangeClientKeyWeeklyWindow {
-                    id: ClientApiKeyId::new(request.client_key_id).map_err(|_| invalid())?,
-                    expected_revision: request.expected_revision,
-                    action: weekly_window_action(request.operation)?,
-                };
-                let control = access
-                    .change_weekly_control(&self.owner, command, &mutation_context(context))
+                let window = access
+                    .budget_window(&id, window_period(request.period))
                     .await
                     .map_err(map_admin_error)?;
-                encode(&weekly_window_control(control))
+                encode(&window_view(window))
+            }
+            key_budgets::WINDOW_CHANGE => {
+                let request: key_budgets::ChangeBudgetWindowRequest =
+                    serde_json::from_slice(payload).map_err(|_| invalid())?;
+                let command = ChangeClientKeyBudgetWindow {
+                    id: ClientApiKeyId::new(request.client_key_id).map_err(|_| invalid())?,
+                    period: window_period(request.period),
+                    expected_revision: request.expected_revision,
+                    update: match request.update {
+                        key_budgets::BudgetWindowUpdate::Automatic {} => {
+                            ClientKeyBudgetWindowUpdate::Automatic
+                        }
+                        key_budgets::BudgetWindowUpdate::Fixed {
+                            expires_at_ms,
+                            clear_used,
+                        } => ClientKeyBudgetWindowUpdate::Fixed {
+                            expires_at: chrono::DateTime::from_timestamp_millis(expires_at_ms)
+                                .ok_or_else(invalid)?,
+                            clear_used,
+                        },
+                    },
+                };
+                let window = access
+                    .change_budget_window(&self.owner, command, &mutation_context(context))
+                    .await
+                    .map_err(map_admin_error)?;
+                encode(&window_view(window))
             }
             _ => Err(denied()),
         }
     }
 }
 
-fn weekly_window_action(
-    action: key_budgets::WeeklyWindowAction,
-) -> Result<ClientKeyWeeklyWindowAction, PluginFault> {
-    let time = |millis| chrono::DateTime::from_timestamp_millis(millis).ok_or_else(invalid);
-    Ok(match action {
-        key_budgets::WeeklyWindowAction::Claim {
-            expires_at_ms,
-            clear_used,
-        } => ClientKeyWeeklyWindowAction::Claim {
-            expires_at: time(expires_at_ms)?,
-            clear_used,
-        },
-        key_budgets::WeeklyWindowAction::Sync { expires_at_ms } => {
-            ClientKeyWeeklyWindowAction::Sync {
-                expires_at: time(expires_at_ms)?,
-            }
-        }
-        key_budgets::WeeklyWindowAction::Align { expires_at_ms } => {
-            ClientKeyWeeklyWindowAction::Align {
-                expires_at: time(expires_at_ms)?,
-            }
-        }
-        key_budgets::WeeklyWindowAction::Release => ClientKeyWeeklyWindowAction::Release,
-    })
+fn window_period(period: key_budgets::BudgetWindowPeriod) -> ClientKeyBudgetWindowPeriod {
+    match period {
+        key_budgets::BudgetWindowPeriod::Daily => ClientKeyBudgetWindowPeriod::Daily,
+        key_budgets::BudgetWindowPeriod::Weekly => ClientKeyBudgetWindowPeriod::Weekly,
+    }
 }
 
-fn weekly_window_control(control: ClientKeyWeeklyControl) -> key_budgets::WeeklyWindowControl {
-    key_budgets::WeeklyWindowControl {
-        revision: control.revision,
-        controller: control.controller,
-        expires_at_ms: control.expires_at.map(|time| time.timestamp_millis()),
-        accounting_start_at_ms: control.accounting_start.map(|time| time.timestamp_millis()),
-        waiting: control.waiting,
+fn window_view(window: ClientKeyBudgetWindow) -> key_budgets::BudgetWindow {
+    key_budgets::BudgetWindow {
+        revision: window.revision,
+        mode: match window.mode {
+            ClientKeyBudgetWindowMode::Automatic => key_budgets::BudgetWindowMode::Automatic,
+            ClientKeyBudgetWindowMode::Fixed => key_budgets::BudgetWindowMode::Fixed,
+        },
+        expires_at_ms: window.expires_at.map(|time| time.timestamp_millis()),
+        accounting_start_at_ms: window.accounting_start.map(|time| time.timestamp_millis()),
     }
 }
 

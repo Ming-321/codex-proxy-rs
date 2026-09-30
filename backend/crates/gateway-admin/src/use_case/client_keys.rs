@@ -14,13 +14,12 @@ use crate::{
     model::{
         AdminError, MutationContext,
         client_keys::{
-            ChangeClientKeyWeeklyWindow, ClientKeyBudgetMutationOrigin, ClientKeyCursorValue,
-            ClientKeyListQuery, ClientKeyMutation, ClientKeyPage, ClientKeyRecord, ClientKeySecret,
-            ClientKeySortField, ClientKeyWeeklyControl, CreateClientKey, CreatedClientKey,
-            DeleteClientKey, NewClientKey, ResetClientKeyBudget, SetClientKeyEnabled,
-            UpdateClientKey, UpdateClientKeyBudgetLimits,
+            ChangeClientKeyBudgetWindow, ClientKeyBudgetMutationOrigin, ClientKeyBudgetWindow,
+            ClientKeyBudgetWindowPeriod, ClientKeyCursorValue, ClientKeyListQuery,
+            ClientKeyMutation, ClientKeyPage, ClientKeyRecord, ClientKeySecret, ClientKeySortField,
+            CreateClientKey, CreatedClientKey, DeleteClientKey, NewClientKey, ResetClientKeyBudget,
+            SetClientKeyEnabled, UpdateClientKey, UpdateClientKeyBudgetLimits,
         },
-        plugin_resources::PluginResourceOwner,
     },
     ports::store::{AdminStoreError, AdminStoreErrorKind, ClientKeyStore},
 };
@@ -53,6 +52,19 @@ pub trait ClientKeyService: Send + Sync {
         context: &MutationContext,
         command: DeleteClientKey,
     ) -> Result<ClientKeyMutation, AdminError>;
+    async fn budget_window(
+        &self,
+        id: &ClientApiKeyId,
+        period: ClientKeyBudgetWindowPeriod,
+    ) -> Result<ClientKeyBudgetWindow, AdminError>;
+
+    async fn change_budget_window(
+        &self,
+        context: &MutationContext,
+        command: ChangeClientKeyBudgetWindow,
+        origin: ClientKeyBudgetMutationOrigin,
+    ) -> Result<ClientKeyBudgetWindow, AdminError>;
+
     async fn budget(&self, id: &ClientApiKeyId) -> Result<ClientBudgetStatus, AdminError>;
     async fn update_budget_limits(
         &self,
@@ -66,16 +78,6 @@ pub trait ClientKeyService: Send + Sync {
         command: ResetClientKeyBudget,
         origin: ClientKeyBudgetMutationOrigin,
     ) -> Result<ClientApiKeyId, AdminError>;
-    async fn weekly_control(
-        &self,
-        id: &ClientApiKeyId,
-    ) -> Result<ClientKeyWeeklyControl, AdminError>;
-    async fn change_weekly_control(
-        &self,
-        context: &MutationContext,
-        owner: &PluginResourceOwner,
-        command: ChangeClientKeyWeeklyWindow,
-    ) -> Result<ClientKeyWeeklyControl, AdminError>;
 }
 
 pub(crate) struct DefaultClientKeyService {
@@ -107,6 +109,29 @@ impl ClientKeyService for DefaultClientKeyService {
             .await
             .map_err(|error| map_store_error(error, "client API key"))?
             .ok_or_else(|| AdminError::not_found("Client API Key 不存在"))
+    }
+
+    async fn budget_window(
+        &self,
+        id: &ClientApiKeyId,
+        period: ClientKeyBudgetWindowPeriod,
+    ) -> Result<ClientKeyBudgetWindow, AdminError> {
+        self.store
+            .client_key_budget_window(id, period)
+            .await
+            .map_err(|error| map_store_error(error, "client API key"))
+    }
+
+    async fn change_budget_window(
+        &self,
+        context: &MutationContext,
+        command: ChangeClientKeyBudgetWindow,
+        origin: ClientKeyBudgetMutationOrigin,
+    ) -> Result<ClientKeyBudgetWindow, AdminError> {
+        self.store
+            .change_client_key_budget_window(command, origin, context)
+            .await
+            .map_err(|error| map_store_error(error, "client API key"))
     }
 
     async fn budget(&self, id: &ClientApiKeyId) -> Result<ClientBudgetStatus, AdminError> {
@@ -146,28 +171,6 @@ impl ClientKeyService for DefaultClientKeyService {
             .await
             .map_err(|error| map_store_error(error, "client API key"))?;
         Ok(id)
-    }
-
-    async fn weekly_control(
-        &self,
-        id: &ClientApiKeyId,
-    ) -> Result<ClientKeyWeeklyControl, AdminError> {
-        self.store
-            .client_key_weekly_control(id)
-            .await
-            .map_err(|error| map_store_error(error, "client API key"))
-    }
-
-    async fn change_weekly_control(
-        &self,
-        context: &MutationContext,
-        owner: &PluginResourceOwner,
-        command: ChangeClientKeyWeeklyWindow,
-    ) -> Result<ClientKeyWeeklyControl, AdminError> {
-        self.store
-            .change_client_key_weekly_control(owner, command, context)
-            .await
-            .map_err(|error| map_store_error(error, "client API key"))
     }
 
     async fn list(&self, query: ClientKeyListQuery) -> Result<ClientKeyPage, AdminError> {

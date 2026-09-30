@@ -156,7 +156,7 @@ Key 明文仍通过宿主管理面查看，插件模型调用使用返回的 Key
 
 ### Client Key 预算
 
-预算接口可查询、设置日／周金额上限及清零全部 Client Key 的当前周期用量，包括管理员和其他插件创建的 Key
+预算接口可查询、设置日／周金额上限、重置用量和配置窗口，包括管理员和其他插件创建的 Key
 
 类型位于 `call::key_budgets`；下列预算方法控制参数为 `{}`，输入输出为二进制 JSON：
 
@@ -165,20 +165,23 @@ Key 明文仍通过宿主管理面查看，插件模型调用使用返回的 Key
 | `get_key_budget` / `host.keys.get_budget` | `{client_key_id}`；返回 `KeyBudget`，包含 ID、日／周上限及已用金额、日／周重置时间 |
 | `update_key_budget_limits` / `host.keys.update_budget_limits` | `{client_key_id, daily_limit_usd?, weekly_limit_usd?}`；至少指定一项；返回 `{client_key_id}` |
 | `reset_key_budget` / `host.keys.reset_budget` | `{client_key_id, period}`；`period` 必填，取 `daily`、`weekly` 或 `all`；返回 `{client_key_id}` |
+| `budget_window` / `host.keys.budget_window.get` | `{client_key_id, period}`；`period` 为 `daily` 或 `weekly`；返回 `BudgetWindow` |
+| `change_budget_window` / `host.keys.budget_window.change` | `{client_key_id, period, expected_revision, update}`；单周期原子写入，返回 `BudgetWindow` |
 
 `list_keys` / `host.keys.list` 仍可查询非秘密目录，仅返回 `{id,name,enabled}` 和游标，沿用目录的控制参数编码。
 上述操作均接受 Key ID，不接受 Key 明文，也不要求先查询目录
 
 金额为非负十进制字符串，沿用原生金额精度；上限 `"0"` 表示不限。`KeyBudget` 的字段为
 `daily_limit_usd`、`weekly_limit_usd`、`daily_used_usd`、`weekly_used_usd`、`daily_resets_at_ms`、`weekly_resets_at_ms`；
-时间为 UTC Unix 毫秒，`null` 表示尚未使用或窗口已过期。读取不触发准入、开启窗口或清零，停用的 Key 仍可管理
+时间为 UTC Unix 毫秒，`null` 表示尚未使用或自动窗口已过期；固定窗口到期后仍保留时间与已用金额。
+读取不触发准入、开启窗口或清零，停用的 Key 仍可管理
 
 上限更新仅写入提供的日／周金额；省略或 `null` 的项保持不变。它保留已用金额、窗口到期时间、费用历史及其他 Key 配置。
 写入复用 Key 行锁，与结算串行；实际变化时实例版本复验、修改、配置 revision 和审计在同一事务提交，并通知原生配置发布。
 相同值再次赋值不产生新 revision 或审计；并发更新按事务顺序生效，同一字段由后提交的值覆盖，接口不提供调用去重或比较交换。
 将非零上限降低到已用金额及以下会拒绝后续准入，提高限额可恢复准入，在途请求仍按原生规则完成和结算
 
-重置只清零所选周期，保留额度上限、密钥、窗口到期时间和历史费用事件；未使用的 Key 不因此开启窗口。
+重置清零所选周期、清除到期时间并恢复自动滚动，保留额度上限、密钥和历史费用事件；所选窗口下次使用时按原生规则重新开启。
 费用按完成时间归属，重置前完成但延迟落盘的费用不会重新扣入已重置周期，重置后完成的在途请求仍正常扣额。
 实例版本复验、清零和审计在同一事务提交，不推进配置 revision。每次调用均执行新重置，可能清掉两次调用之间的新消费
 
@@ -186,40 +189,30 @@ SDK 不自动重试。超时或断连不能证明写入未提交；重试上限�
 不存在的 Key 返回 `rejected`；写入事务复验发现实例停用或版本变化时返回 `conflict`，
 非法输入返回 `invalid_input`。账号关联、预算分配和重置触发由插件决定，宿主不自动串联上述接口
 
-#### 持续接管周窗口
+#### 窗口配置
 
-插件可持续接管 Key 的原生周窗口，何时进入新周期由插件判断，宿主只执行窗口变更并保证并发与结算语义。
-类型位于 `call::key_budgets`，控制参数 `{}`，输入输出为二进制 JSON。旧宿主不支持这些方法，
-插件须在 `engines.codex-proxy-rs` 声明包含它们的最低宿主版本
+`BudgetWindow` 包含 `revision`、`mode`、`accounting_start_at_ms` 和 `expires_at_ms`。
+`mode` 为 `automatic` 或 `fixed`；未开窗或已过期的自动窗口返回空时间。版本独立于配置 revision，按 Key 与日／周周期分别维护
 
-| SDK 方法 / 回调 | 输入与结果 |
-| --- | --- |
-| `weekly_window_control` / `host.keys.weekly_control.get` | `{client_key_id}`；返回 `revision`、接管实例 ID `controller`、`expires_at_ms`、`accounting_start_at_ms`、`waiting` |
-| `change_weekly_window` / `host.keys.weekly_control.change` | `{client_key_id, expected_revision, operation}`；返回变更后的同一结构 |
+`update` 接受以下两种形式：
 
-`operation` 是带 `action` 的对象，到期时间必须晚于宿主执行时刻：
+- `{"mode":"fixed","expires_at_ms":1900000000000,"clear_used":false}`：设置未来截止时间，停止该窗口的自动滚动。
+  `clear_used` 默认 `false`，保留当前计费起点和用量；若原自动窗口已过期，先按原生日期边界归零。
+  已是固定窗口时，改截止时间不会隐式清零。`clear_used:true` 在同一事务中清零，并以宿主取得锁后的时间作为新的计费起点
+- `{"mode":"automatic"}`：恢复自动滚动，保留当前起点、截止时间与用量；到期后由下一次使用按原生规则开窗
 
-- `claim`：附 `expires_at_ms`，`clear_used` 默认 `false`。要求当前无接管者，默认保留已用金额
-- `sync`：附 `expires_at_ms`。清零周用量，以取得 Key 锁后的宿主执行时刻为新计费起点，不回算历史费用
-- `align`：附 `expires_at_ms`。只修正到期时间，保留已用金额、计费起点与接管者；延长到未来会解除等待
-- `release`：无附加字段。解除接管，窗口保持原状，由原生规则在到期后滚动
+固定窗口到期后，即使金额上限为零也拒绝新准入；在途结算继续累计，不自动开启新周期。
+显式清零后，完成时间早于新计费起点的迟到费用仍保留费用事件，但不扣入新周期；之后完成的在途请求正常计费
 
-`sync`、`align` 和 `release` 要求当前实例是接管者，`claim` 要求当前无接管者，否则返回 `conflict`。
-`controller`、`expires_at_ms`、`accounting_start_at_ms` 仅在接管期间有值，未接管时为 `null`，原生窗口用 `get_key_budget` 读取；
-`accounting_start_at_ms` 是宿主实际计费起点，插件展示计费区间时不以自己的调用时间代替
+写入必须提交读取到的 `expected_revision`。窗口写入、原生重置与自动开窗都会推进所选周期版本；单纯结算金额不会。
+窗口写入与审计在同一 Key 行锁事务内提交，不推进配置 revision。
+宿主仅保留该周期最近一次窗口写入的调用方和完整请求：同一调用方重试相同请求且其结果版本仍为当前版本时，返回已提交窗口，
+即使截止时间已经过去也不重复清零或写审计。其他版本不匹配返回 `conflict`；其他调用方不能冒用这条重试记录。
+授权检查仍在每次写入事务中执行，停用实例不能凭旧请求重试
 
-写入携带 `expected_revision`，成功后版本加一。宿主持久化最近一次操作的指纹，同一实例、原版本与完整参数的原样重试返回已提交结果，
-不再次清零；早于最新变更的请求返回 `conflict`，不能改成当前版本后盲目重放。`release` 与实例生命周期造成的释放同样推进版本。
-建议先读取版本，把完整请求持久化在插件私有状态后再调用；多个 Key 各自独立提交，部分成功时只重试未确认项
-
-接管期间宿主不自动推进七天窗口。到期而未同步时 `waiting=true`，新请求返回 `429` / `key_weekly_window_waiting`；
-已用金额保留，结算按完成时间归属：同步前完成但迟到落盘的费用不计入新窗口，到期后仍在计费起点之后完成的费用继续计入。
-日限额、周金额上限和 Key 启用状态保持原语义。`reset_key_budget` 在接管期间仍只清零所选用量并推进计费起点，
-不修改到期时间，也不解除等待
-
-接管跟随实例生命周期：用户停用、实例被同一插件的其他实例替换或删除时，宿主在同一事务内解除该实例接管的全部窗口；
-进程崩溃、重启与状态迁移前的技术暂停不解除，迁移失败回滚也保留。管理员不使用单 Key 解除接口，
-通过现有插件停用操作释放该实例的全部接管，不改变 Key 的启用状态，也不清零已用金额
+结果未知时，插件应从私有状态恢复完整原请求再重试；遇到 `conflict` 后查询当前事实并重新决定操作，不能把旧的清零意图换成新版本盲目提交。
+外部周期标识、账号与 Key 关联及何时换周期均由插件保存和判断，宿主没有窗口接管者。
+停用或删除插件不会撤销已经写入的原生窗口配置；插件可主动恢复 `automatic`，管理员也可通过原有重置操作清零并恢复自动窗口
 
 ### Key、模型与模型调用
 

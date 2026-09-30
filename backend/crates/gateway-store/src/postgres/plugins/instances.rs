@@ -17,10 +17,7 @@ use gateway_admin::{
 use secrecy::ExposeSecret as _;
 use sqlx::{PgPool, Postgres, Row as _, Transaction};
 
-use super::super::{
-    append_admin_audit_event_in_transaction, bump_config_revision_in_transaction,
-    client_budgets::release_controlled_windows,
-};
+use super::super::{append_admin_audit_event_in_transaction, bump_config_revision_in_transaction};
 use super::artifacts::{conflict, not_found, unavailable};
 use crate::{admin_revision, admin_store_error, mutation_audit};
 
@@ -231,7 +228,7 @@ pub(super) async fn save(
     expected: Revision,
     context: &MutationContext,
 ) -> AdminStoreResult<PluginInstanceMutation> {
-    save_inner(pool, instance, expected, None, &[], false, context).await
+    save_inner(pool, instance, expected, None, &[], context).await
 }
 
 pub(super) async fn save_with_state(
@@ -242,27 +239,7 @@ pub(super) async fn save_with_state(
     replacements: &[PluginInstanceReplacement],
     context: &MutationContext,
 ) -> AdminStoreResult<PluginInstanceMutation> {
-    save_inner(
-        pool,
-        instance,
-        expected,
-        Some(state),
-        replacements,
-        false,
-        context,
-    )
-    .await
-}
-
-/// 状态迁移前的技术暂停：只保留实例拥有的资源，其余停用路径都会在事务内释放它们。
-pub(super) async fn pause_for_state_transition(
-    pool: &PgPool,
-    instance: PluginInstance,
-    expected: Revision,
-    state: &PluginStateCommit,
-    context: &MutationContext,
-) -> AdminStoreResult<PluginInstanceMutation> {
-    save_inner(pool, instance, expected, Some(state), &[], true, context).await
+    save_inner(pool, instance, expected, Some(state), replacements, context).await
 }
 
 async fn save_inner(
@@ -271,26 +248,11 @@ async fn save_inner(
     expected: Revision,
     state: Option<&PluginStateCommit>,
     replacements: &[PluginInstanceReplacement],
-    state_transition_pause: bool,
     context: &MutationContext,
 ) -> AdminStoreResult<PluginInstanceMutation> {
     let id = uuid::Uuid::parse_str(&instance.id).map_err(|_| conflict())?;
     let mut tx = pool.begin().await.map_err(|_| unavailable())?;
     check_revision(&mut tx, expected).await?;
-    if state_transition_pause {
-        // 技术暂停只能让原实例、原制品由启用转入停用，不能借此入口替换制品或绕过真正的停用。
-        let paused_from_enabled: bool = sqlx::query_scalar(
-            "select exists(select 1 from plugin_instances where id=$1 and artifact_sha256=$2 and enabled)",
-        )
-        .bind(id)
-        .bind(&instance.artifact_sha256)
-        .fetch_one(&mut *tx)
-        .await
-        .map_err(|_| unavailable())?;
-        if instance.enabled || !paused_from_enabled {
-            return Err(conflict());
-        }
-    }
     validate_artifact_acceptance(&mut tx, &instance).await?;
     // 停用是损坏配置的恢复路径，必须原样保留绑定；再次启用时才要求引用仍存在。
     if instance.enabled {
@@ -317,9 +279,6 @@ async fn save_inner(
             .bind(id).execute(&mut *tx).await.map_err(|_| unavailable())?;
     }
     let committed_revision = admin_revision(revision)?;
-    if !instance.enabled && !state_transition_pause {
-        release_controlled_windows(&mut tx, &instance.id, context).await?;
-    }
     // 旧配置与新配置共享事务，任一版本检查或状态提交失败都不留下半次切换。
     for replacement in replacements {
         let previous_id = uuid::Uuid::parse_str(&replacement.id).map_err(|_| conflict())?;
@@ -339,7 +298,6 @@ async fn save_inner(
         .bind(&instance.artifact_sha256)
         .fetch_optional(&mut *tx).await.map_err(|_| unavailable())?
         .ok_or_else(conflict)?;
-        release_controlled_windows(&mut tx, &replacement.id, context).await?;
         super::state::rebind_existing_configuration(
             &mut tx,
             &replacement.id,
@@ -417,7 +375,6 @@ pub(super) async fn delete(
     if enabled {
         return Err(conflict());
     }
-    release_controlled_windows(&mut tx, id, context).await?;
     sqlx::query("delete from plugin_instances where id=$1")
         .bind(key)
         .execute(&mut *tx)
@@ -464,7 +421,6 @@ pub(super) async fn disable(
         let digest: String = sqlx::query_scalar("update plugin_instances set enabled=false,revision=$2 where id=$1 and enabled=true returning artifact_sha256")
             .bind(uuid).bind(i64::try_from(revision.get()).map_err(|_| unavailable())?)
             .fetch_optional(&mut *tx).await.map_err(|_| unavailable())?.ok_or_else(conflict)?;
-        release_controlled_windows(&mut tx, id, context).await?;
         super::state::rebind_existing_configuration(&mut tx, id, &digest, committed).await?;
         append_admin_audit_event_in_transaction(
             &mut tx,

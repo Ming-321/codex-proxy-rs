@@ -278,6 +278,8 @@ export interface OpsError {
   accountId: string | null
   accountName: string | null
   accountEmail: string | null
+  accountPlanType: string | null
+  accountPlanTypeDisplay: string | null
   route: string
   model: string | null
   requestedModel: string | null
